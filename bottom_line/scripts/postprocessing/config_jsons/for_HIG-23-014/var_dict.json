@@ -1,0 +1,15 @@
+{
+    "NOMINAL": "nominal",
+    "ScaleEBUp": "Et_dependent_ScaleEB_up",
+    "ScaleEBDown": "Et_dependent_ScaleEB_down",
+    "ScaleEEUp": "Et_dependent_ScaleEE_up",
+    "ScaleEEDown": "Et_dependent_ScaleEE_down",
+    "SmearingUp": "Et_dependent_Smearing_up",
+    "SmearingDown": "Et_dependent_Smearing_down",
+    "MaterialUp": "Material_up", 
+    "MaterialDown": "Material_down",
+    "FNUFUp": "FNUF_up", 
+    "FNUFDown": "FNUF_down",
+    "energyErrShiftUp": "energyErrShift_up",
+    "energyErrShiftDown": "energyErrShift_down"
+}

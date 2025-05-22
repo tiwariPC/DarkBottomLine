@@ -1,0 +1,72 @@
+{
+    "probe_energyErr": {
+        "variable": "probe_energyErr",
+        "binning": [100, 0, 2],
+        "files_data": "./test_samples/w_flow/data[C-D]_v13/nominal/*.parquet",
+        "files_MC": "./test_samples/w_flow/DY_preEE_v13/",
+        "density": true,
+        "flow_bins": "none",
+        "xlabel": "energyErr",
+        "yscale": "linear"
+    },
+    "probe_energyErr_DIVbyE": {
+        "variable": "probe_energyErr",
+        "binning": [100, 0.0, 0.05],
+        "files_data": "./test_samples/w_flow/data[C-D]_v13/nominal/*.parquet",
+        "files_MC": "./test_samples/w_flow/DY_preEE_v13/",
+        "density": true,
+        "flow_bins": "none",
+        "xlabel": "energyErr/E",
+        "yscale": "linear"
+    },
+    "probe_corr_energyErr_DIVbyE": {
+        "variable": "probe_corr_energyErr",
+        "binning": [100, 0.0, 0.05],
+        "files_data": "./test_samples/w_flow/data[C-D]_v13/nominal/*.parquet",
+        "files_MC": "./test_samples/w_flow/DY_preEE_v13/",
+        "density": true,
+        "flow_bins": "none",
+        "xlabel": "$\\sigma_{E}^\\mathrm{Corrected}/E$",
+        "yscale": "linear"
+    },
+    "sigma_m_over_m": {
+        "variable": "sigma_m_over_m",
+        "binning": [100, 0.003, 0.035],
+        "files_data": "./test_samples/w_flow/data[C-D]_v13/nominal/*.parquet",
+        "files_MC": "./test_samples/w_flow/DY_preEE_v13/",
+        "density": true,
+        "flow_bins": "sum",
+        "xlabel": "$\\sigma_{m}/m$",
+        "yscale": "linear"
+    },
+    "sigma_m_over_m_corr": {
+        "variable": "sigma_m_over_m_corr",
+        "binning": [100, 0.003, 0.035],
+        "files_data": "./test_samples/w_flow/data[C-D]_v13/nominal/*.parquet",
+        "files_MC": "./test_samples/w_flow/DY_preEE_v13/",
+        "density": true,
+        "flow_bins": "sum",
+        "xlabel": "$\\sigma_{m}^\\mathrm{Corrected}/m$",
+        "yscale": "linear"
+    },
+    "sigma_m_over_m_Smeared": {
+        "variable": "sigma_m_over_m_Smeared",
+        "binning": [100, 0.005, 0.04],
+        "files_data": "./test_samples/w_flow/data[C-D]_v13/nominal/*.parquet",
+        "files_MC": "./test_samples/w_flow/DY_preEE_v13/",
+        "density": true,
+        "flow_bins": "sum",
+        "xlabel": "$\\sigma_{m}^\\mathrm{Smeared}/m$",
+        "yscale": "linear"
+    },
+    "sigma_m_over_m_Smeared_corrected": {
+        "variable": "sigma_m_over_m_Smeared_corrected",
+        "binning": [100, 0.005, 0.04],
+        "files_data": "./test_samples/w_flow/data[C-D]_v13/nominal/*.parquet",
+        "files_MC": "./test_samples/w_flow/DY_preEE_v13/",
+        "density": true,
+        "flow_bins": "sum",
+        "xlabel": "$\\sigma_{m}^\\mathrm{Corrected, Smeared}/m$",
+        "yscale": "linear"
+    }
+}

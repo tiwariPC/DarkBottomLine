@@ -1,0 +1,106 @@
+{
+    "EBEB_highR9highR9": {
+        "cat_filter": [
+            ["lead_isScEtaEB", "==", true],
+            ["lead_r9", ">=", 0.85],
+            ["sublead_isScEtaEB", "==", true],
+            ["sublead_r9", ">=", 0.85],
+            ["lead_mvaID", ">", 0.25],
+            ["sublead_mvaID", ">", 0.25]
+        ]
+    },
+    "EBEB_highR9lowR9": {
+        "cat_filter": [
+            ["lead_isScEtaEB", "==", true],
+            ["lead_r9", ">=", 0.85],
+            ["sublead_isScEtaEB", "==", true],
+            ["sublead_r9", "<", 0.85],
+            ["sublead_r9", ">=", 0.5],
+            ["lead_mvaID", ">", 0.25],
+            ["sublead_mvaID", ">", 0.25]
+        ]
+    },
+    "EBEB_lowR9highR9": {
+        "cat_filter": [
+            ["lead_isScEtaEB", "==", true],
+            ["lead_r9", "<", 0.85],
+            ["lead_r9", ">=", 0.5],
+            ["sublead_isScEtaEB", "==", true],
+            ["sublead_r9", ">=", 0.85],
+            ["lead_mvaID", ">", 0.25],
+            ["sublead_mvaID", ">", 0.25]
+        ]
+    },
+    "EBEE_highR9highR9": {
+        "cat_filter": [
+            ["lead_isScEtaEB", "==", true],
+            ["lead_r9", ">=", 0.85],
+            ["sublead_isScEtaEE", "==", true],
+            ["sublead_r9", ">=", 0.9],
+            ["lead_mvaID", ">", 0.25],
+            ["sublead_mvaID", ">", 0.25]
+        ]
+    },
+    "EBEE_highR9lowR9": {
+        "cat_filter": [
+            ["lead_isScEtaEB", "==", true],
+            ["lead_r9", ">=", 0.85],
+            ["sublead_isScEtaEE", "==", true],
+            ["sublead_r9", "<", 0.9],
+            ["sublead_r9", ">=", 0.8],
+            ["lead_mvaID", ">", 0.25],
+            ["sublead_mvaID", ">", 0.25]
+        ]
+    },
+    "EBEE_lowR9highR9": {
+        "cat_filter": [
+            ["lead_isScEtaEB", "==", true],
+            ["lead_r9", "<", 0.85],
+            ["lead_r9", ">=", 0.5],
+            ["sublead_isScEtaEE", "==", true],
+            ["sublead_r9", ">=", 0.9],
+            ["lead_mvaID", ">", 0.25],
+            ["sublead_mvaID", ">", 0.25]
+        ]
+    },
+    "EEEB_highR9highR9": {
+        "cat_filter": [
+            ["lead_isScEtaEE", "==", true],
+            ["lead_r9", ">=", 0.9],
+            ["sublead_isScEtaEB", "==", true],
+            ["sublead_r9", ">=", 0.85],
+            ["lead_mvaID", ">", 0.25],
+            ["sublead_mvaID", ">", 0.25]
+        ]
+    },
+    "EEEB_highR9lowR9": {
+        "cat_filter": [
+            ["lead_isScEtaEE", "==", true],
+            ["lead_r9", ">=", 0.9],
+            ["sublead_isScEtaEB", "==", true],
+            ["sublead_r9", "<", 0.85],
+            ["sublead_r9", ">=", 0.5],
+            ["lead_mvaID", ">", 0.25],
+            ["sublead_mvaID", ">", 0.25]
+        ]
+    },
+    "EEEB_lowR9highR9": {
+        "cat_filter": [
+            ["lead_isScEtaEE", "==", true],
+            ["lead_r9", "<", 0.9],
+            ["lead_r9", ">=", 0.8],
+            ["sublead_isScEtaEB", "==", true],
+            ["sublead_r9", ">=", 0.85],
+            ["lead_mvaID", ">", 0.25],
+            ["sublead_mvaID", ">", 0.25]
+        ]
+    },
+    "EEEE_incl": {
+        "cat_filter": [
+            ["lead_isScEtaEE", "==", true],
+            ["sublead_isScEtaEE", "==", true],
+            ["lead_mvaID", ">", 0.25],
+            ["sublead_mvaID", ">", 0.25]
+        ]
+    }
+}

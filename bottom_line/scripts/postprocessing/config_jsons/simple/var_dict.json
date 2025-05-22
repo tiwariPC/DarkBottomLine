@@ -1,0 +1,7 @@
+{
+    "NOMINAL": "nominal",
+    "ScaleUp": "Scale_up",
+    "ScaleDown": "Scale_down",
+    "SmearingUp": "Smearing_up",
+    "SmearingDown": "Smearing_down"
+}

@@ -1,0 +1,15 @@
+{
+    "samplejson": "tests/config_files/v13_samples.json",
+    "workflow": "tagandprobe",
+    "metaconditions": "Era2017_legacy_v1",
+    "taggers": [],
+    "year": {
+        "Diphoton_postEE_v13": ["2022postEE"]
+    },
+    "systematics": {
+        "Diphoton_postEE_v13": []
+    },
+    "corrections": {
+        "Diphoton_postEE_v13": []
+    }
+}
