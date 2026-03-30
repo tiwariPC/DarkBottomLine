@@ -34,25 +34,26 @@ class DarkBottomLineAnalyzer:
     Multi-region analyzer extending the base processor.
     """
 
-    def __init__(self, config: Dict[str, Any], regions_config_path: str):
+    def __init__(self, config: Dict[str, Any], regions_config_path: Optional[str] = None):
         """
         Initialize analyzer with configuration and regions.
 
         Args:
             config: Base configuration dictionary
-            regions_config_path: Path to regions configuration file
+            regions_config_path: Path to regions configuration file (optional for event-selection-only mode)
         """
         # Initialize base processor
         self.base_processor = DarkBottomLineProcessor(config)
 
-        # Initialize region manager
-        self.region_manager = RegionManager(regions_config_path)
-
-        # Initialize histogram manager for regions
-        self.histogram_manager = HistogramManager()
-
-        # Create region-specific histograms
-        self.region_histograms = self._create_region_histograms()
+        # Initialize region manager (only if regions_config_path is provided)
+        if regions_config_path:
+            self.region_manager = RegionManager(regions_config_path)
+            self.histogram_manager = HistogramManager()
+            self.region_histograms = self._create_region_histograms()
+        else:
+            self.region_manager = None
+            self.histogram_manager = None
+            self.region_histograms = {}
 
         # Initialize accumulator
         self.accumulator = {
@@ -64,7 +65,7 @@ class DarkBottomLineAnalyzer:
             "event_weights": {},
         }
 
-        logging.info(f"Initialized analyzer with {len(self.region_manager.regions)} regions")
+        logging.info(f"Initialized analyzer with {len(self.region_manager.regions) if self.region_manager else 0} regions")
 
     def _create_region_histograms(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -130,7 +131,9 @@ class DarkBottomLineAnalyzer:
                 "weights": []
             }
 
-    def process(self, events: ak.Array, event_selection_output: Optional[str] = None) -> Dict[str, Any]:
+    def process(self, events: ak.Array, event_selection_output: Optional[str] = None,
+                n_events_total: Optional[int] = None, event_selection_only: bool = False,
+                output_format: str = "pkl") -> Dict[str, Any]:
         """
         Process events through all regions.
 
@@ -139,12 +142,31 @@ class DarkBottomLineAnalyzer:
 
         Args:
             events: Awkward Array of events
-            event_selection_output: If set, save preselected events to this path
+            event_selection_output: If set, save preselected events to this path (AFTER weight corrections)
+            n_events_total: Total number of events before selection (from input files)
+            event_selection_only: If True, stop after saving event_selection_output (skip region analysis)
+            output_format: Output format for event selection ("pkl", "root", "parquet")
 
         Returns:
-            Analysis results with per-region histograms
+            Analysis results with per-region histograms (or event selection only if event_selection_only=True)
         """
         start_time = time.time()
+
+        # Guard: if region_manager is None and we're not in event-selection-only mode with output, return early
+        if self.region_manager is None and not event_selection_output:
+            if event_selection_only:
+                logging.warning("event_selection_only=True but no event_selection_output provided and region_manager not initialized. Returning safe accumulator.")
+                return {
+                    "regions": {},
+                    "region_histograms": {},
+                    "region_cutflow": {},
+                    "region_validation": {},
+                    "metadata": {},
+                    "event_weights": {},
+                }
+            else:
+                logging.error("Region manager not initialized and no event_selection_output provided. Cannot process events.")
+                raise ValueError("Region manager must be initialized or event_selection_output must be provided")
 
         # Build physics objects
         logging.info("Building physics objects...")
@@ -163,21 +185,8 @@ class DarkBottomLineAnalyzer:
             logging.error(f"Preselection failed: {e}", exc_info=True)
             raise
 
-        # Optionally save preselected events to file
-        if event_selection_output:
-            try:
-                logging.info(f"Saving preselected events to {event_selection_output} ({len(events)} events)")
-                self.base_processor._save_event_selection(event_selection_output, events, objects)
-                import os
-                if os.path.exists(event_selection_output):
-                    file_size = os.path.getsize(event_selection_output)
-                    logging.info(f"✓ Preselection saved to {event_selection_output} ({file_size} bytes)")
-                else:
-                    logging.error(f"✗ File {event_selection_output} was not created!")
-            except Exception as e:
-                logging.error(f"Failed to save preselection to {event_selection_output}: {e}", exc_info=True)
-
         # Step 2: Compute corrections and nominal total weight (for histograms + saving)
+        # NOTE: This must happen BEFORE saving event_selection_output to ensure event weights are corrected
         logging.info("Computing corrections and event weights...")
         event_weights_nominal = None
         event_weights_save = {}
@@ -202,7 +211,53 @@ class DarkBottomLineAnalyzer:
                 "weight_total_nominal": np.ones(n_ev, dtype=np.float64),
             }
 
+        # Step 2b: Optionally save preselected+weighted events to file AFTER weight corrections
+        if event_selection_output:
+            try:
+                logging.info(f"Saving event-selected (with weights) to {event_selection_output} ({len(events)} events)")
+                self.base_processor._save_event_selection(
+                    event_selection_output, events, objects, 
+                    max_events=self.base_processor.config.get("max_events"),
+                    n_events_total=n_events_total,
+                    event_weights=event_weights_save,
+                    output_format=output_format
+                )
+                import os
+                if os.path.exists(event_selection_output):
+                    file_size = os.path.getsize(event_selection_output)
+                    logging.info(f"✓ Event selection (with weights) saved to {event_selection_output} ({file_size} bytes)")
+                else:
+                    logging.error(f"✗ File {event_selection_output} was not created!")
+            except Exception as e:
+                logging.error(f"Failed to save event selection to {event_selection_output}: {e}", exc_info=True)
+            
+            # If event_selection_only mode is enabled, return early
+            if event_selection_only:
+                logging.info("event_selection_only mode: stopping after event selection (no region analysis)")
+                processing_time = time.time() - start_time
+                # Return empty structure (not to be merged by Coffea in event_selection_only mode,
+                # but maintain compatibility for accumulator merging if multiple chunks occur)
+                return {
+                    "regions": {},
+                    "region_histograms": {},
+                    "region_cutflow": {},
+                    "region_validation": {},
+                    "metadata": {},
+                    "event_weights": {},
+                }
+
         # Step 3 (series): Apply region cuts to preselected events only
+        if self.region_manager is None:
+            logging.warning("No region manager configured. Returning early without region analysis.")
+            return {
+                "regions": {},
+                "region_histograms": {},
+                "region_cutflow": {},
+                "region_validation": {},
+                "metadata": {},
+                "event_weights": {},
+            }
+        
         logging.info("Applying region cuts...")
         region_masks = self.region_manager.apply_regions(events, objects)
 
@@ -529,24 +584,27 @@ class DarkBottomLineAnalyzer:
         summary = "Region Analysis Summary:\n"
         summary += "=" * 50 + "\n"
 
-        # Region summary
-        region_summary = self.region_manager.get_region_summary()
-        summary += f"Number of regions: {region_summary['n_regions']}\n"
-        summary += f"Signal regions: {self.region_manager.get_signal_regions()}\n"
-        summary += f"Control regions: {self.region_manager.get_control_regions()}\n"
-        summary += f"Validation regions: {self.region_manager.get_validation_regions()}\n\n"
+        # Region summary (only if region_manager is initialized)
+        if self.region_manager:
+            region_summary = self.region_manager.get_region_summary()
+            summary += f"Number of regions: {region_summary['n_regions']}\n"
+            summary += f"Signal regions: {self.region_manager.get_signal_regions()}\n"
+            summary += f"Control regions: {self.region_manager.get_control_regions()}\n"
+            summary += f"Validation regions: {self.region_manager.get_validation_regions()}\n\n"
 
-        # Region details
-        for region_name, region in self.region_manager.regions.items():
-            summary += f"{region_name}:\n"
-            summary += f"  Description: {region.description}\n"
-            summary += f"  Cuts: {len(region.cuts)} cuts\n"
-            summary += f"  Expected backgrounds: {region.expected_backgrounds}\n"
-            summary += f"  Blind data: {region.blind_data}\n"
-            summary += f"  Priority: {region.priority}\n"
-            if region.transfer_factor_to_SR:
-                summary += f"  Transfer factor: {region.transfer_factor_to_SR}\n"
-            summary += "\n"
+            # Region details
+            for region_name, region in self.region_manager.regions.items():
+                summary += f"{region_name}:\n"
+                summary += f"  Description: {region.description}\n"
+                summary += f"  Cuts: {len(region.cuts)} cuts\n"
+                summary += f"  Expected backgrounds: {region.expected_backgrounds}\n"
+                summary += f"  Blind data: {region.blind_data}\n"
+                summary += f"  Priority: {region.priority}\n"
+                if region.transfer_factor_to_SR:
+                    summary += f"  Transfer factor: {region.transfer_factor_to_SR}\n"
+                summary += "\n"
+        else:
+            summary += "No region manager initialized (event selection only mode)\n"
 
         return summary
 
@@ -586,19 +644,32 @@ class DarkBottomLineAnalyzer:
 
         return summary
 
-    def save_results(self, output_file: str):
+    def save_results(self, output_file: str, output_format: str = "pkl"):
         """
         Save analysis results to file.
 
         Args:
             output_file: Output file path
+            output_format: Output format ("pkl", "root", "parquet"). If output_format is specified,
+                          use it; otherwise infer from output_file extension.
         """
-        if output_file.endswith('.parquet'):
-            self._save_parquet(output_file)
-        elif output_file.endswith('.root'):
-            self._save_root(output_file)
+        # If output_format is explicitly specified, add extension if needed
+        if output_format and output_format != "pkl":
+            if not output_file.endswith(f'.{output_format}'):
+                output_file_with_format = f"{output_file.rsplit('.', 1)[0]}.{output_format}" if '.' in output_file else f"{output_file}.{output_format}"
+            else:
+                output_file_with_format = output_file
         else:
-            self._save_pickle(output_file)
+            output_file_with_format = output_file
+        
+        # Route to appropriate save function based on format
+        if output_file_with_format.endswith('.parquet'):
+            self._save_parquet(output_file_with_format)
+        elif output_file_with_format.endswith('.root'):
+            self._save_root(output_file_with_format)
+        else:
+            # Default to pickle
+            self._save_pickle(output_file_with_format)
 
     def _save_parquet(self, output_file: str):
         """Save results as Parquet file (region variables + per-event weights)."""
@@ -666,10 +737,28 @@ if COFFEA_AVAILABLE:
         Coffea-compatible processor wrapper for multi-region analyzer.
         """
 
-        def __init__(self, config: Dict[str, Any], regions_config_path: str, event_selection_output: Optional[str] = None):
+        def __init__(self, config: Dict[str, Any], regions_config_path: Optional[str] = None, 
+                     event_selection_output: Optional[str] = None,
+                     n_events_total: Optional[int] = None,
+                     event_selection_only: bool = False,
+                     output_format: Optional[str] = None,
+                     max_events: Optional[int] = None):
             self.config = config
             self.regions_config_path = regions_config_path
             self.event_selection_output = event_selection_output
+            self.n_events_total = n_events_total  # Total events before selection
+            self.event_selection_only = event_selection_only
+            self.max_events = max_events  # Maximum events to process
+            self.processed_events = 0  # Track number of events processed
+            # Auto-detect output_format from event_selection_output extension if not specified
+            if output_format is None and event_selection_output:
+                if event_selection_output.endswith('.root'):
+                    output_format = 'root'
+                elif event_selection_output.endswith('.parquet'):
+                    output_format = 'parquet'
+                else:
+                    output_format = 'pkl'
+            self.output_format = output_format or 'pkl'
             self.analyzer = DarkBottomLineAnalyzer(config, regions_config_path)
             # Initialize accumulator for Coffea
             self.accumulator = processor.dict_accumulator({
@@ -679,41 +768,84 @@ if COFFEA_AVAILABLE:
                 "region_validation": processor.dict_accumulator({}),
                 "metadata": processor.dict_accumulator({}),
                 "event_weights": processor.dict_accumulator({}),
+                "_event_selection_chunk_files": processor.dict_accumulator({}),  # Use dict_accumulator for proper merging
             })
+            
             # Store selected events/objects for event_selection_output
             # Use file-based approach for cross-worker compatibility
-            if event_selection_output:
-                import tempfile
-                import os
-                import uuid
-                # Create a temp directory for chunk files (use a unique ID to avoid conflicts)
-                unique_id = str(uuid.uuid4())[:8]
-                self._temp_dir = tempfile.mkdtemp(prefix=f"dbl_event_selection_{unique_id}_")
-                # Store chunk file list in accumulator (for cross-worker merging)
-                # Use a dict accumulator with file paths as keys (for easy merging across workers)
-                # Note: each worker may have its own temp_dir, but we'll handle that in postprocess
-                self.accumulator["_event_selection_chunk_files"] = processor.dict_accumulator({})
+            # Always create _temp_dir so event_weights can be saved to chunk files
+            # regardless of whether event_selection_output is requested.
+            import tempfile
+            import os
+            import uuid
+            unique_id = str(uuid.uuid4())[:8]
+            self._temp_dir = tempfile.mkdtemp(prefix=f"dbl_chunks_{unique_id}_")
 
         def process(self, events: ak.Array) -> Dict[str, Any]:
             """Process events using the analyzer."""
-            # Don't save event_selection_output per chunk, accumulate instead
-            result = self.analyzer.process(events, event_selection_output=None)
+            metadata = getattr(events, "metadata", {}) if events is not None else {}
+            events_to_process = events
+
+            if self.max_events is not None and isinstance(metadata, dict):
+                entry_start = metadata.get("entrystart")
+                entry_stop = metadata.get("entrystop")
+                if isinstance(entry_start, int) and isinstance(entry_stop, int):
+                    if entry_start >= self.max_events:
+                        logging.info(
+                            f"Skipping chunk [{entry_start}, {entry_stop}) due to max-events={self.max_events}"
+                        )
+                        return self.accumulator
+                    if entry_stop > self.max_events:
+                        keep_events = self.max_events - entry_start
+                        if keep_events <= 0:
+                            logging.info(
+                                f"Skipping chunk [{entry_start}, {entry_stop}) due to max-events={self.max_events}"
+                            )
+                            return self.accumulator
+                        events_to_process = events[:keep_events]
+                        logging.info(
+                            f"Trimming chunk [{entry_start}, {entry_stop}) to {keep_events} events for max-events={self.max_events}"
+                        )
+
+            # Fallback path for executors/chunks without metadata
+            if self.max_events is not None:
+                events_remaining = self.max_events - self.processed_events
+                if events_remaining <= 0:
+                    logging.info(f"Skipping chunk: already processed {self.processed_events}/{self.max_events} max events")
+                    return self.accumulator
+                if len(events_to_process) > events_remaining:
+                    events_to_process = events_to_process[:events_remaining]
+                    logging.info(f"Limiting chunk to {len(events_to_process)} events (max_events={self.max_events}, already processed={self.processed_events})")
+            
+            # Track processed events
+            self.processed_events += len(events_to_process)
+            logging.info(f"Processing {len(events_to_process)} events (total processed: {self.processed_events}/{self.max_events if self.max_events else 'unlimited'})")
+            
+            # Call analyzer.process() with appropriate parameters
+            # In event_selection_only mode, analyzer will skip region analysis  
+            result = self.analyzer.process(
+                events_to_process, 
+                event_selection_output=self.event_selection_output if self.event_selection_only else None,
+                event_selection_only=self.event_selection_only,
+                output_format=self.output_format,
+                n_events_total=self.n_events_total
+            )
 
             # If event_selection_output is requested, collect selected events from this chunk
-            if self.event_selection_output:
+            if self.event_selection_output and self._temp_dir:
                 try:
                     import os
                     import pickle
                     import awkward as ak
-                    logging.info(f"Collecting selected events for event_selection_output from chunk ({len(events)} events)")
+                    logging.info(f"Collecting selected events for event_selection_output from chunk ({len(events_to_process)} events)")
                     from .selections import apply_selection
                     from .objects import build_objects
                     # Apply event-level selection to get selected events
-                    objects = build_objects(events, self.config)
+                    objects = build_objects(events_to_process, self.config)
                     selected_events, selected_objects, _ = apply_selection(
-                        events, objects, self.config
+                        events_to_process, objects, self.config
                     )
-                    logging.info(f"Chunk: {len(selected_events)}/{len(events)} events passed selection")
+                    logging.info(f"Chunk: {len(selected_events)}/{len(events_to_process)} events passed selection")
 
                     # Save this chunk to a temporary file (for cross-worker compatibility)
                     # Use unique filename to avoid conflicts across workers
@@ -725,78 +857,31 @@ if COFFEA_AVAILABLE:
                         pickle.dump({"events": selected_events, "objects": selected_objects}, f, protocol=pickle.HIGHEST_PROTOCOL)
 
                     # Add to accumulator dict (this will be merged across workers)
-                    # Use file path as key with dummy value for easy merging
-                    self.accumulator["_event_selection_chunk_files"][chunk_file] = True
-                    logging.info(f"Saved chunk to {chunk_file}, added to accumulator")
+                    # Note: Don't store in accumulator because Coffea can't properly merge True values
+                    # Instead, we'll dir-scan for chunk files in postprocess
+                    # self.accumulator["_event_selection_chunk_files"][chunk_file] = True
+                    logging.info(f"Saved chunk to {chunk_file}, accumulator will scan dir in postprocess")
                 except Exception as e:
                     logging.warning(f"Failed to collect selected events for event_selection_output: {e}", exc_info=True)
-            # Update accumulator with results
-            if "regions" in result:
-                for key, value in result["regions"].items():
-                    if key not in self.accumulator["regions"]:
-                        self.accumulator["regions"][key] = value
-                    else:
-                        # Merge if needed
-                        if isinstance(self.accumulator["regions"][key], dict) and isinstance(value, dict):
-                            self.accumulator["regions"][key].update(value)
-            if "region_histograms" in result:
-                for region_name, histograms in result["region_histograms"].items():
-                    if region_name not in self.accumulator["region_histograms"]:
-                        self.accumulator["region_histograms"][region_name] = processor.dict_accumulator({})
-                    for hist_name, hist in histograms.items():
-                        if hist_name in self.accumulator["region_histograms"][region_name]:
-                            # Add histograms if they support it
-                            if hasattr(self.accumulator["region_histograms"][region_name][hist_name], 'add'):
-                                self.accumulator["region_histograms"][region_name][hist_name].add(hist)
-                            else:
-                                self.accumulator["region_histograms"][region_name][hist_name] = hist
-                        else:
-                            self.accumulator["region_histograms"][region_name][hist_name] = hist
-            if "region_cutflow" in result:
-                for key, value in result["region_cutflow"].items():
-                    if key not in self.accumulator["region_cutflow"]:
-                        # Wrap plain dict in dict_accumulator for proper Coffea merging
-                        if isinstance(value, dict):
-                            self.accumulator["region_cutflow"][key] = processor.dict_accumulator(value)
-                        else:
-                            self.accumulator["region_cutflow"][key] = value
-                    else:
-                        # Merge cutflow dictionaries - handle both dict_accumulator and plain dict
-                        if isinstance(value, dict):
-                            # If accumulator value is also a dict_accumulator, merge properly
-                            if hasattr(self.accumulator["region_cutflow"][key], 'add'):
-                                # It's a dict_accumulator, create a temporary one and add
-                                temp_acc = processor.dict_accumulator(value)
-                                self.accumulator["region_cutflow"][key].add(temp_acc)
-                            else:
-                                # It's a plain dict, merge manually
-                                for k, v in value.items():
-                                    if k not in self.accumulator["region_cutflow"][key]:
-                                        self.accumulator["region_cutflow"][key][k] = v
-                                    else:
-                                        self.accumulator["region_cutflow"][key][k] = self.accumulator["region_cutflow"][key][k] + v
-            if "region_validation" in result:
-                # Handle region_validation - wrap in dict_accumulator for proper merging
-                validation = result["region_validation"]
-                if isinstance(validation, dict):
-                    # Merge validation results
-                    for key, value in validation.items():
-                        if key not in self.accumulator["region_validation"]:
-                            # Wrap plain dict/values in dict_accumulator if needed
-                            if isinstance(value, dict):
-                                self.accumulator["region_validation"][key] = processor.dict_accumulator(value)
-                            else:
-                                self.accumulator["region_validation"][key] = value
-                        else:
-                            # Merge validation dictionaries
-                            if isinstance(value, dict):
-                                if hasattr(self.accumulator["region_validation"][key], 'add'):
-                                    temp_acc = processor.dict_accumulator(value)
-                                    self.accumulator["region_validation"][key].add(temp_acc)
-                                else:
-                                    # Plain dict merge
-                                    if isinstance(self.accumulator["region_validation"][key], dict):
-                                        self.accumulator["region_validation"][key].update(value)
+            
+            # If event_selection_only mode is enabled, don't merge results (no region analysis was done)
+            if self.event_selection_only:
+                logging.info("event_selection_only mode: skipping accumulator merge (no region analysis)")
+                # Return the accumulator as-is for Coffea to merge properly
+                # The accumulator already has all required keys with dict_accumulator types
+                return self.accumulator
+            
+            # Update accumulator with results from normal analysis.
+            # Important: convert nested Python dicts recursively into
+            # dict_accumulator to avoid Coffea inter-worker dict += dict errors.
+            if "regions" in result and isinstance(result["regions"], dict):
+                self.accumulator["regions"].add(self._to_dict_accumulator(result["regions"]))
+            if "region_histograms" in result and isinstance(result["region_histograms"], dict):
+                self.accumulator["region_histograms"].add(self._to_dict_accumulator(result["region_histograms"]))
+            if "region_cutflow" in result and isinstance(result["region_cutflow"], dict):
+                self.accumulator["region_cutflow"].add(self._to_dict_accumulator(result["region_cutflow"]))
+            if "region_validation" in result and isinstance(result["region_validation"], dict):
+                self.accumulator["region_validation"].add(self._to_dict_accumulator(result["region_validation"]))
             if "metadata" in result:
                 self.accumulator["metadata"].update(result.get("metadata", {}))
             # Merge event_weights (concatenate arrays across chunks)
@@ -804,33 +889,52 @@ if COFFEA_AVAILABLE:
                 self._merge_event_weights_into_accumulator(result["event_weights"])
             return self.accumulator
 
+        def _to_dict_accumulator(self, value: Any):
+            """Recursively convert nested dicts to coffea dict_accumulator."""
+            if isinstance(value, dict):
+                return processor.dict_accumulator(
+                    {k: self._to_dict_accumulator(v) for k, v in value.items()}
+                )
+            return value
+
         def _merge_event_weights_into_accumulator(self, new_weights: Dict[str, Any]):
-            """Merge new per-event weights into accumulator (concatenate arrays)."""
-            acc = self.accumulator["event_weights"]
-            if isinstance(acc, dict) and not acc:
-                # First chunk: store as plain dict (numpy arrays)
-                merged = {}
+            """Save per-chunk event weights to a temp file.
+
+            Instead of storing plain Python dicts in the coffea accumulator
+            (which causes ``dict += dict`` TypeError during inter-worker
+            merging), we write each chunk's event weights to a temp pickle
+            file.  They are collected and concatenated in ``postprocess``.
+            """
+            if not self._temp_dir:
+                return
+            import os
+            import pickle
+            import time
+            import uuid
+            chunk_id = f"{int(time.time() * 1000000)}_{uuid.uuid4().hex[:8]}"
+            ew_file = os.path.join(self._temp_dir, f"ew_chunk_{chunk_id}.pkl")
+            try:
+                # Serialise: convert any non-ndarray values to ndarray
+                serialisable = {}
                 for k, v in new_weights.items():
                     if isinstance(v, dict):
-                        merged[k] = {kk: np.asarray(vv) for kk, vv in v.items() if isinstance(vv, np.ndarray)}
+                        serialisable[k] = {
+                            kk: np.asarray(vv)
+                            for kk, vv in v.items()
+                            if isinstance(vv, np.ndarray) or hasattr(vv, '__len__')
+                        }
                     elif isinstance(v, np.ndarray):
-                        merged[k] = v
-                    else:
-                        merged[k] = np.asarray(v)
-                self.accumulator["event_weights"] = merged
-                return
-            # Subsequent chunks: concatenate
-            merged = self.accumulator["event_weights"] if isinstance(self.accumulator["event_weights"], dict) else {}
-            for k, v in new_weights.items():
-                if isinstance(v, dict):
-                    if k not in merged:
-                        merged[k] = {}
-                    for kk, vv in v.items():
-                        if isinstance(vv, np.ndarray):
-                            merged[k][kk] = np.concatenate([merged[k][kk], vv]) if kk in merged[k] else vv
-                elif isinstance(v, np.ndarray):
-                    merged[k] = np.concatenate([merged[k], v]) if k in merged else v
-            self.accumulator["event_weights"] = merged
+                        serialisable[k] = v
+                    elif hasattr(v, '__len__'):
+                        serialisable[k] = np.asarray(v)
+                with open(ew_file, 'wb') as f:
+                    pickle.dump(serialisable, f, protocol=pickle.HIGHEST_PROTOCOL)
+                logging.debug(f"Saved event_weights chunk to {ew_file}")
+            except Exception as e:
+                logging.warning(f"Failed to save event_weights chunk: {e}")
+            # Keep the coffea accumulator entry as an empty dict_accumulator so
+            # coffea can merge it across workers without errors.
+            # (do NOT assign a plain dict here)
 
         def postprocess(self, accumulator: Dict[str, Any]) -> Dict[str, Any]:
             """Post-process results."""
@@ -840,13 +944,60 @@ if COFFEA_AVAILABLE:
 
             # Get chunk files from accumulator (merged across all workers)
             # File paths are stored as keys in the dict accumulator
-            chunk_files_acc = accumulator.get("_event_selection_chunk_files", {})
-            if isinstance(chunk_files_acc, dict):
-                chunk_files = list(chunk_files_acc.keys())
+            # Note: Since we stopped storing in accumulator to fix merge issues,
+            # now we scan the temp_dir directly for chunk files
+            chunk_files = []
+            if self._temp_dir and os.path.exists(self._temp_dir):
+                chunk_files = [os.path.join(self._temp_dir, f) for f in os.listdir(self._temp_dir) if f.startswith("chunk_") and f.endswith(".pkl")]
             else:
-                chunk_files = []
+                # Fallback: try to get from accumulator in case it was populated before the change
+                chunk_files_acc = accumulator.get("_event_selection_chunk_files", {})
+                if isinstance(chunk_files_acc, dict):
+                    chunk_files = list(chunk_files_acc.keys())
+                else:
+                    chunk_files = []
 
             logging.info(f"postprocess called: event_selection_output={self.event_selection_output}, chunk_files={len(chunk_files)}")
+
+            # ── Merge event_weights from per-chunk temp files ─────────────────
+            if self._temp_dir and os.path.exists(self._temp_dir):
+                ew_files = sorted(
+                    os.path.join(self._temp_dir, f)
+                    for f in os.listdir(self._temp_dir)
+                    if f.startswith("ew_chunk_") and f.endswith(".pkl")
+                )
+                if ew_files:
+                    merged_ew: Dict[str, Any] = {}
+                    for ew_file in ew_files:
+                        try:
+                            with open(ew_file, 'rb') as f:
+                                chunk_ew = pickle.load(f)
+                            for k, v in chunk_ew.items():
+                                if isinstance(v, dict):
+                                    if k not in merged_ew:
+                                        merged_ew[k] = {}
+                                    for kk, vv in v.items():
+                                        if isinstance(vv, np.ndarray):
+                                            if kk in merged_ew[k]:
+                                                merged_ew[k][kk] = np.concatenate([merged_ew[k][kk], vv])
+                                            else:
+                                                merged_ew[k][kk] = vv
+                                elif isinstance(v, np.ndarray):
+                                    if k in merged_ew:
+                                        merged_ew[k] = np.concatenate([merged_ew[k], v])
+                                    else:
+                                        merged_ew[k] = v
+                        except Exception as e:
+                            logging.warning(f"Failed to load event_weights chunk {ew_file}: {e}")
+                    if merged_ew:
+                        accumulator["event_weights"] = merged_ew
+                        logging.info(f"Merged event_weights from {len(ew_files)} chunk files")
+                    # Clean up ew chunk files
+                    for ew_file in ew_files:
+                        try:
+                            os.remove(ew_file)
+                        except Exception:
+                            pass
 
             # Save accumulated event selection if requested
             if self.event_selection_output and chunk_files:
@@ -891,7 +1042,10 @@ if COFFEA_AVAILABLE:
                         # Save using base processor helper
                         logging.info(f"Saving accumulated event-level selection to {self.event_selection_output}")
                         self.analyzer.base_processor._save_event_selection(
-                            self.event_selection_output, all_selected_events, all_selected_objects
+                            self.event_selection_output, all_selected_events, all_selected_objects, 
+                            max_events=self.config.get("max_events"),
+                            n_events_total=self.n_events_total,
+                            output_format=self.output_format
                         )
                         # Verify file was created
                         if os.path.exists(self.event_selection_output):

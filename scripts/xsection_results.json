@@ -1,0 +1,570 @@
+{
+  "WtoLNu-2Jets": [
+    {
+      "year": "2022",
+      "process": "WtoLNu-2Jets_PTLNu-40to100",
+      "xsection": 259.55,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "WtoLNu-2Jets_PTLNu-100to200",
+      "xsection": 40.89,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "WtoLNu-2Jets_PTLNu-200to400",
+      "xsection": 7.18,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "WtoLNu-2Jets_PTLNu-200to400",
+      "xsection": 7.18,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "WtoLNu-2Jets_PTLNu-400to600",
+      "xsection": 0.547,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "WtoLNu-2Jets_PTLNu-400to600",
+      "xsection": 0.547,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "WtoLNu-2Jets_PTLNu-600",
+      "xsection": 0.119,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "WtoLNu-2Jets_PTLNu-600",
+      "xsection": 0.119,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "WtoLNu-2Jets_PTLNu-40to100",
+      "xsection": 259.55,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "WtoLNu-2Jets_PTLNu-100to200",
+      "xsection": 40.89,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "WtoLNu-2Jets_PTLNu-200to400",
+      "xsection": 7.18,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "WtoLNu-2Jets_PTLNu-200to400",
+      "xsection": 7.18,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "WtoLNu-2Jets_PTLNu-400to600",
+      "xsection": 0.547,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "WtoLNu-2Jets_PTLNu-400to600",
+      "xsection": 0.547,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "WtoLNu-2Jets_PTLNu-600",
+      "xsection": 0.119,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "WtoLNu-2Jets_PTLNu-600",
+      "xsection": 0.119,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "WtoLNu-2Jets_PTLNu-40to100",
+      "xsection": 259.55,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "WtoLNu-2Jets_PTLNu-100to200",
+      "xsection": 40.89,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "WtoLNu-2Jets_PTLNu-200to400",
+      "xsection": 7.18,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "WtoLNu-2Jets_PTLNu-200to400",
+      "xsection": 7.18,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "WtoLNu-2Jets_PTLNu-400to600",
+      "xsection": 0.547,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "WtoLNu-2Jets_PTLNu-400to600",
+      "xsection": 0.547,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "WtoLNu-2Jets_PTLNu-600",
+      "xsection": 0.119,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "WtoLNu-2Jets_PTLNu-600",
+      "xsection": 0.119,
+      "full_dataset": "WtoLNu-2Jets_PTLNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    }
+  ],
+  "Zto2Nu-2Jets": [
+    {
+      "year": "2022",
+      "process": "Zto2Nu-2Jets_PTNuNu-40to100",
+      "xsection": 182.13,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "Zto2Nu-2Jets_PTNuNu-100to200",
+      "xsection": 27.18,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "Zto2Nu-2Jets_PTNuNu-200to400",
+      "xsection": 4.59,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "Zto2Nu-2Jets_PTNuNu-400to600",
+      "xsection": 0.338,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "Zto2Nu-2Jets_PTNuNu-600",
+      "xsection": 0.0736,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "Zto2Nu-2Jets_PTNuNu-600",
+      "xsection": 0.0736,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "Zto2Nu-2Jets_PTNuNu-40to100",
+      "xsection": 182.13,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "Zto2Nu-2Jets_PTNuNu-100to200",
+      "xsection": 27.18,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "Zto2Nu-2Jets_PTNuNu-200to400",
+      "xsection": 4.59,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "Zto2Nu-2Jets_PTNuNu-400to600",
+      "xsection": 0.338,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "Zto2Nu-2Jets_PTNuNu-400to600",
+      "xsection": 0.338,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "Zto2Nu-2Jets_PTNuNu-600",
+      "xsection": 0.0736,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "Zto2Nu-2Jets_PTNuNu-600",
+      "xsection": 0.0736,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "Zto2Nu-2Jets_PTNuNu-40to100",
+      "xsection": 182.13,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "Zto2Nu-2Jets_PTNuNu-100to200",
+      "xsection": 27.18,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "Zto2Nu-2Jets_PTNuNu-200to400",
+      "xsection": 4.59,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "Zto2Nu-2Jets_PTNuNu-200to400",
+      "xsection": 4.59,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "Zto2Nu-2Jets_PTNuNu-400to600",
+      "xsection": 0.338,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "Zto2Nu-2Jets_PTNuNu-400to600",
+      "xsection": 0.338,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "Zto2Nu-2Jets_PTNuNu-600",
+      "xsection": 0.0736,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "Zto2Nu-2Jets_PTNuNu-600",
+      "xsection": 0.0736,
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    }
+  ],
+  "DYto2L-2Jets": [
+    {
+      "year": "2022",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-40to100",
+      "xsection": 207.27,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-100to200",
+      "xsection": 29.25,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-200to400",
+      "xsection": 4.96,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-200to400",
+      "xsection": 4.96,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
+      "xsection": 0.338,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
+      "xsection": 0.338,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-600",
+      "xsection": 0.0753,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-600",
+      "xsection": 0.0753,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-40to100",
+      "xsection": 207.27,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-100to200",
+      "xsection": 29.25,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-200to400",
+      "xsection": 4.96,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-200to400",
+      "xsection": 4.96,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
+      "xsection": 0.338,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
+      "xsection": 0.338,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-600",
+      "xsection": 0.0753,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-600",
+      "xsection": 0.0753,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-100to200",
+      "xsection": 29.25,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-200to400",
+      "xsection": 4.96,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-200to400",
+      "xsection": 4.96,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
+      "xsection": 0.338,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
+      "xsection": 0.338,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-600",
+      "xsection": 0.0753,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-600",
+      "xsection": 0.0753,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-40to100",
+      "xsection": 207.27,
+      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+    }
+  ],
+  "Top": [
+    {
+      "year": "2022",
+      "process": "TTto2L2Nu",
+      "xsection": 8.86,
+      "full_dataset": "TTto2L2Nu_TuneCP5_13p6TeV_powheg-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "TTtoLNu2Q",
+      "xsection": 26.42,
+      "full_dataset": "TTtoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "TTto4Q",
+      "xsection": 44.09,
+      "full_dataset": "TTto4Q_TuneCP5_13p6TeV_powheg-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "TTto2L2Nu",
+      "xsection": 8.86,
+      "full_dataset": "TTto2L2Nu_TuneCP5_13p6TeV_powheg-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "TTtoLNu2Q",
+      "xsection": 26.42,
+      "full_dataset": "TTtoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "TTto4Q",
+      "xsection": 44.09,
+      "full_dataset": "TTto4Q_TuneCP5_13p6TeV_powheg-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "TTto2L2Nu",
+      "xsection": 8.86,
+      "full_dataset": "TTto2L2Nu_TuneCP5_13p6TeV_powheg-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "TTtoLNu2Q",
+      "xsection": 26.42,
+      "full_dataset": "TTtoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "TTto4Q",
+      "xsection": 44.09,
+      "full_dataset": "TTto4Q_TuneCP5_13p6TeV_powheg-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "TTto2L2Nu",
+      "xsection": 8.86,
+      "full_dataset": "TTto2L2Nu_TuneCP5_13p6TeV_powheg-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "TTtoLNu2Q",
+      "xsection": 26.42,
+      "full_dataset": "TTtoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "TTto4Q",
+      "xsection": 44.09,
+      "full_dataset": "TTto4Q_TuneCP5_13p6TeV_powheg-pythia8"
+    }
+  ],
+  "DIBOSON": [
+    {
+      "year": "2022",
+      "process": "WZ",
+      "xsection": 5.48,
+      "full_dataset": "WZ_TuneCP5_13p6TeV_pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "WW",
+      "xsection": 12.06,
+      "full_dataset": "WW_TuneCP5_13p6TeV_pythia8"
+    },
+    {
+      "year": "2022",
+      "process": "ZZ",
+      "xsection": 1.67,
+      "full_dataset": "ZZ_TuneCP5_13p6TeV_pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "WZ",
+      "xsection": 5.48,
+      "full_dataset": "WZ_TuneCP5_13p6TeV_pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "WW",
+      "xsection": 12.06,
+      "full_dataset": "WW_TuneCP5_13p6TeV_pythia8"
+    },
+    {
+      "year": "2022EE",
+      "process": "ZZ",
+      "xsection": 1.67,
+      "full_dataset": "ZZ_TuneCP5_13p6TeV_pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "WZ",
+      "xsection": 5.48,
+      "full_dataset": "WZ_TuneCP5_13p6TeV_pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "WW",
+      "xsection": 12.06,
+      "full_dataset": "WW_TuneCP5_13p6TeV_pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "ZZ",
+      "xsection": 1.67,
+      "full_dataset": "ZZ_TuneCP5_13p6TeV_pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "WZ",
+      "xsection": 5.48,
+      "full_dataset": "WZ_TuneCP5_13p6TeV_pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "WW",
+      "xsection": 12.06,
+      "full_dataset": "WW_TuneCP5_13p6TeV_pythia8"
+    },
+    {
+      "year": "2023",
+      "process": "ZZ",
+      "xsection": 1.67,
+      "full_dataset": "ZZ_TuneCP5_13p6TeV_pythia8"
+    }
+  ]
+}

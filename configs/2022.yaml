@@ -19,7 +19,7 @@ corrections:
 
 # Trigger paths
 triggers:
-  MET: ["HLT_MET120_MHT120_IDTight", "HLT_METNoMu120_MHTNoMu120_IDTight"]
+  MET: ["HLT_PFMET120_PFMHT120_IDTight", "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight"]
   SingleMuon: ["HLT_IsoMu24", "HLT_IsoMu27"]
   SingleElectron: ["HLT_Ele32_WPTight_Gsf", "HLT_Ele35_WPTight_Gsf"]
 

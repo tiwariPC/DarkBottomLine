@@ -182,19 +182,22 @@ class Region:
             muons = objects.get("tight_muons_pt30", ak.Array([]))
             electrons = objects.get("tight_electrons_pt30", ak.Array([]))
 
-            # Calculate lepton pT sum (axis=1 can fail on depth-1)
-            lep_pt_sum = ak.zeros_like(met_pt)
+            # Calculate lepton px/py components (axis=1 can fail on depth-1)
+            lep_px = ak.zeros_like(met_pt)
+            lep_py = ak.zeros_like(met_pt)
             try:
                 if len(ak.flatten(muons)) > 0:
-                    lep_pt_sum = lep_pt_sum + ak.sum(muons.pt, axis=1)
+                    lep_px = lep_px + ak.sum(muons.pt * np.cos(muons.phi), axis=1)
+                    lep_py = lep_py + ak.sum(muons.pt * np.sin(muons.phi), axis=1)
                 if len(ak.flatten(electrons)) > 0:
-                    lep_pt_sum = lep_pt_sum + ak.sum(electrons.pt, axis=1)
+                    lep_px = lep_px + ak.sum(electrons.pt * np.cos(electrons.phi), axis=1)
+                    lep_py = lep_py + ak.sum(electrons.pt * np.sin(electrons.phi), axis=1)
             except (Exception, BaseException):
                 pass
 
             # Calculate Recoil magnitude
-            recoil_px = -(met_pt * np.cos(met_phi) + lep_pt_sum)
-            recoil_py = -(met_pt * np.sin(met_phi))
+            recoil_px = -(met_pt * np.cos(met_phi) + lep_px)
+            recoil_py = -(met_pt * np.sin(met_phi) + lep_py)
             recoil = np.sqrt(recoil_px**2 + recoil_py**2)
 
             return ak.fill_none(recoil, 0.0)
