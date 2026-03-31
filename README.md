@@ -350,7 +350,7 @@ lumi: 35.9  # fb^-1
 
 # Correction file paths
 corrections:
-  pileup: data/corrections/pileup_2023.json.gz
+pileup: data/corrections/pileup_2023.json.gz
   btagSF: data/corrections/btagging_2023.json.gz
   muonSF: data/corrections/muonSF_2023.json.gz
   electronSF: data/corrections/electronSF_2023.json.gz

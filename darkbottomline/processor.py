@@ -19,47 +19,33 @@ except ImportError:
 from .objects import build_objects
 from .selections import apply_selection
 from .corrections import CorrectionManager
-from .weights import WeightCalculator
 from .histograms import HistogramManager
 
 
-def _build_event_weights_for_save(
-    events: ak.Array,
-    corrections: Dict[str, Any],
-    weight_calculator: WeightCalculator,
-) -> Dict[str, Any]:
-    """
-    Build a dict of per-event weights (central/up/down per systematic) for saving.
+def _compute_weight_statistics(weights: np.ndarray) -> Dict[str, float]:
+    """Compute basic statistics for an array of event weights."""
+    if len(weights) == 0:
+        return {"mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0, "sum": 0.0}
+    return {
+        "mean": float(np.mean(weights)),
+        "std": float(np.std(weights)),
+        "min": float(np.min(weights)),
+        "max": float(np.max(weights)),
+        "sum": float(np.sum(weights)),
+    }
 
-    Returns dict with: generator, pileup, weight_* (central/up/down per systematic only),
-    weight_total_nominal (combined nominal; no total up/down saved).
+
+def _build_event_weights_for_save(weight_results: Dict[str, Any]) -> Dict[str, np.ndarray]:
     """
-    n = len(events)
+    Build a flat dict of per-event weight arrays for saving from compute_event_weights output.
+    All ak.Array values are converted to numpy.
+    """
     out = {}
-
-    # Generator (central only)
-    if hasattr(events, "genWeight"):
-        out["generator"] = np.asarray(ak.to_numpy(np.abs(events.genWeight)))
-    else:
-        out["generator"] = np.ones(n, dtype=np.float64)
-
-    # Corrections: each key is either a single array (e.g. pileup) or dict with central/up/down
-    for name, val in corrections.items():
-        if isinstance(val, dict) and "central" in val:
-            out[name] = {}
-            for k in ("central", "up", "down"):
-                if val.get(k) is not None:
-                    out[name][k] = np.asarray(ak.to_numpy(val[k]))
-        else:
-            arr = val
-            if hasattr(arr, "__len__") and not isinstance(arr, (str, dict)):
-                out[name] = np.asarray(ak.to_numpy(arr))
-            else:
-                out[name] = np.full(n, float(arr), dtype=np.float64)
-
-    # Combined nominal total weight only (no total up/down)
-    out["weight_total_nominal"] = np.asarray(ak.to_numpy(weight_calculator.get_weight("central")))
-
+    for name, val in weight_results.items():
+        if isinstance(val, ak.Array):
+            out[name] = np.asarray(ak.to_numpy(val))
+        elif isinstance(val, np.ndarray):
+            out[name] = val
     return out
 
 
@@ -117,6 +103,10 @@ class DarkBottomLineProcessor:
         print(f"=== PROCESSING EVENTS ===")
         print(f"Total events loaded: {len(events)}")
 
+        # h_total_weight: sum of sign(genWeight) over ALL events before any selection
+        h_total_weight = self.correction_manager.get_h_total_weight(events)
+        print(f"  h_total_weight (normalization): {h_total_weight}")
+
         # Build physics objects
         print("Step 1: Building physics objects...")
         logging.info("Building physics objects...")
@@ -159,27 +149,13 @@ class DarkBottomLineProcessor:
         logging.info("Calculating corrections and weights...")
 
         try:
-            corrections = self.correction_manager.get_all_corrections(
+            weight_results = self.correction_manager.compute_event_weights(
                 selected_events, selected_objects
             )
-
-            # Initialize weight calculator
-            weight_calculator = WeightCalculator(len(selected_events))
-
-            # Add generator weights
-            weight_calculator.add_generator_weight(selected_events)
-
-            # Add corrections
-            weight_calculator.add_corrections(corrections)
-
-            # Get final weights (nominal = central for histogram filling)
-            event_weights = weight_calculator.get_weight("central")
+            event_weights = np.asarray(ak.to_numpy(weight_results["total_weight"]))
             print(f"  Weights calculated successfully: {len(event_weights)} weights")
 
-            # Build per-event weight dict for each systematic (central/up/down) for saving
-            event_weights_save = _build_event_weights_for_save(
-                selected_events, corrections, weight_calculator
-            )
+            event_weights_save = _build_event_weights_for_save(weight_results)
         except Exception as e:
             print(f"  Error in weight calculation: {e}")
             print(f"  Selected events length: {len(selected_events)}")
@@ -218,8 +194,9 @@ class DarkBottomLineProcessor:
         self.accumulator["metadata"] = {
             "n_events_processed": len(events),
             "n_events_selected": len(selected_events),
+            "h_total_weight": h_total_weight,
             "processing_time": processing_time,
-            "weight_statistics": weight_calculator.get_weight_statistics(),
+            "weight_statistics": _compute_weight_statistics(event_weights),
         }
 
         # Optionally save skimmed events

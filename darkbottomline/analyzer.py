@@ -19,7 +19,6 @@ from .objects import build_objects
 from .regions import RegionManager
 from .histograms import HistogramManager
 from .selections import apply_selection
-from .weights import WeightCalculator
 
 # Try to import Coffea for processor wrapper
 try:
@@ -191,16 +190,11 @@ class DarkBottomLineAnalyzer:
         event_weights_nominal = None
         event_weights_save = {}
         try:
-            corrections = self.base_processor.correction_manager.get_all_corrections(
+            weight_results = self.base_processor.correction_manager.compute_event_weights(
                 events, objects
             )
-            weight_calculator = WeightCalculator(len(events))
-            weight_calculator.add_generator_weight(events)
-            weight_calculator.add_corrections(corrections)
-            event_weights_nominal = weight_calculator.get_weight("central")
-            event_weights_save = _build_event_weights_for_save(
-                events, corrections, weight_calculator
-            )
+            event_weights_nominal = np.asarray(ak.to_numpy(weight_results["total_weight"]))
+            event_weights_save = _build_event_weights_for_save(weight_results)
         except Exception as e:
             logging.warning(f"Weight calculation failed, using unit weights: {e}", exc_info=True)
             n_ev = len(events)

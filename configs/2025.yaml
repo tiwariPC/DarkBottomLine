@@ -1,23 +1,23 @@
-year: 2023
-lumi: 27.64   # fb^-1
+year: 2025
+lumi: 109.96   # To be updated with actual 2024 luminosity
 
 # Correction file paths (user must provide actual files)
 corrections:
-   pileup: data/corrections/2023/Run3-22EFGSep23-Summer22EE-NanoAODv12_puWeights.json.gz
-   pileup_name: "Collisions2023_355100_357900_eraBCD_GoldenJson"
-   btagSF: data/corrections/2023/Run3-22EFGSep23-Summer22EE-NanoAODv12_btagging.json.gz
-   muonSF_highPT: data/corrections/2023/Run3-22EFGSep23-Summer22EE-NanoAODv12_muon_HighPt.json.gz
+   pileup: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_puWeights.json.gz
+   pileup_name: "Collisions2025_355100_357900_eraBCD_GoldenJson"
+   btagSF: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_btagging.json.gz
+   muonSF_highPT: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_muon_HighPt.json.gz
    muonSF_highPT_name: "NUM_TightPFIso_DEN_TightID"
-   muonSF_lowPT: data/corrections/2023/Run3-22EFGSep23-Summer22EE-NanoAODv12_muon_JPsi.json.gz
+   muonSF_lowPT: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_muon_JPsi.json.gz
    muonSF_lowPT_name: "NUM_LooseID_DEN_TrackerMuons"
-   electronSF: data/corrections/2023/Run3-22EFGSep23-Summer22EE-NanoAODv12_electron.json.gz
-   electronSF_name: "2023Re-recoBCD"
+   electronSF: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_electron.json.gz
+   electronSF_name: "2025Re-recoBCD"
    electronSF_WP: "Tight"
-   electronHLT: data/corrections/2023/Run3-23CSep23-Summer23-NanoAODv12_electronHlt.json.gz
-   electronHLT_name: "2023PromptC"
+   electronHLT: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_electronHlt.json.gz
+   electronHLT_name: "2025Prompt"
    electronHLT_WP: "HLT_SF_Ele30_TightID"
-   jetJEC: data/corrections/2023/Run3-23CSep23-Summer23-NanoAODv12_jet_jerc.json.gz
-   jetJEC_tag: "Summer23Prompt23_V1_MC"
+   jetJEC: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_jet_jerc.json.gz
+   jetJEC_tag: "Summer25_Prompt_V1_MC"
    jetJEC_algo: "AK4PFchs"
    jetJEC_level: "L1L2L3Res"
    jetJEC_unc: "Total"
@@ -37,6 +37,7 @@ met_filters:
    - "Flag_BadPFMuonDzFilter"
    - "Flag_hfNoisyHitsFilter"
    - "Flag_eeBadScFilter"
+   - "Flag_ecalBadCalibFilter"
 
 # Object selection (preselection: loose pt>10; region: tight pt>20, leading pt>30 in CRs)
 objects:

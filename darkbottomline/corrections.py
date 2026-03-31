@@ -240,7 +240,7 @@ class CorrectionManager:
             return
 
         correction_paths = self.config.get("corrections", {})
-        # Only process keys that are correction file paths (skip electron_sf_year, etc.)
+        # Only process keys that are correction file paths (skip electronSF_name, etc.)
         file_correction_keys = {k for k, v in correction_paths.items()
                                 if isinstance(v, str) and v.endswith(('.json', '.json.gz'))}
 
@@ -250,7 +250,7 @@ class CorrectionManager:
                 continue
             loaded = False
             # For electron SF, try edge-fix load first (EGM JSON can have non-monotonic bin edges)
-            if correction_type == "electronSF":
+            if correction_type in ("electronSF", "electronHLT"):
                 cs = _load_correction_file_with_edges_fix(file_path)
                 if cs is not None:
                     self.corrections[correction_type] = cs
@@ -319,7 +319,7 @@ class CorrectionManager:
 
             cs = self.corrections["pileup"]
             # Use name from config (e.g. Collisions2022_355100_357900_eraBCD_GoldenJson) or first key
-            corr_name = self.config.get("corrections", {}).get("pileup_correction_name")
+            corr_name = self.config.get("corrections", {}).get("pileup_name")
             if not corr_name or corr_name not in cs:
                 corr_name = next(iter(cs.keys()), None)
             if corr_name is None:
@@ -404,17 +404,17 @@ class CorrectionManager:
             pass
         return None
 
-    def _get_muon_sf_highpt_correction(self):
+    def _get_muonSF_highPT_correction(self):
         """Muon SF for pt>30: muon_Z_ID with NUM_TightPFIso_DEN_TightID."""
         return self._get_correction_by_name(
-            "muon_sf_highpt", "muon_sf_highpt_name",
+            "muonSF_highPT", "muonSF_highPT_name",
             fallback_names=("NUM_TightPFIso_DEN_TightID",)
         )
 
-    def _get_muon_sf_lowpt_correction(self):
+    def _get_muonSF_lowPT_correction(self):
         """Muon SF for pt<=30: muon_JPsi_LowpT with NUM_LooseID_DEN_TrackerMuons."""
         return self._get_correction_by_name(
-            "muon_sf_lowpt", "muon_sf_lowpt_name",
+            "muonSF_lowPT", "muonSF_lowPT_name",
             fallback_names=("NUM_LooseID_DEN_TrackerMuons",)
         )
 
@@ -477,8 +477,8 @@ class CorrectionManager:
         ones = ak.ones_like(muons.pt, dtype=float)
         if not muons.pt.layout or len(ak.ravel(muons.pt)) == 0:
             return ones
-        corr_highpt = self._get_muon_sf_highpt_correction()
-        corr_lowpt = self._get_muon_sf_lowpt_correction()
+        corr_highpt = self._get_muonSF_highPT_correction()
+        corr_lowpt = self._get_muonSF_lowPT_correction()
         if corr_highpt is None and corr_lowpt is None:
             return ones
         out = self._evaluate_muon_sf_per_pt_bin(muons, corr_highpt, corr_lowpt, systematic)
@@ -491,8 +491,8 @@ class CorrectionManager:
         """Get muon SF as central, up, down (pt>30 highpt, pt<=30 lowpt)."""
         ones = ak.ones_like(muons.pt, dtype=float)
         out = {"central": ones, "up": ones, "down": ones}
-        corr_highpt = self._get_muon_sf_highpt_correction()
-        corr_lowpt = self._get_muon_sf_lowpt_correction()
+        corr_highpt = self._get_muonSF_highPT_correction()
+        corr_lowpt = self._get_muonSF_lowPT_correction()
         if corr_highpt is None and corr_lowpt is None:
             return out
         for key, syst in [("central", "central"), ("up", "up"), ("down", "down")]:
@@ -519,12 +519,12 @@ class CorrectionManager:
         """Return (year_str, working_point) from config for Electron-ID-SF."""
         year = self.config.get("year", 2022)
         corr_cfg = self.config.get("corrections", {})
-        year_str = corr_cfg.get("electron_sf_year") or {
+        year_str = corr_cfg.get("electronSF_name") or {
             2022: "2022Re-recoBCD",
             2023: "2022Re-recoBCD",
             2024: "2022Re-recoBCD",
         }.get(year, "2022Re-recoBCD")
-        working_point = corr_cfg.get("electron_sf_working_point", "Tight")
+        working_point = corr_cfg.get("electronSF_WP", "Tight")
         return str(year_str), str(working_point)
 
     def get_electron_sf(
@@ -568,6 +568,63 @@ class CorrectionManager:
             )
             out[key] = val if val is not None else ones
         return out
+
+    def _get_electronHLT_sf_correction(self):
+        """Return the Electron-HLT-SF correction evaluator from the loaded CorrectionSet."""
+        if "electronHLT" not in self.corrections:
+            return None
+        cs = self.corrections["electronHLT"]
+        for name in ("Electron-HLT-SF", "electron_hlt_sf", "electron_hlt"):
+            try:
+                return cs[name]
+            except (IndexError, KeyError, TypeError):
+                continue
+        if hasattr(cs, "keys"):
+            first = next(iter(cs.keys()), None)
+            if first is not None:
+                return cs[first]
+        return None
+
+    def get_electronHLT_sf_nominal_up_down(
+        self,
+        electrons: ak.Array,
+    ) -> Dict[str, ak.Array]:
+        """
+        Get electron HLT trigger scale factors as central, up, and down.
+        Uses Electron-HLT-SF with ValType sf/sfup/sfdown.
+        Signature: evaluate(year, val_type, hlt_path, eta, pt).
+        """
+        ones = ak.ones_like(electrons.pt, dtype=float)
+        out = {"central": ones, "up": ones, "down": ones}
+        corr = self._get_electronHLT_sf_correction()
+        if corr is None:
+            return out
+        corr_cfg = self.config.get("corrections", {})
+        year_str = corr_cfg.get("electronHLT_name", "2022Re-recoBCD")
+        hlt_path = corr_cfg.get("electronHLT_WP", "HLT_SF_Ele30_TightID")
+        pt = electrons.pt
+        eta = electrons.eta
+        if len(ak.ravel(pt)) == 0:
+            return out
+        for val_type, key in [("sf", "central"), ("sfup", "up"), ("sfdown", "down")]:
+            val = self._evaluate_correction_jagged_or_flat(
+                corr, pt, year_str, val_type, hlt_path, eta, pt
+            )
+            out[key] = val if val is not None else ones
+        return out
+
+    def get_electronHLT_sf(
+        self,
+        electrons: ak.Array,
+        systematic: str = "central",
+    ) -> ak.Array:
+        """Get electron HLT trigger scale factors (central, up, or down)."""
+        var = self.get_electronHLT_sf_nominal_up_down(electrons)
+        if systematic == "up":
+            return var["up"]
+        if systematic == "down":
+            return var["down"]
+        return var["central"]
 
     def _get_btag_sf_correction(self):
         """Return the b-tag SF correction (deepJet_shape). Safe lookup, no 'in cs'."""
@@ -653,6 +710,110 @@ class CorrectionManager:
                 out[key] = val
         return out
 
+    def _get_rho(self, events: ak.Array) -> Optional[np.ndarray]:
+        """Get per-event rho (median energy density) from NanoAOD events."""
+        for field in ("fixedGridRhoFastjetAll", "Rho_fixedGridRhoFastjetAll", "rho"):
+            try:
+                val = getattr(events, field, None)
+                if val is None and field in events.fields:
+                    val = events[field]
+                if val is not None:
+                    return np.asarray(ak.to_numpy(val), dtype=float)
+            except Exception:
+                continue
+        return None
+
+    def get_jet_jec_weight_nominal_up_down(
+        self,
+        jets: ak.Array,
+        events: ak.Array,
+    ) -> Dict[str, ak.Array]:
+        """
+        Get per-event JEC weights (central, up, down) as product of per-jet JEC factors.
+        Central: compound L1L2L3Res correction evaluated with (JetPt, JetEta, JetA, JetPhi, Rho).
+        Up/down: central factor * (1 ± Total uncertainty).
+        """
+        n_events = len(events)
+        ones = ak.Array(np.ones(n_events, dtype=float))
+        out = {"central": ones, "up": ones, "down": ones}
+        if "jetJEC" not in self.corrections:
+            return out
+        cs = self.corrections["jetJEC"]
+        corr_cfg = self.config.get("corrections", {})
+        tag = corr_cfg.get("jetJEC_tag", "")
+        algo = corr_cfg.get("jetJEC_algo", "AK4PFPuppi")
+        unc_name = corr_cfg.get("jetJEC_unc", "Total")
+
+        n_flat = len(ak.ravel(jets.pt))
+        if n_flat == 0:
+            return out
+
+        flat_pt = np.asarray(ak.ravel(jets.pt), dtype=float)
+        flat_eta = np.asarray(ak.ravel(jets.eta), dtype=float)
+        try:
+            flat_phi = np.asarray(ak.ravel(jets.phi), dtype=float)
+        except Exception:
+            flat_phi = np.zeros(n_flat)
+        try:
+            flat_area = np.asarray(ak.ravel(jets.area), dtype=float)
+        except Exception:
+            flat_area = np.full(n_flat, 0.5)
+        counts = np.asarray(ak.num(jets.pt, axis=1))
+        rho_per_event = self._get_rho(events)
+        flat_rho = np.repeat(rho_per_event, counts) if rho_per_event is not None else np.full(n_flat, 15.0)
+
+        # Compound JEC correction (central)
+        jec_central = np.ones(n_flat, dtype=float)
+        compound_key = f"{tag}_L1L2L3Res_{algo}" if tag else None
+        try:
+            if compound_key:
+                sf_obj = cs.compound[compound_key]
+            else:
+                keys = list(cs.compound.keys()) if hasattr(cs, "compound") else []
+                sf_obj = cs.compound[keys[0]] if keys else None
+            if sf_obj is not None:
+                if isinstance(sf_obj, str):
+                    sf_obj = cs.compound[sf_obj]
+                jec_central = np.asarray(
+                    sf_obj.evaluate(flat_pt, flat_eta, flat_area, flat_phi, flat_rho), dtype=float
+                )
+        except Exception as e:
+            logging.warning(f"JEC compound correction evaluation failed: {e}")
+
+        # JEC Total uncertainty (for up/down)
+        jec_unc = np.zeros(n_flat, dtype=float)
+        unc_key_full = f"{tag}_{unc_name}_{algo}" if tag else None
+        try:
+            unc_obj = cs[unc_key_full] if unc_key_full else None
+            if unc_obj is not None:
+                jec_unc = np.asarray(
+                    unc_obj.evaluate(flat_pt * jec_central, flat_eta), dtype=float
+                )
+        except Exception as e:
+            logging.warning(f"JEC uncertainty evaluation failed: {e}")
+
+        for key, factors in [
+            ("central", jec_central),
+            ("up", jec_central * (1.0 + jec_unc)),
+            ("down", jec_central * (1.0 - jec_unc)),
+        ]:
+            out[key] = self._per_event_product(ak.unflatten(ak.Array(factors), counts))
+        return out
+
+    def get_jet_jec_weight(
+        self,
+        jets: ak.Array,
+        events: ak.Array,
+        systematic: str = "central",
+    ) -> ak.Array:
+        """Get per-event JEC weight (central, up, or down)."""
+        var = self.get_jet_jec_weight_nominal_up_down(jets, events)
+        if systematic == "up":
+            return var["up"]
+        if systematic == "down":
+            return var["down"]
+        return var["central"]
+
     def _per_event_product(self, jagged_sf: ak.Array) -> ak.Array:
         """
         Reduce per-object scale factors to per-event: product over objects in each event.
@@ -720,7 +881,132 @@ class CorrectionManager:
                 "down": self._per_event_product(btag_var["down"]),
             }
 
+        # Electron HLT trigger SF: product of SF over all electrons -> weight_electronHLT
+        if "tight_electrons_pt30" in objects and len(ak.flatten(objects["tight_electrons_pt30"])) > 0:
+            hlt_sf = self.get_electronHLT_sf(objects["tight_electrons_pt30"], systematic)
+            hlt_var = self.get_electronHLT_sf_nominal_up_down(objects["tight_electrons_pt30"])
+            corrections["weight_electronHLT"] = {
+                "central": self._per_event_product(hlt_sf),
+                "up": self._per_event_product(hlt_var["up"]),
+                "down": self._per_event_product(hlt_var["down"]),
+            }
+
+        # JEC: product of correction factors over all jets -> weight_JEC
+        if "jets" in objects and len(ak.flatten(objects["jets"])) > 0:
+            corrections["weight_JEC"] = self.get_jet_jec_weight_nominal_up_down(
+                objects["jets"], events
+            )
+
         return corrections
+
+    def get_h_total_weight(self, events: ak.Array) -> float:
+        """
+        Compute the normalization sum from all events before any selection.
+        Each event contributes +1 or -1 according to the sign of genWeight.
+        Call this immediately after the input file is read.
+        """
+        try:
+            _gw = np.asarray(ak.to_numpy(events.genWeight), dtype=float)
+            return float(np.sum(np.sign(_gw)))
+        except Exception:
+            return float(len(events))
+
+    def compute_event_weights(
+        self,
+        events: ak.Array,
+        objects: Dict[str, Any],
+    ) -> Dict[str, ak.Array]:
+        """
+        Compute total event weight and per-systematic up/down variations.
+
+        total_weight = genweight * weight_pileup * weight_btag * weight_muon
+                       * weight_electron * weight_electronHLT * weight_JEC
+
+        For each component X:
+            weight_XUP   = (total_weight / weight_X_central) * weight_X_up
+            weight_XDOWN = (total_weight / weight_X_central) * weight_X_down
+
+        Returns dict with keys: total_weight, weight_pileupUP/DOWN,
+        weight_btagUP/DOWN, weight_muonUP/DOWN, weight_electronUP/DOWN,
+        weight_electronHLTUP/DOWN, weight_JECUP/DOWN.
+        """
+        n_events = len(events)
+        ones = ak.Array(np.ones(n_events, dtype=float))
+
+        # genWeight sign (+1/-1)
+        try:
+            _gw = np.asarray(ak.to_numpy(events.genWeight), dtype=float)
+            genweight = ak.Array(np.sign(_gw).astype(float))
+        except Exception:
+            genweight = ones
+
+        def _prod_or_ones(obj_key, sf_func, var_func):
+            """Return (central, up, down) per-event product SFs, or ones if no objects."""
+            obj = objects.get(obj_key)
+            if obj is None or len(ak.ravel(obj.pt)) == 0:
+                return ones, ones, ones
+            var = var_func(obj)
+            return (
+                self._per_event_product(sf_func(obj)),
+                self._per_event_product(var["up"]),
+                self._per_event_product(var["down"]),
+            )
+
+        # Pileup (per-event scalar from correctionlib)
+        w_pu = self.get_pileup_weight(events, "central")
+        w_pu_up = self.get_pileup_weight(events, "up")
+        w_pu_down = self.get_pileup_weight(events, "down")
+
+        # B-tag
+        w_btag, w_btag_up, w_btag_down = _prod_or_ones(
+            "jets", self.get_btag_sf, self.get_btag_sf_nominal_up_down
+        )
+
+        # Muon
+        w_muon, w_muon_up, w_muon_down = _prod_or_ones(
+            "tight_muons_pt30", self.get_muon_sf, self.get_muon_sf_nominal_up_down
+        )
+
+        # Electron ID
+        w_electron, w_electron_up, w_electron_down = _prod_or_ones(
+            "tight_electrons_pt30", self.get_electron_sf, self.get_electron_sf_nominal_up_down
+        )
+
+        # Electron HLT
+        w_ele_hlt, w_ele_hlt_up, w_ele_hlt_down = _prod_or_ones(
+            "tight_electrons_pt30", self.get_electronHLT_sf, self.get_electronHLT_sf_nominal_up_down
+        )
+
+        # JEC
+        jets = objects.get("jets")
+        if jets is not None and len(ak.ravel(jets.pt)) > 0:
+            jec_var = self.get_jet_jec_weight_nominal_up_down(jets, events)
+            w_jec, w_jec_up, w_jec_down = jec_var["central"], jec_var["up"], jec_var["down"]
+        else:
+            w_jec = w_jec_up = w_jec_down = ones
+
+        total_weight = genweight * w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_jec
+
+        def _vary(total, central, variation):
+            """Replace central component with variation: (total / central) * variation."""
+            safe = ak.where(central != 0.0, central, ak.ones_like(central))
+            return (total / safe) * variation
+
+        return {
+            "total_weight": total_weight,
+            "weight_pileupUP": _vary(total_weight, w_pu, w_pu_up),
+            "weight_pileupDOWN": _vary(total_weight, w_pu, w_pu_down),
+            "weight_btagUP": _vary(total_weight, w_btag, w_btag_up),
+            "weight_btagDOWN": _vary(total_weight, w_btag, w_btag_down),
+            "weight_muonUP": _vary(total_weight, w_muon, w_muon_up),
+            "weight_muonDOWN": _vary(total_weight, w_muon, w_muon_down),
+            "weight_electronUP": _vary(total_weight, w_electron, w_electron_up),
+            "weight_electronDOWN": _vary(total_weight, w_electron, w_electron_down),
+            "weight_electronHLTUP": _vary(total_weight, w_ele_hlt, w_ele_hlt_up),
+            "weight_electronHLTDOWN": _vary(total_weight, w_ele_hlt, w_ele_hlt_down),
+            "weight_JECUP": _vary(total_weight, w_jec, w_jec_up),
+            "weight_JECDOWN": _vary(total_weight, w_jec, w_jec_down),
+        }
 
     def get_systematic_variations(self) -> list:
         """

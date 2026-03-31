@@ -1,100 +1,105 @@
 year: 2022
-lumi: 8.9  # fb^-1
+lumi: 7.99  # fb^-1
 
 # Correction file paths (user must provide actual files)
 # Electron-ID-SF: year/scenario and working point (see EGM corrections)
 # WorkingPoint: Tight, PromptMVA-Tight, Medium, Loose, etc.
 corrections:
-  pileup: data/corrections/pileup_2022.json.gz
-  pileup_correction_name: "Collisions2022_355100_357900_eraBCD_GoldenJson"
-  btagSF: data/corrections/btagging_2022.json.gz
-  # Muon SF: pt>30 use Z_ID, pt<=30 use JPsi_LowpT
-  muon_sf_highpt: data/corrections/muon_Z_ID_2022.json.gz
-  muon_sf_highpt_name: "NUM_TightPFIso_DEN_TightID"
-  muon_sf_lowpt: data/corrections/muon_JPsi_LowpT_ID_2022.json.gz
-  muon_sf_lowpt_name: "NUM_LooseID_DEN_TrackerMuons"
-  electronSF: data/corrections/electronSF_2022.json.gz
-  electron_sf_year: "2022Re-recoBCD"
-  electron_sf_working_point: "Tight"
+   pileup: data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_puWeights.json.gz
+   pileup_name: "Collisions2022_355100_357900_eraBCD_GoldenJson"
+   btagSF: data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_btagging.json.gz
+   muonSF_highPT: data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_muon_HighPt.json.gz
+   muonSF_highPT_name: "NUM_TightPFIso_DEN_TightID"
+   muonSF_lowPT: data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_muon_JPsi.json.gz
+   muonSF_lowPT_name: "NUM_LooseID_DEN_TrackerMuons"
+   electronSF: data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_electron.json.gz
+   electronSF_name: "2022Re-recoBCD"
+   electronSF_WP: "Tight"
+   electronHLT: data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_electronHlt.json.gz
+   electronHLT_name: "2022Re-recoBCD"
+   electronHLT_WP: "HLT_SF_Ele30_TightID"
+   jetJEC: data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_jet_jerc.json.gz
+   jetJEC_tag: "Summer22_22Sep2023_V2_MC"
+   jetJEC_algo: "AK4PFchs"
+   jetJEC_level: "L1L2L3Res"
+   jetJEC_unc: "Total"
 
 # Trigger paths
 triggers:
-  MET: ["HLT_PFMET120_PFMHT120_IDTight", "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight"]
-  SingleMuon: ["HLT_IsoMu24", "HLT_IsoMu27"]
-  SingleElectron: ["HLT_Ele32_WPTight_Gsf", "HLT_Ele35_WPTight_Gsf"]
+   MET: ["HLT_PFMETNoMu120_PFMHTNoMu120_IDTight","HLT_PFMETNoMu130_PFMHTNoMu130_IDTight","HLT_PFMETNoMu140_PFMHTNoMu140_IDTight"]
+   SingleMuon: ["HLT_IsoMu24", "HLT_IsoMu27"]
+   SingleElectron: ["HLT_Ele30_WPTight_Gsf_v"]
 
 # MET filters
 met_filters:
-  - "Flag_goodVertices"
-  - "Flag_globalSuperTightHalo2016Filter"
-  - "Flag_HBHENoiseFilter"
-  - "Flag_HBHENoiseIsoFilter"
-  - "Flag_EcalDeadCellTriggerPrimitiveFilter"
-  - "Flag_BadPFMuonFilter"
-  - "Flag_BadPFMuonDzFilter"
-  - "Flag_eeBadScFilter"
-  - "Flag_ecalBadCalibFilter"
+   - "Flag_goodVertices"
+   - "Flag_globalSuperTightHalo2016Filter"
+   - "Flag_EcalDeadCellTriggerPrimitiveFilter"
+   - "Flag_BadPFMuonFilter"
+   - "Flag_BadPFMuonDzFilter"
+   - "Flag_hfNoisyHitsFilter"
+   - "Flag_eeBadScFilter"
 
 # Object selection cuts
 # Preselection: LOOSE id/iso, pt > 10. Region selection: TIGHT id/iso, pt > 20 (leading pt>30 in CRs).
 objects:
-  muons:
-    pt_min: 20.0       # for tight / region selection
-    pt_min_loose: 10.0 # for preselection (loose id, pt>10)
-    eta_max: 2.4
-    id_loose: "loose"
-    iso_loose: "loose"
-    id_tight: "tight"
-    iso_tight: "tight"
+   muons:
+      pt_min: 20.0          # for tight / region selection
+      pt_min_loose: 10.0 # for preselection (loose id, pt>10)
+      eta_max: 2.4
+      id_loose: "loose"
+      iso_loose: "loose"
+      id_tight: "tight"
+      iso_tight: "tight"
 
-  electrons:
-    pt_min: 20.0
-    pt_min_loose: 10.0
-    eta_max: 2.5
-    id_loose: "loose"
-    iso_loose: "loose"
-    id_tight: "tight"
-    iso_tight: "tight"
+   electrons:
+      pt_min: 20.0
+      pt_min_loose: 10.0
+      eta_max: 2.5
+      id_loose: "loose"
+      iso_loose: "loose"
+      id_tight: "tight"
+      iso_tight: "tight"
 
-  taus:
-    pt_min: 20.0
-    pt_min_loose: 10.0
-    eta_max: 2.3
-    id_loose: "loose"
-    id_tight: "tight"
-    decay_modes: [0, 1, 2, 10, 11]
+   taus:
+      pt_min: 20.0
+      pt_min_loose: 10.0
+      eta_max: 2.3
+      id_loose: "loose"
+      id_tight: "tight"
+      decay_modes: [0, 1, 2, 10, 11]
 
-  jets:
-    pt_min: 30.0
-    eta_max: 2.5   # paper: |eta| < 2.5
-    id: "tight"
+   jets:
+      pt_min: 30.0
+      eta_max: 2.5    # paper: |eta| < 2.5
+      id: "tight"
 
-  fatjets:
-    pt_min: 200.0
-    eta_max: 2.4
-    id: "tight"
+   fatjets:
+      pt_min: 200.0
+      eta_max: 2.4
+      id: "tight"
 
 # B-tagging working points
 btagging:
-  wp: "medium"  # loose, medium, tight
-  algorithm: "deepJet"  # deepJet, deepCSV
+   wp: "medium"   # loose, medium, tight
+   algorithm: "deepJet"   # deepJet, deepCSV
 
 # Event selection (aligned with SUS-23-008 / JHEP02(2025)050)
 event_selection:
-  min_muons: 0
-  max_muons: 2
-  min_electrons: 0
-  max_electrons: 2
-  min_taus: 0
-  max_taus: 0
-  min_jets: 1        # paper: >= 1 jet
-  min_bjets: 1
-  met_min: 250.0    # event passes if MET > 250 GeV or Recoil > 250 GeV
-  jet1_pt_min: 100.0   # paper: leading jet pT > 100 GeV
-  delta_phi_min: 0.5   # paper: min DeltaPhi(jet, pTmiss) > 0.5
+   min_muons: 0
+   max_muons: 2
+   min_electrons: 0
+   max_electrons: 2
+   min_taus: 0
+   max_taus: 0
+   min_jets: 1            # paper: >= 1 jet
+   min_bjets: 1
+   met_min: 250.0      # event passes if MET > 250 GeV or Recoil > 250 GeV
+   jet1_pt_min: 100.0    # paper: leading jet pT > 100 GeV
+   delta_phi_min: 0.5    # paper: min DeltaPhi(jet, pTmiss) > 0.5
 
 # Cleaning parameters
 cleaning:
-  dr_muon_jet: 0.4
-  dr_electron_jet: 0.4
-  dr_tau_jet: 0.4
+   dr_muon_jet: 0.4
+   dr_electron_jet: 0.4
+   dr_tau_jet: 0.4

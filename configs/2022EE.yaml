@@ -1,81 +1,92 @@
 year: 2022
-lumi: 8.9  # fb^-1
+lumi: 26.68   # fb^-1
 
 # Correction file paths (user must provide actual files)
 corrections:
-  pileup: data/corrections/pileup_2022.json.gz
-  btagSF: data/corrections/btagging_2022.json.gz
-  muonSF: data/corrections/muonSF_2022.json.gz
-  electronSF: data/corrections/electronSF_2022.json.gz
+   pileup: data/corrections/2022/Run3-22EFGSep23-Summer22EE-NanoAODv12_puWeights.json.gz
+   pileup_name: "Collisions2022_355100_357900_eraBCD_GoldenJson"
+   btagSF: data/corrections/2022/Run3-22EFGSep23-Summer22EE-NanoAODv12_btagging.json.gz
+   muonSF_highPT: data/corrections/2022/Run3-22EFGSep23-Summer22EE-NanoAODv12_muon_HighPt.json.gz
+   muonSF_highPT_name: "NUM_TightPFIso_DEN_TightID"
+   muonSF_lowPT: data/corrections/2022/Run3-22EFGSep23-Summer22EE-NanoAODv12_muon_JPsi.json.gz
+   muonSF_lowPT_name: "NUM_LooseID_DEN_TrackerMuons"
+   electronSF: data/corrections/2022/Run3-22EFGSep23-Summer22EE-NanoAODv12_electron.json.gz
+   electronSF_name: "2022Re-recoBCD"
+   electronSF_WP: "Tight"
+   electronHLT: data/corrections/2022/Run3-22EFGSep23-Summer22EE-NanoAODv12_electronHlt.json.gz
+   electronHLT_name: "2022Re-recoE+PromptFG"
+   electronHLT_WP: "HLT_SF_Ele30_TightID"
+   jetJEC: data/corrections/2022/Run3-22EFGSep23-Summer22EE-NanoAODv12_jet_jerc.json.gz
+   jetJEC_tag: "Summer22EE_22Sep2023_V1_MC"
+   jetJEC_algo: "AK4PFchs"
+   jetJEC_level: "L1L2L3Res"
+   jetJEC_unc: "Total"
 
 # Trigger paths
 triggers:
-  MET: ["HLT_PFMET120_PFMHT120_IDTight", "HLT_PFMETNoMu120_PFMHTNoMu120_IDTight"]
-  SingleMuon: ["HLT_IsoMu24", "HLT_IsoMu27"]
-  SingleElectron: ["HLT_Ele32_WPTight_Gsf", "HLT_Ele35_WPTight_Gsf"]
+   MET: ["HLT_PFMETNoMu120_PFMHTNoMu120_IDTight","HLT_PFMETNoMu130_PFMHTNoMu130_IDTight","HLT_PFMETNoMu140_PFMHTNoMu140_IDTight"]
+   SingleMuon: ["HLT_IsoMu24", "HLT_IsoMu27"]
+   SingleElectron: ["HLT_Ele30_WPTight_Gsf_v"]
 
 # MET filters
 met_filters:
-  - "Flag_goodVertices"
-  - "Flag_globalSuperTightHalo2016Filter"
-  - "Flag_HBHENoiseFilter"
-  - "Flag_HBHENoiseIsoFilter"
-  - "Flag_EcalDeadCellTriggerPrimitiveFilter"
-  - "Flag_BadPFMuonFilter"
-  - "Flag_BadPFMuonDzFilter"
-  - "Flag_eeBadScFilter"
-  - "Flag_ecalBadCalibFilter"
+   - "Flag_goodVertices"
+   - "Flag_globalSuperTightHalo2016Filter"
+   - "Flag_EcalDeadCellTriggerPrimitiveFilter"
+   - "Flag_BadPFMuonFilter"
+   - "Flag_BadPFMuonDzFilter"
+   - "Flag_hfNoisyHitsFilter"
+   - "Flag_eeBadScFilter"
 
 # Object selection cuts
 objects:
-  muons:
-    pt_min: 20.0
-    eta_max: 2.4
-    id: "tight"
-    iso: "tight"
+   muons:
+      pt_min: 20.0
+      eta_max: 2.4
+      id: "tight"
+      iso: "tight"
 
-  electrons:
-    pt_min: 20.0
-    eta_max: 2.5
-    id: "tight"
-    iso: "tight"
+   electrons:
+      pt_min: 20.0
+      eta_max: 2.5
+      id: "tight"
+      iso: "tight"
 
-  taus:
-    pt_min: 20.0
-    eta_max: 2.3
-    id: "tight"
-    decay_modes: [0, 1, 2, 10, 11]
+   taus:
+      pt_min: 20.0
+      eta_max: 2.3
+      id: "tight"
+      decay_modes: [0, 1, 2, 10, 11]
 
-  jets:
-    pt_min: 30.0
-    eta_max: 2.4
-    id: "tight"
+   jets:
+      pt_min: 30.0
+      eta_max: 2.4
+      id: "tight"
 
-  fatjets:
-    pt_min: 200.0
-    eta_max: 2.4
-    id: "tight"
+   fatjets:
+      pt_min: 200.0
+      eta_max: 2.4
+      id: "tight"
 
 # B-tagging working points
 btagging:
-  wp: "medium"  # loose, medium, tight
-  algorithm: "deepJet"  # deepJet, deepCSV
+   wp: "medium"   # loose, medium, tight
+   algorithm: "deepJet"   # deepJet, deepCSV
 
 # Event selection
 event_selection:
-  min_muons: 0
-  max_muons: 2
-  min_electrons: 0
-  max_electrons: 2
-  min_taus: 0
-  max_taus: 2
-  min_jets: 2
-  min_bjets: 1
-  met_min: 50.0
+   min_muons: 0
+   max_muons: 2
+   min_electrons: 0
+   max_electrons: 2
+   min_taus: 0
+   max_taus: 2
+   min_jets: 2
+   min_bjets: 1
+   met_min: 50.0
 
 # Cleaning parameters
 cleaning:
-  dr_muon_jet: 0.4
-  dr_electron_jet: 0.4
-  dr_tau_jet: 0.4
-
+   dr_muon_jet: 0.4
+   dr_electron_jet: 0.4
+   dr_tau_jet: 0.4

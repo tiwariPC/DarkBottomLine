@@ -1,5 +1,5 @@
-year: 2023
-lumi: 27.64   # fb^-1
+year: 2024
+lumi: 0.0   # To be updated with actual 2024 luminosity
 
 # Correction file paths (user must provide actual files)
 corrections:
@@ -13,11 +13,11 @@ corrections:
    electronSF: data/corrections/2023/Run3-22EFGSep23-Summer22EE-NanoAODv12_electron.json.gz
    electronSF_name: "2023Re-recoBCD"
    electronSF_WP: "Tight"
-   electronHLT: data/corrections/2023/Run3-23CSep23-Summer23-NanoAODv12_electronHlt.json.gz
-   electronHLT_name: "2023PromptC"
+   electronHLT: data/corrections/2023/Run3-22EFGSep23-Summer22EE-NanoAODv12_electronHlt.json.gz
+   electronHLT_name: "2026Prompt"
    electronHLT_WP: "HLT_SF_Ele30_TightID"
-   jetJEC: data/corrections/2023/Run3-23CSep23-Summer23-NanoAODv12_jet_jerc.json.gz
-   jetJEC_tag: "Summer23Prompt23_V1_MC"
+   jetJEC: data/corrections/2023/Run3-22EFGSep23-Summer22EE-NanoAODv12_jet_jerc.json.gz
+   jetJEC_tag: "Summer26_Prompt_V1_MC"
    jetJEC_algo: "AK4PFchs"
    jetJEC_level: "L1L2L3Res"
    jetJEC_unc: "Total"
@@ -37,6 +37,7 @@ met_filters:
    - "Flag_BadPFMuonDzFilter"
    - "Flag_hfNoisyHitsFilter"
    - "Flag_eeBadScFilter"
+   - "Flag_ecalBadCalibFilter"
 
 # Object selection (preselection: loose pt>10; region: tight pt>20, leading pt>30 in CRs)
 objects:
