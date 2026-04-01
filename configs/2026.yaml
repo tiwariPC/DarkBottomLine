@@ -22,6 +22,11 @@ corrections:
    jetJEC_level: "L1L2L3Res"
    jetJEC_unc: "Total"
 
+# Data sample settings (set is_data: true when running on collision data)
+data:
+   is_data: false
+   golden_json: data/corrections/2026/Cert_Collisions2026_Golden.json
+
 # Trigger paths
 triggers:
    MET: ["HLT_PFMETNoMu120_PFMHTNoMu120_IDTight","HLT_PFMETNoMu130_PFMHTNoMu130_IDTight","HLT_PFMETNoMu140_PFMHTNoMu140_IDTight"]

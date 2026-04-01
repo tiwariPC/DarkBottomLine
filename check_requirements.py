@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-Script to check if packages from requirements.txt are installed.
-If not, installs them locally.
+Script to check if packages from environment.yml are installed.
+If not, installs them locally (for use on lxplus).
 
 Creator: ptiwari (main creator)
 
 Created based on instructions to:
-- Check if packages from requirements.txt are installed
+- Check if packages from environment.yml are installed
 - Install missing packages locally (not in home directory)
 - Show summary of installed/missing packages with names and versions
 - Suppress pip output during installation
@@ -73,6 +73,78 @@ def parse_requirements(requirements_path):
                     # Extract version constraint (everything after package spec)
                     version_part = line[len(package_spec):].strip()
                     requirements.append((base_package, line, version_part))
+    return requirements
+
+
+def _add_requirement(pkg_line, requirements, conda_to_pip, skip_names):
+    """Parse a conda/pip package line and append to requirements list."""
+    if not pkg_line or pkg_line.startswith('#'):
+        return
+    pkg_match = re.match(r'^([a-zA-Z0-9_-]+(?:\[[^\]]+\])?)', pkg_line)
+    if not pkg_match:
+        return
+    package_spec = pkg_match.group(1)
+    base_package = re.match(r'^([a-zA-Z0-9_-]+)', package_spec).group(1).lower()
+    if base_package in skip_names:
+        return
+    pip_name = conda_to_pip.get(base_package, base_package)
+    extras = package_spec[len(base_package):]  # e.g. '[complete]'
+    version_part = pkg_line[len(package_spec):].strip()
+    # Normalize conda exact-version syntax (=X.Y.Z) to pip syntax (==X.Y.Z)
+    version_part = re.sub(r'^=(?!=)', '==', version_part)
+    req_line = f"{pip_name}{extras}{version_part}"
+    # Replace existing entry for same base package (pip section overrides conda section)
+    for i, (name, _, _) in enumerate(requirements):
+        if name == pip_name:
+            requirements[i] = (pip_name, req_line, version_part)
+            return
+    requirements.append((pip_name, req_line, version_part))
+
+
+def parse_environment_yml(env_path):
+    """Parse environment.yml and return list of (package_name, requirement_line, version_constraint)."""
+    # conda uses different package names than pip for some packages
+    conda_to_pip = {'pytorch': 'torch'}
+    skip_names = {'python', 'pip'}
+    requirements = []
+
+    with open(env_path, 'r') as f:
+        lines = f.readlines()
+
+    in_dependencies = False
+    in_pip_section = False
+
+    for line in lines:
+        stripped = line.rstrip()
+
+        if stripped == 'dependencies:':
+            in_dependencies = True
+            continue
+
+        if not in_dependencies:
+            continue
+
+        # A new top-level key ends the dependencies section
+        if stripped and stripped[0] not in (' ', '\t'):
+            break
+
+        if stripped.strip() == '- pip:':
+            in_pip_section = True
+            continue
+
+        if in_pip_section:
+            if stripped.startswith('    - '):
+                _add_requirement(stripped[6:].strip(), requirements, conda_to_pip, skip_names)
+                continue
+            elif stripped.startswith('  - '):
+                in_pip_section = False
+                # fall through to conda handling
+
+        if not in_pip_section and stripped.startswith('  - '):
+            pkg_line = stripped[4:].strip()
+            if pkg_line != 'pip:':
+                _add_requirement(pkg_line, requirements, conda_to_pip, skip_names)
+
     return requirements
 
 def install_missing_packages(local_dir, missing_lines):
@@ -165,18 +237,18 @@ def install_missing_packages(local_dir, missing_lines):
     return True
 
 def main():
-    parser = argparse.ArgumentParser(description="Check and install packages from requirements.txt")
+    parser = argparse.ArgumentParser(description="Check and install packages from environment.yml")
     parser.add_argument('--install', action='store_true', help='Install missing packages locally')
     parser.add_argument('--local-dir', default='./.local', help='Local installation directory')
-    parser.add_argument('--requirements', default=None, help='Path to requirements.txt')
+    parser.add_argument('--requirements', default=None, help='Path to environment.yml (default: environment.yml)')
     args = parser.parse_args()
 
-    # Find requirements.txt
+    # Find environment.yml
     script_dir = Path(__file__).parent
-    requirements_path = Path(args.requirements) if args.requirements else script_dir / "requirements.txt"
+    requirements_path = Path(args.requirements) if args.requirements else script_dir / "environment.yml"
 
     if not requirements_path.exists():
-        print(f"Error: requirements.txt not found at {requirements_path}")
+        print(f"Error: environment.yml not found at {requirements_path}")
         sys.exit(1)
 
     # Check local directory (only if it exists, don't create it unless installing)
@@ -197,7 +269,12 @@ def main():
         local_dir_for_check = local_dir
 
     # Parse and check requirements
-    requirements = parse_requirements(requirements_path)
+    if requirements_path.suffix in ('.yml', '.yaml'):
+        print(f"Reading packages from: {requirements_path.name}")
+        requirements = parse_environment_yml(requirements_path)
+    else:
+        print(f"Reading packages from: {requirements_path.name}")
+        requirements = parse_requirements(requirements_path)
     missing = []
     installed = []
 
@@ -213,7 +290,7 @@ def main():
     installed_count = len(installed)
     missing_count = len(missing)
 
-    print(f"Found {total} packages in requirements.txt")
+    print(f"Found {total} packages in {requirements_path.name}")
     print(f"✓ Installed: {installed_count}/{total}")
     print(f"✗ Missing: {missing_count}/{total}")
     print()

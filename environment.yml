@@ -1,0 +1,33 @@
+name: darkbottomline
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.12.12
+  - numpy>=1.24.3
+  - scipy>=1.10.0
+  - matplotlib>=3.8.4
+  - pandas>=2.0.1
+  - awkward>=2.8.11
+  - uproot>=5.6.9
+  - correctionlib>=2.6.4
+  - dask>=2024.4.2
+  - distributed>=2024.4.2
+  - pytorch>=2.0.0
+  - scikit-learn>=1.2.2
+  - hist>=2.7.2
+  - plotly>=5.0.0
+  - pyarrow>=17.0.0
+  - pytest>=8.2.0
+  - jupyter>=1.1.1
+  - ipykernel>=6.29.4
+  - pyyaml>=6.0.1
+  - seaborn>=0.13.2
+  - tqdm>=4.67.1
+  - xrootd>=5.7.2
+  - pip
+  - pip:
+    - dask[complete]>=2024.4.2
+    - coffea>=2025.12.0
+    - fsspec-xrootd>=0.2.2
+    - memory-profiler>=0.60.0

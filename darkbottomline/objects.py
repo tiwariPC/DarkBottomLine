@@ -271,11 +271,20 @@ def get_bjet_mask(jets: ak.Array, config: Dict[str, Any]) -> ak.Array:
 
 
 def _dilepton_mass(l1: ak.Array, l2: ak.Array, m_default: float = 0.105) -> ak.Array:
-    """Compute dilepton invariant mass from two leptons (pt, eta, phi; mass optional)."""
-    pt1, eta1, phi1 = l1.pt, l1.eta, l1.phi
-    pt2, eta2, phi2 = l2.pt, l2.eta, l2.phi
-    m1 = ak.values_astype(getattr(l1, "mass", ak.full_like(pt1, m_default)), float)
-    m2 = ak.values_astype(getattr(l2, "mass", ak.full_like(pt2, m_default)), float)
+    """Compute dilepton invariant mass from two leptons (pt, eta, phi; mass optional).
+
+    Uses ak.fill_none on every field access so that optional (?Record) and union-type
+    arrays (produced by ak.fill_none(optA, optB)) never reach numpy arithmetic, which
+    would otherwise trigger a RecursionError in Python's ABC __instancecheck__.
+    """
+    pt1  = ak.fill_none(l1.pt,  0.0)
+    eta1 = ak.fill_none(l1.eta, 0.0)
+    phi1 = ak.fill_none(l1.phi, 0.0)
+    pt2  = ak.fill_none(l2.pt,  0.0)
+    eta2 = ak.fill_none(l2.eta, 0.0)
+    phi2 = ak.fill_none(l2.phi, 0.0)
+    m1 = ak.fill_none(ak.values_astype(l1["mass"], float), m_default) if "mass" in l1.fields else ak.full_like(pt1, m_default)
+    m2 = ak.fill_none(ak.values_astype(l2["mass"], float), m_default) if "mass" in l2.fields else ak.full_like(pt2, m_default)
     px1 = pt1 * np.cos(phi1)
     py1 = pt1 * np.sin(phi1)
     pz1 = pt1 * np.sinh(eta1)
@@ -327,7 +336,9 @@ def build_z_candidates(
         ordered = loose_lep[idx]
         lead = ak.firsts(ordered)
         sublead = ak.pad_none(ordered, 2, axis=1)[:, 1]
-        sublead_filled = ak.fill_none(sublead, lead)  # fallback for single-lep events
+        # Do NOT ak.fill_none(sublead, lead) — both are optional (?Record), which
+        # creates a UnionArray that causes RecursionError in numpy type dispatch.
+        # Instead pass sublead directly; _dilepton_mass uses ak.fill_none per-field.
         if (has_charge_mu and is_mu) or (has_charge_el and not is_mu):
             os_pair = (lead.charge + ak.fill_none(sublead.charge, 999)) == 0
         else:
@@ -337,7 +348,7 @@ def build_z_candidates(
         valid = has_two & os_pair & lead_tight_pt & sublead_pt_ok
         n_z = ak.where(valid, 2, 0)
         m_default = 0.105 if is_mu else 0.000511
-        mll = ak.where(valid, _dilepton_mass(lead, sublead_filled, m_default), 0.0)
+        mll = ak.where(valid, _dilepton_mass(lead, sublead, m_default), 0.0)
         sum_x = np.cos(lead.phi) * lead.pt + np.cos(ak.fill_none(sublead.phi, 0.0)) * ak.fill_none(sublead.pt, 0.0)
         sum_y = np.sin(lead.phi) * lead.pt + np.sin(ak.fill_none(sublead.phi, 0.0)) * ak.fill_none(sublead.pt, 0.0)
         return n_z, mll, sum_x, sum_y, valid
@@ -393,9 +404,11 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
     jet_mask = select_jets(events, config["objects"]["jets"])
     print(f"    Jets selected: {ak.sum(jet_mask)}")
 
-    print("  Selecting fat jets...")
-    fatjet_mask = select_fatjets(events, config["objects"]["fatjets"])
-    print(f"    Fat jets selected: {ak.sum(fatjet_mask)}")
+    # Fat jets disabled — uncomment to re-enable
+    # print("  Selecting fat jets...")
+    # fatjet_mask = select_fatjets(events, config["objects"]["fatjets"])
+    # print(f"    Fat jets selected: {ak.sum(fatjet_mask)}")
+    fatjet_mask = ak.zeros_like(events["FatJet_pt"], dtype=bool)  # empty mask placeholder
 
     # Build collections from flat branches (kinematics + ID + charge for Z CR)
     muon_fields = {
@@ -444,12 +457,15 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
         jet_fields["hadronFlavour"] = events["Jet_partonFlavour"]
     jets = ak.zip(jet_fields)
 
-    fatjets = ak.zip({
-        "pt": events["FatJet_pt"],
-        "eta": events["FatJet_eta"],
-        "phi": events["FatJet_phi"],
-        "mass": events["FatJet_mass"],
-    })
+    # Fat jets disabled — uncomment to re-enable
+    # fatjets = ak.zip({
+    #     "pt": events["FatJet_pt"],
+    #     "eta": events["FatJet_eta"],
+    #     "phi": events["FatJet_phi"],
+    #     "mass": events["FatJet_mass"],
+    # })
+    fatjets = ak.zip({"pt": events["FatJet_pt"], "eta": events["FatJet_eta"],
+                      "phi": events["FatJet_phi"], "mass": events["FatJet_mass"]})
 
     # Apply masks: main collections = loose (for event selection, jet cleaning)
     selected_muons = muons[muon_mask]
@@ -474,7 +490,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     selected_jets = jets[jet_mask]
-    selected_fatjets = fatjets[fatjet_mask]
+    selected_fatjets = fatjets[fatjet_mask]  # always empty while fat jets are disabled
 
     # Clean jets from leptons
     print("  Cleaning jets from leptons...")

@@ -11,9 +11,11 @@ import time
 try:
     from coffea import processor
     from coffea.nanoevents import NanoEventsFactory, NanoAODSchema
+    from coffea.lumi_tools import LumiMask
     COFFEA_AVAILABLE = True
 except ImportError:
     COFFEA_AVAILABLE = False
+    LumiMask = None
     logging.warning("Coffea not available. Using fallback implementation.")
 
 from .objects import build_objects
@@ -62,6 +64,24 @@ def _event_weights_flat_columns(event_weights: Dict[str, Any]) -> Dict[str, np.n
     return cols
 
 
+def _flatten_metadata(metadata: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    """
+    Convert the metadata dict to a flat dict of single-element numpy arrays
+    suitable for writing as a ROOT tree or parquet file-level metadata.
+    Nested dicts (e.g. weight_statistics) are flattened with underscore-joined keys.
+    """
+    out = {}
+    for key, val in metadata.items():
+        if isinstance(val, dict):
+            for subkey, subval in val.items():
+                out[f"{key}_{subkey}"] = np.array([subval], dtype=np.float64)
+        elif isinstance(val, (int, np.integer)):
+            out[key] = np.array([val], dtype=np.int64)
+        elif isinstance(val, (float, np.floating)):
+            out[key] = np.array([val], dtype=np.float64)
+    return out
+
+
 class DarkBottomLineProcessor:
     """
     Main processor class for DarkBottomLine analysis.
@@ -79,6 +99,26 @@ class DarkBottomLineProcessor:
         self.histogram_manager = HistogramManager()
         self.histograms = self.histogram_manager.define_histograms()
 
+        # Golden JSON lumi mask (data only)
+        data_cfg = config.get("data", {})
+        self.is_data = bool(data_cfg.get("is_data", False))
+        self._lumi_mask = None
+        if self.is_data and LumiMask is not None:
+            golden_json = data_cfg.get("golden_json")
+            if golden_json:
+                from pathlib import Path
+                gjp = Path(golden_json)
+                if not gjp.exists():
+                    # Try relative to project root
+                    gjp = Path(__file__).resolve().parent.parent / golden_json
+                if gjp.exists():
+                    self._lumi_mask = LumiMask(str(gjp))
+                    logging.info(f"Loaded golden JSON lumi mask from {gjp}")
+                else:
+                    logging.warning(f"Golden JSON not found: {golden_json}")
+        elif self.is_data and LumiMask is None:
+            logging.warning("is_data=True but coffea.lumi_tools not available; golden JSON filter will be skipped")
+
         # Initialize accumulators
         self.accumulator = {
             "histograms": self.histograms,
@@ -87,7 +127,21 @@ class DarkBottomLineProcessor:
             "event_weights": {},
         }
 
-        logging.info(f"Initialized DarkBottomLine processor for year {config.get('year', 'unknown')}")
+        logging.info(f"Initialized DarkBottomLine processor for year {config.get('year', 'unknown')} (is_data={self.is_data})")
+
+    def apply_lumi_mask(self, events: ak.Array) -> ak.Array:
+        """
+        Apply golden JSON lumi mask to data events.
+        No-op for MC (is_data=False) or when mask is not loaded.
+        Returns filtered events and the number removed.
+        """
+        if self._lumi_mask is None:
+            return events
+        good_lumi = self._lumi_mask(events.run, events.luminosityBlock)
+        n_before = len(events)
+        events = events[good_lumi]
+        logging.info(f"Golden JSON: {n_before} -> {len(events)} events ({n_before - len(events)} removed)")
+        return events
 
     def process(self, events: ak.Array, event_selection_output: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -102,6 +156,11 @@ class DarkBottomLineProcessor:
         start_time = time.time()
         print(f"=== PROCESSING EVENTS ===")
         print(f"Total events loaded: {len(events)}")
+
+        # Apply golden JSON lumi mask (data only; no-op for MC)
+        if self.is_data:
+            events = self.apply_lumi_mask(events)
+            print(f"  Events after golden JSON filter: {len(events)}")
 
         # h_total_weight: sum of sign(genWeight) over ALL events before any selection
         h_total_weight = self.correction_manager.get_h_total_weight(events)
@@ -132,7 +191,10 @@ class DarkBottomLineProcessor:
         if event_selection_output:
             try:
                 logging.info(f"Saving event-level selection to {event_selection_output} ({len(selected_events)} events)")
-                self._save_event_selection(event_selection_output, selected_events, selected_objects, max_events=self.config.get("max_events"))
+                self._save_event_selection(event_selection_output, selected_events, selected_objects,
+                                           max_events=self.config.get("max_events"),
+                                           n_events_total=len(events),
+                                           h_total_weight=h_total_weight)
                 # Verify file was created
                 import os
                 if os.path.exists(event_selection_output):
@@ -250,8 +312,9 @@ class DarkBottomLineProcessor:
 
         return skimmed
 
-    def _save_event_selection(self, output_file: str, events: ak.Array, objects: Dict[str, Any], 
+    def _save_event_selection(self, output_file: str, events: ak.Array, objects: Dict[str, Any],
                               max_events: Optional[int] = None, n_events_total: Optional[int] = None,
+                              h_total_weight: Optional[float] = None,
                               event_weights: Optional[Dict[str, Any]] = None, output_format: str = "pkl"):
         """
         Save selected events and corresponding objects to a file.
@@ -270,6 +333,10 @@ class DarkBottomLineProcessor:
         import os
         import pickle
         import numpy as np
+
+        if events is None or len(events) == 0:
+            logging.debug("_save_event_selection: no events to save, skipping")
+            return
 
         # Ensure output directory exists
         outdir = os.path.dirname(output_file)
@@ -399,6 +466,11 @@ class DarkBottomLineProcessor:
                 logging.warning(f"Failed to save raw awkward backup to {raw_backup}: {e}")
 
         # Save ROOT file if specified
+        if save_root:
+            if len(events) == 0:
+                logging.debug("Skipping ROOT write: no events in this chunk/selection")
+                save_root = False
+
         if save_root:
             try:
                 import uproot
@@ -552,6 +624,8 @@ class DarkBottomLineProcessor:
                             'n_events': np.array([n_events_total], dtype=np.int64),
                             'n_selected_events': np.array([len(events)], dtype=np.int64),
                         }
+                        if h_total_weight is not None:
+                            metadata_dict['h_total_weight'] = np.array([h_total_weight], dtype=np.float64)
                         f['Metadata'] = metadata_dict
                         logging.info(f"Added n_events={n_events_total} to ROOT file metadata")
 
@@ -588,8 +662,9 @@ class DarkBottomLineProcessor:
             self._save_pickle(output_file)
 
     def _save_parquet(self, output_file: str):
-        """Save results as Parquet file (histograms + per-event weights)."""
+        """Save results as Parquet file (histograms + per-event weights + metadata)."""
         import pandas as pd
+        import json
 
         # Histogram data
         data = {}
@@ -607,6 +682,15 @@ class DarkBottomLineProcessor:
                 data[k] = v
 
         df = pd.DataFrame(data)
+
+        # Metadata as parquet file-level key-value pairs (scalars only)
+        metadata = self.accumulator.get("metadata", {})
+        if metadata:
+            flat_meta = _flatten_metadata(metadata)
+            existing = df.attrs if hasattr(df, "attrs") else {}
+            existing.update({k: float(v[0]) for k, v in flat_meta.items()})
+            df.attrs = existing
+
         df.to_parquet(output_file)
         logging.info(f"Saved results to {output_file}")
 
@@ -620,8 +704,10 @@ class DarkBottomLineProcessor:
                     if hasattr(hist, 'values'):
                         f[name] = hist
 
-                # Save metadata
-                f["metadata"] = self.accumulator["metadata"]
+                # Save metadata as a flat single-entry TTree
+                metadata = self.accumulator.get("metadata", {})
+                if metadata:
+                    f["metadata"] = _flatten_metadata(metadata)
 
                 # Per-event weights as TTree (flat columns)
                 event_weights = self.accumulator.get("event_weights", {})

@@ -328,6 +328,8 @@ def main():
                        help="Maximum number of events to process (converted to maxchunks for run_uproot_job)")
     parser.add_argument("--save-skims", action="store_true",
                        help="Save skimmed events")
+    parser.add_argument("--data", action="store_true",
+                       help="Input is collision data: apply golden JSON lumi mask and skip MC-only weights")
     parser.add_argument("--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR"],
                        default="INFO", help="Logging level")
 
@@ -342,6 +344,8 @@ def main():
 
     # Override config with command line arguments
     config['save_skims'] = args.save_skims
+    if args.data:
+        config.setdefault("data", {})["is_data"] = True
 
     # Initialize processor
     logging.info("Initializing processor...")

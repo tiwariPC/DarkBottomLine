@@ -27,7 +27,7 @@ if [ ! -d "$LOCAL_DIR" ]; then
     echo "⚠ Warning: .local directory not found at ${LOCAL_DIR}"
     echo "  Make sure you have run the installation first:"
     echo "    1. python3 check_requirements.py --install --local-dir ./.local"
-    echo "    2. ./install_lxplus.sh"
+    echo "    2. ./lxplus_setup.sh"
     echo ""
     return 1 2>/dev/null || exit 1
 fi

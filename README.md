@@ -18,7 +18,6 @@ DarkBottomLine is designed to process NanoAOD datasets using Coffea, producing f
 
 ## Installation
 
-
 ### Locally
 
 #### Prerequisites
@@ -29,103 +28,111 @@ DarkBottomLine is designed to process NanoAOD datasets using Coffea, producing f
 #### Setup
 
 1. Clone the repository:
-```bash
-git clone <repository-url>
-cd DarkBottomLine
-```
+
+   ```bash
+   git clone <repository-url>
+   cd DarkBottomLine
+   ```
 
 2. Create a conda environment:
-```bash
-conda create -n darkbottomline python=3.9
-conda activate darkbottomline
-```
 
-3. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
+   ```bash
+   conda create -n darkbottomline python=3.9
+   conda activate darkbottomline
+   ```
 
-4. Install the package in development mode:
-```bash
-pip install -e .
-```
+3. Install dependencies and the package:
+
+   ```bash
+   source local_setup.sh
+   ```
 
 ### Lxplus
 
-1. Source the following file
-```bash
-source /cvmfs/sft.cern.ch/lcg/views/LCG_105/x86_64-el9-gcc11-opt/setup.sh
-```
- - If above method does not work then try to install and load the CMSSW release:
-```bash
-cmsrel CMSSW_15_0_17
-cd CMSSW_15_0_17/src
-cmsenv
-```
+1. Source the following file:
+
+   ```bash
+   source /cvmfs/sft.cern.ch/lcg/views/LCG_105/x86_64-el9-gcc11-opt/setup.sh
+   ```
+
+   If the above method does not work, try installing and loading the CMSSW release:
+
+   ```bash
+   cmsrel CMSSW_15_0_17
+   cd CMSSW_15_0_17/src
+   cmsenv
+   ```
 
 2. Clone the repository:
-```bash
-git clone https://github.com/tiwariPC/DarkBottomLine.git
-cd DarkBottomLine
-```
+
+   ```bash
+   git clone https://github.com/tiwariPC/DarkBottomLine.git
+   cd DarkBottomLine
+   ```
 
 3. Check the pre-installed packages that come with CMSSW release:
-```bash
-python3 check_requirements.py
 
-# To install the missing packages
-python3 check_requirements.py --install --local-dir ./.local
+   ```bash
+   python3 check_requirements.py
 
-# Please add the suggested PYTHONPATH in the output of the above installation to your Python path
-```
+   # To install the missing packages
+   python3 check_requirements.py --install --local-dir ./.local
 
+   # Please add the suggested PYTHONPATH in the output of the above installation to your Python path
+   ```
 
 4. Run final installation script:
-```bash
-chmod +x install_lxplus.sh
-./install_lxplus.sh
-```
 
+   ```bash
+   chmod +x lxplus_setup.sh
+   ./lxplus_setup.sh
+   ```
 
 #### Environment Setup (Lxplus)
 
-After installation, you need to set up your environment before using DarkBottomLine. The `install_lxplus.sh` script automatically sets up the environment for the current session, but for future logins you'll need to use the `start.sh` script.
+After installation, you need to set up your environment before using DarkBottomLine. The `lxplus_setup.sh` script automatically sets up the environment for the current session, but for future logins you'll need to use the `start.sh` script.
 
 ##### First-time Installation (Automatic Setup)
 
-When you run `install_lxplus.sh`, it automatically:
+When you run `lxplus_setup.sh`, it automatically:
+
 - Sets up `PYTHONPATH` to include the installed packages
 - Adds the `darkbottomline` command to your `PATH`
 - Exports these paths for the current session
 
-After running `install_lxplus.sh`, you can immediately use DarkBottomLine in that session (after sourcing LCG environment).
+After running `lxplus_setup.sh`, you can immediately use DarkBottomLine in that session (after sourcing LCG environment).
 
 ##### Using DarkBottomLine in Future Sessions
 
 Every time you start a new shell session on lxplus, you need to:
 
 1. **Source LCG environment first** (critical):
-```bash
+
+   ```bash
    source-lcg
    # Or if you don't have the function:
    source /cvmfs/sft.cern.ch/lcg/views/LCG_105/x86_64-el9-gcc11-opt/setup.sh
    ```
+
 2. Source the start.sh script to set up DarkBottomLine environment:
-```bash
+
+   ```bash
    cd /path/to/DarkBottomLine
    source start.sh
    # Or:
    . start.sh
-```
+   ```
+
 3. Verify the setup:
-```bash
+
+   ```bash
    darkbottomline --help
    # Or:
    python3 -c "from darkbottomline import DarkBottomLineProcessor; print('✓ Import successful')"
-```
-
+   ```
 
 #### Condor Setup
+
 ```bash
 cd condorJobs
 # Edit submit.sub file, change the user letter and username in line 3
@@ -133,8 +140,6 @@ cd condorJobs
 voms-proxy-init --voms cms --valid 192:00 && cp /tmp/x509up_u$(id -u) /afs/cern.ch/user/u/username/private/
 condor_submit submit.sub
 ```
-
-
 
 ## Quick Start
 
@@ -172,9 +177,11 @@ darkbottomline analyze \
     --input /path/to/signal/nano_signal_1.root /path/to/signal/nano_signal_2.root \
     --output outputs/hists/regions_signal.pkl
 ```
+
 When using a `.txt` file for input, list one file path per line. Empty lines and lines starting with `#` will be ignored.
 
 **Analysis Options:**
+
 - `--config`: Base configuration file (e.g., `configs/2024.yaml`)
 - `--regions-config`: Regions configuration file (e.g., `configs/regions.yaml`)
 - `--input`: Input NanoAOD ROOT file(s). Can be a single file, multiple files, or a `.txt` file containing a list of file paths.
@@ -205,6 +212,7 @@ darkbottomline make-plots \
 ```
 
 **Plotting Options:**
+
 - `--input`: Input results pickle file
 - `--save-dir`: Base output directory (default: `outputs`)
 - `--show-data`: Include data points on plots
@@ -257,6 +265,7 @@ darkbottomline run \
 ### Command Line Options
 
 **Analysis Commands:**
+
 - `analyze`: Multi-region analysis with full region definitions
 - `run`: Simple single-region analysis
 - `--config`: Path to YAML configuration file
@@ -268,10 +277,11 @@ darkbottomline run \
 - `--chunk-size`: Number of events per chunk for futures/dask executors (default: 50000 for futures, 200000 for dask). Helps manage memory with large files.
 - `--max-events`: Maximum number of events to process. For futures/dask executors, converted to maxchunks based on chunk-size.
 - `--event-selection-output`: Optional path to save events that pass event-level selection (supports `.pkl` and `.root`).
-    - If you provide a `.pkl` path, a plain-Python-serializable pickle will be saved and a raw awkward backup `*.awk_raw.pkl` will also be created.
-    - If you provide a `.root` path, a small ROOT TTree `Events` will be written containing scalar branches (event identifiers, MET scalars, and object multiplicities).
+  - If you provide a `.pkl` path, a plain-Python-serializable pickle will be saved and a raw awkward backup `*.awk_raw.pkl` will also be created.
+  - If you provide a `.root` path, a small ROOT TTree `Events` will be written containing scalar branches (event identifiers, MET scalars, and object multiplicities).
 
 **Plotting Commands:**
+
 - `make-plots`: Generate individual variable plots and grouped plots
 - `make-stacked-plots`: Generate stacked Data/MC plots with ratio
 - `--show-data`: Show data points on plots
@@ -300,6 +310,7 @@ python run_analysis.py --config configs/2023.yaml --input large_file.root --outp
 ```
 
 **Chunk Size Notes:**
+
 - Chunk size controls how many events are processed per chunk, helping manage memory usage
 - Smaller chunks (e.g., 50000) use less memory but may have more overhead
 - Larger chunks (e.g., 200000+) are more efficient but require more memory
@@ -322,20 +333,24 @@ The framework uses YAML configuration files for year-specific parameters. Config
 Regions are defined in `configs/regions.yaml` with the format: `{category}:{region_type}_{channel}`
 
 **Categories:**
+
 - `1b`: 1 b-tag category (≤2 jets, 1 b-jet)
 - `2b`: 2 b-tag category (3 jets, 2 b-jets)
 
 **Region Types:**
+
 - `SR`: Signal region
 - `CR_Wlnu`: W+jets control region
 - `CR_Top`: Top control region
 - `CR_Zll`: Z+jets control region
 
 **Channels:**
+
 - `mu`: Muon channel
 - `el`: Electron channel
 
 **Example Regions:**
+
 - `1b:SR` - Signal region, 1 b-tag
 - `2b:SR` - Signal region, 2 b-tags
 - `1b:CR_Wlnu_mu` - W+jets CR, 1b, muon channel
@@ -403,10 +418,12 @@ The analysis uses a category-based region structure with channel separation:
 ### Control Region Definitions
 
 **Z CR Separation:**
+
 - **Z_1b**: `(njet <= 2) and (jet1Pt > 100.)`
 - **Z_2b**: `(njet <= 3 and njet > 1) and (jet1Pt > 100.)`
 
 **Channel Separation:**
+
 - All CRs (Top, W, Z) have separate muon and electron channels
 - Taus are vetoed for the full analysis
 
@@ -415,6 +432,7 @@ The analysis uses a category-based region structure with channel separation:
 ### 1. Object Selection (`darkbottomline/objects.py`)
 
 Physics object selection and cleaning functions:
+
 - `select_muons()`: Muon selection with ID and isolation cuts
 - `select_electrons()`: Electron selection with ID and isolation cuts
 - `select_taus()`: Tau selection with ID and decay mode cuts
@@ -426,6 +444,7 @@ Physics object selection and cleaning functions:
 ### 2. Region Management (`darkbottomline/regions.py`)
 
 Multi-region analysis with category and channel separation:
+
 - `RegionManager`: Manages multiple analysis regions
 - `Region`: Single region with cuts and properties
 - `apply_regions()`: Apply region cuts to events
@@ -434,6 +453,7 @@ Multi-region analysis with category and channel separation:
 ### 3. Multi-Region Analyzer (`darkbottomline/analyzer.py`)
 
 Multi-region analysis processor:
+
 - `DarkBottomLineAnalyzer`: Extends base processor for multi-region analysis
 - `process()`: Process events through all defined regions
 - `_fill_region_histograms()`: Fill histograms for each region
@@ -443,6 +463,7 @@ Multi-region analysis processor:
 ### 4. Plotting (`darkbottomline/plotting.py`)
 
 Data/MC plotting with CMS styling:
+
 - `PlotManager`: Manages plot creation and styling
 - `create_all_plots()`: Generate all plots for all regions
 - `_get_excluded_variables_for_region()`: Region-specific plot exclusions
@@ -453,6 +474,7 @@ Data/MC plotting with CMS styling:
 ### 5. Histograms (`darkbottomline/histograms.py`)
 
 Histogram definitions and filling:
+
 - `HistogramManager`: Manages histogram creation and filling
 - Histogram types: MET, jet kinematics, lepton kinematics, b-tagging, derived variables
 - Support for both hist library and fallback implementation
@@ -461,6 +483,7 @@ Histogram definitions and filling:
 ### 6. Weights (`darkbottomline/weights.py`)
 
 Weight calculation and combination:
+
 - `WeightCalculator`: Combines all weights using Coffea's Weights class
 - `add_generator_weight()`: Generator weight handling
 - `add_corrections()`: Correction weight application
@@ -499,7 +522,7 @@ Complete analysis results including histograms, cutflow, and metadata.
 
 Analysis results are saved as pickle files with the following structure:
 
-```
+```text
 outputs/hists/
 ├── regions_data.pkl
 ├── regions_dy.pkl
@@ -508,6 +531,7 @@ outputs/hists/
 ```
 
 Each pickle file contains:
+
 - `region_histograms`: Dictionary of histograms per region
 - `regions`: Region processing results
 - `region_cutflow`: Cutflow statistics per region
@@ -518,7 +542,7 @@ Each pickle file contains:
 
 Plots are organized in a versioned directory structure:
 
-```
+```text
 outputs/plots/{version}/
 ├── png/
 │   ├── 1b/
@@ -547,6 +571,7 @@ outputs/plots/{version}/
 ```
 
 **File Naming Convention:**
+
 - Format: `{category}_{region_dir}_{variable_name}.{format}`
 - Examples:
   - `1b_SR_met.png`
@@ -554,6 +579,7 @@ outputs/plots/{version}/
   - `1b_Zll_mu_z_mass.png`
 
 **Plot Exclusions:**
+
 - **1b SR**: Excludes jet3 plots and all lepton plots
 - **2b SR**: Excludes lepton plots (includes jet3)
 - **Top/W CRs**: Exclude `z_mass` and `z_pt` plots
@@ -570,6 +596,7 @@ jupyter notebook notebooks/
 ```
 
 **Available Validation Notebooks:**
+
 1. `01_plot_exclusions_validation.ipynb` - Test plot exclusions
 2. `02_region_definitions_validation.ipynb` - Validate region definitions
 3. `03_histogram_structure_validation.ipynb` - Check histogram structure
@@ -609,11 +636,13 @@ See `notebooks/README.md` for detailed documentation.
 - **ROOT**: pyroot (optional, for ROOT file output)
 
 Install all dependencies:
+
 ```bash
-pip install -r requirements.txt
+source local_setup.sh
 ```
 
 For ROOT support (optional):
+
 ```bash
 # Install ROOT via conda or system package manager
 conda install -c conda-forge root
@@ -626,17 +655,20 @@ conda install -c conda-forge root
 1. **Missing correction files**: Ensure correction files are in the correct paths specified in configuration. Warnings are acceptable if corrections are not needed for testing.
 
 2. **Import errors**: Check that all dependencies are installed correctly:
+
    ```bash
-   pip install -r requirements.txt
-   pip install -e .
+   source local_setup.sh
    ```
 
 3. **Memory issues**:
    - Use `--max-events` to limit events for testing:
+
      ```bash
      darkbottomline analyze ... --max-events 10000
      ```
+
    - For futures/dask executors, reduce `--chunk-size` to process smaller chunks:
+
      ```bash
      darkbottomline analyze ... --executor futures --chunk-size 25000
      ```
@@ -662,7 +694,7 @@ python -c "import logging; logging.basicConfig(level=logging.DEBUG)"
 darkbottomline analyze ... --log-level DEBUG
 ```
 
-### Validation
+### Run Validation Notebooks
 
 Run validation notebooks to check framework setup:
 

@@ -6,15 +6,97 @@ This guide maps common modification tasks to specific files and locations in the
 
 ## Table of Contents
 
-1. [Plotting and Visualization](#plotting-and-visualization)
-2. [Variable Definitions](#variable-definitions)
-3. [Histogram Definitions](#histogram-definitions)
-4. [Region Definitions](#region-definitions)
-5. [Physics Object Selection](#physics-object-selection)
-6. [Corrections and Weights](#corrections-and-weights)
-7. [Configuration Files](#configuration-files)
-8. [Command-Line Interface](#command-line-interface)
-9. [Analysis Workflow](#analysis-workflow)
+1. [Environment and Installation](#environment-and-installation)
+2. [Plotting and Visualization](#plotting-and-visualization)
+3. [Variable Definitions](#variable-definitions)
+4. [Histogram Definitions](#histogram-definitions)
+5. [Region Definitions](#region-definitions)
+6. [Physics Object Selection](#physics-object-selection)
+7. [Corrections and Weights](#corrections-and-weights)
+8. [Configuration Files](#configuration-files)
+9. [Command-Line Interface](#command-line-interface)
+10. [Analysis Workflow](#analysis-workflow)
+
+---
+
+## Environment and Installation
+
+### Overview of Setup Files
+
+The project uses two separate installation workflows depending on the target environment. `environment.yml` is the single source of truth for all package dependencies.
+
+| File | Purpose | When to use |
+| ---- | ------- | ----------- |
+| `environment.yml` | Conda environment definition (all deps) | Always — canonical dependency list |
+| `local_setup.sh` | Create/activate conda env, `pip install -e .` | Local computer |
+| `lxplus_setup.sh` | `pip install -e . --prefix .local` | lxplus only |
+| `check_requirements.py` | Check/install missing packages via pip | lxplus only |
+| `start.sh` | Set `PYTHONPATH`/`PATH` for `.local` packages | lxplus, every new session |
+| `setup.py` | Package metadata, entry points, `install_requires` | Used by both `pip install -e .` calls |
+
+### Local Setup (Normal Computer)
+
+```bash
+source local_setup.sh
+```
+
+This script uses `mamba`/`conda` to create the `darkbottomline` environment from `environment.yml` (if it does not already exist), activates it, and runs `pip install -e .` to register the package.
+
+### Lxplus Setup
+
+```bash
+# 1. Load LCG environment (provides a base Python)
+source /cvmfs/sft.cern.ch/lcg/views/LCG_105/x86_64-el9-gcc11-opt/setup.sh
+
+# 2. Check and install missing packages into .local/
+python3 check_requirements.py --install --local-dir ./.local
+
+# 3. Install the package itself into .local/
+./lxplus_setup.sh
+
+# 4. In future sessions: source start.sh to restore PYTHONPATH/PATH
+source start.sh
+```
+
+### Updating Dependencies
+
+`environment.yml` is the **only** file you need to edit when adding or changing a dependency. `setup.py`'s `install_requires` must be kept in sync manually — update it at the same time.
+
+**Files to edit when adding a dependency:**
+
+1. `environment.yml` — add to the conda `dependencies:` list (or under `pip:` for pip-only packages)
+2. `setup.py` — add to `install_requires` (runtime deps only; omit dev/test tools like `pytest`, `jupyter`)
+
+**Do not** add dependencies to any other file. `requirements.txt` has been removed — `environment.yml` supersedes it.
+
+### Package Entry Point
+
+The `darkbottomline` CLI command is registered via `setup.py`:
+
+```python
+entry_points={
+    "console_scripts": [
+        "darkbottomline=darkbottomline.cli:main",
+    ],
+}
+```
+
+If you add a new top-level command, register it in `darkbottomline/cli.py` and it will be automatically available after `pip install -e .`.
+
+### Checking Requirements (lxplus)
+
+`check_requirements.py` reads package requirements from `environment.yml` (not `requirements.txt`):
+
+```bash
+# Check what is installed vs missing
+python3 check_requirements.py
+
+# Install missing packages into ./.local
+python3 check_requirements.py --install --local-dir ./.local
+
+# Use a different environment file
+python3 check_requirements.py --requirements /path/to/environment.yml
+```
 
 ---
 
@@ -572,7 +654,7 @@ def analyze(input, output, max_events):
 ## Quick Reference: File Locations Summary
 
 | Task | File | Location |
-|------|------|----------|
+| ---- | ---- | -------- |
 | Plot colors/styles | `darkbottomline/utils/plot_utils.py` | `CMSPlotStyle` class |
 | Process colors/labels | `darkbottomline/utils/plot_utils.py` | `get_process_colors()`, `get_process_labels()` |
 | Plot exclusions | `configs/plotting.yaml` | `region_exclusions` section |
@@ -626,6 +708,6 @@ def analyze(input, output, max_events):
 
 ---
 
-*Last updated: November 2024*
+Last updated: April 2026
 
 

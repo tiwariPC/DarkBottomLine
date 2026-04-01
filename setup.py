@@ -9,19 +9,34 @@ setup(
     python_requires=">=3.9",
     packages=find_packages(),
     install_requires=[
-        "coffea>=2024.4.0",
-        "awkward>=2.0",
-        "uproot>=5.0",
-        "correctionlib>=2.3.0",
-        "dask[complete]",
-        "distributed",
-        "pyyaml",
-        "numpy",
-        "pandas",
-        "pyarrow",
-        "matplotlib",
-        "jupyter",
-        "hist",
+        # Core scientific
+        "numpy>=1.24.3",
+        "scipy>=1.10.0",
+        "matplotlib>=3.8.4",
+        "pandas>=2.0.1",
+        # Physics analysis
+        "awkward>=2.8.11",
+        "uproot>=5.6.9",
+        "correctionlib>=2.6.4",
+        "coffea>=2025.12.0",
+        "fsspec-xrootd>=0.2.2",
+        "xrootd>=5.7.2",
+        # Distributed computing
+        "dask[complete]>=2024.4.2",
+        "distributed>=2024.4.2",
+        # Machine learning
+        "torch>=2.0.0",
+        "scikit-learn>=1.2.2",
+        # Histogramming and plotting
+        "hist>=2.7.2",
+        "plotly>=5.0.0",
+        # Data handling
+        "pyarrow>=17.0.0",
+        # Configuration
+        "pyyaml>=6.0.1",
+        # Utilities
+        "tqdm>=4.67.1",
+        "memory-profiler>=0.60.0",
     ],
     entry_points={
         "console_scripts": [

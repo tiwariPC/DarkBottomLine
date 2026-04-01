@@ -68,6 +68,8 @@ def run_analysis(args):
 
     # Load configuration
     config = load_config(args.config)
+    if args.data:
+        config.setdefault("data", {})["is_data"] = True
 
     # Initialize processor
     processor = DarkBottomLineProcessor(config)
@@ -183,6 +185,8 @@ def run_analyzer(args):
             sys.exit(1)
 
     config = load_config(args.config)
+    if args.data:
+        config.setdefault("data", {})["is_data"] = True
 
     try:
         import uproot
@@ -739,6 +743,8 @@ Examples:
                            default="iterative", help="Execution backend")
     run_parser.add_argument("--workers", type=int, default=4, help="Number of workers")
     run_parser.add_argument("--max-events", type=int, help="Maximum events to process")
+    run_parser.add_argument("--data", action="store_true",
+                           help="Input is collision data: apply golden JSON lumi mask and skip MC-only weights")
     run_parser.set_defaults(func=run_analysis)
 
     # Analyze command
@@ -760,6 +766,8 @@ Examples:
     analyze_parser.add_argument("--chunk-size", type=str, default=None,
                                help="Number of events per chunk for futures/dask executors. Use 'auto' for automatic optimization, or specify an integer (default: 50000 for futures, 200000 for dask). Only used with futures/dask executors.")
     analyze_parser.add_argument("--max-events", type=int, help="Maximum events to process across all chunks")
+    analyze_parser.add_argument("--data", action="store_true",
+                               help="Input is collision data: apply golden JSON lumi mask and skip MC-only weights")
     analyze_parser.set_defaults(func=run_analyzer)
 
     # Train DNN command

@@ -208,11 +208,12 @@ def _load_correction_file_with_edges_fix(file_path: str) -> Optional[CorrectionS
             return CorrectionSet.from_string(json_str)
         return CorrectionSet.from_string(json.dumps(data))
     except Exception as e:
+        err_str = str(e)
+        truncated = err_str[:200] + " [...]" if len(err_str) > 200 else err_str
         logging.warning(
-            "CorrectionSet.from_string failed after bin-edge fix for %s: %s",
+            "CorrectionSet.from_string failed after bin-edge fix for %s (will fall back to from_file): %s",
             file_path,
-            e,
-            exc_info=False,
+            truncated,
         )
         return None
 
@@ -902,9 +903,13 @@ class CorrectionManager:
     def get_h_total_weight(self, events: ak.Array) -> float:
         """
         Compute the normalization sum from all events before any selection.
-        Each event contributes +1 or -1 according to the sign of genWeight.
-        Call this immediately after the input file is read.
+        For MC: sum of sign(genWeight) over all events (+1 or -1 per event).
+        For data: always 1.0 (no generator weight normalization needed).
+        Call this immediately after the input file is read (and lumi mask applied for data).
         """
+        is_data = self.config.get("data", {}).get("is_data", False)
+        if is_data:
+            return 1.0
         try:
             _gw = np.asarray(ak.to_numpy(events.genWeight), dtype=float)
             return float(np.sum(np.sign(_gw)))
