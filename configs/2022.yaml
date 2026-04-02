@@ -19,8 +19,8 @@ corrections:
    electronHLT_name: "2022Re-recoBCD"
    electronHLT_WP: "HLT_SF_Ele30_TightID"
    jetJEC: data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_jet_jerc.json.gz
-   jetJEC_tag: "Summer22_22Sep2023_V2_MC"
-   jetJEC_algo: "AK4PFchs"
+   jetJEC_tag: "Summer22_22Sep2023_V3_MC"
+   jetJEC_algo: "AK4PFPuppi"
    jetJEC_level: "L1L2L3Res"
    jetJEC_unc: "Total"
 

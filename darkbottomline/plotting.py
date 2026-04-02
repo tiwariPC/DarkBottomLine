@@ -476,6 +476,7 @@ class PlotManager:
             import ROOT
             # hist_name already contains category_region_variable format
             root_path = os.path.join(root_dir, f"{hist_name}{suffix}.root")
+            os.makedirs(root_dir, exist_ok=True)
             root_file = ROOT.TFile(root_path, "RECREATE")
 
             # Create TH1F for each process

@@ -646,6 +646,10 @@ class HistogramManager:
             histograms: Dictionary of histograms
             output_file: Output file path
         """
+        import os
+        outdir = os.path.dirname(output_file)
+        if outdir:
+            os.makedirs(outdir, exist_ok=True)
         if HIST_AVAILABLE:
             # Save using hist library
             import pickle

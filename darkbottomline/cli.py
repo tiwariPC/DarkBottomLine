@@ -99,7 +99,9 @@ def run_analysis(args):
         import os
 
         # Create output directory if it doesn't exist
-        os.makedirs(os.path.dirname(args.output), exist_ok=True)
+        outdir = os.path.dirname(args.output)
+        if outdir:
+            os.makedirs(outdir, exist_ok=True)
 
         with open(args.output, 'wb') as f:
             pickle.dump(results, f)
@@ -337,7 +339,9 @@ def run_analyzer(args):
             if not event_selection_only:
                 analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
                 analyzer.accumulator = result
-                os.makedirs(os.path.dirname(args.output), exist_ok=True)
+                outdir = os.path.dirname(args.output)
+                if outdir:
+                    os.makedirs(outdir, exist_ok=True)
                 analyzer.save_results(args.output, output_format=args.output_format)
             else:
                 logging.info("Event selection only mode: skipping region analysis and main output save")
@@ -406,7 +410,9 @@ def run_analyzer(args):
                     results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                               event_selection_only=False, output_format=output_format_to_use,
                                               n_events_total=n_events_total)
-                    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+                    outdir = os.path.dirname(args.output)
+                    if outdir:
+                        os.makedirs(outdir, exist_ok=True)
                     analyzer.accumulator = results
                     analyzer.save_results(args.output, output_format=args.output_format)
 

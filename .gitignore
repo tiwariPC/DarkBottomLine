@@ -67,6 +67,8 @@ htmlcov/
 .env
 .env.local
 condorJobs/submitfiles/
+.local
 
 # Development prompts(Jim Du)
 .prompt
+.claude
