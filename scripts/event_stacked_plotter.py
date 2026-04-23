@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import copy
+import array
 import json
 import math
 import os
@@ -34,6 +35,11 @@ import mplhep as hep
 hep.style.use("CMS")
 import numpy as np
 import uproot
+
+try:
+    import ROOT
+except Exception:
+    ROOT = None
 
 
 @dataclass
@@ -772,6 +778,26 @@ def _histogram(values: np.ndarray, bins: np.ndarray, n_events: int, luminosity: 
     return hist
 
 
+def _event_weight(n_events: int, luminosity: float = 1.0, cross_section_pb: Optional[float] = None) -> float:
+    """Compute per-event weight with the same convention used by histogram normalization."""
+    if n_events <= 0:
+        return 0.0
+    if cross_section_pb is not None:
+        # Keep consistency with histogram code: convert pb to fb.
+        return (luminosity * cross_section_pb * 1000.0) / float(n_events)
+    return luminosity / float(n_events)
+
+
+def _scale_cutflow(
+    cutflow_values: np.ndarray,
+    n_events: int,
+    luminosity: float = 1.0,
+    cross_section_pb: Optional[float] = None,
+) -> np.ndarray:
+    weight = _event_weight(n_events, luminosity=luminosity, cross_section_pb=cross_section_pb)
+    return np.asarray(cutflow_values, dtype=float) * weight
+
+
 def _clip_overflow(values: np.ndarray, bins: np.ndarray) -> np.ndarray:
     """Clip values outside [bins[0], bins[-1]) into the first/last bin.
 
@@ -959,6 +985,194 @@ _AXIS_LABELS: Dict[str, str] = {
 def _axis_label(variable: str) -> str:
     """Return the formatted x-axis label for a variable, falling back to the variable name."""
     return _AXIS_LABELS.get(variable, variable)
+
+
+def _root_safe_name(name: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_]+", "_", name)
+
+
+def _root_hist_from_numpy(
+    name: str,
+    bins: np.ndarray,
+    values: np.ndarray,
+    errors: Optional[np.ndarray] = None,
+    labels: Optional[Sequence[str]] = None,
+):
+    if ROOT is None:
+        raise RuntimeError("ROOT is not available, cannot write ROOT output")
+
+    hist = ROOT.TH1D(
+        _root_safe_name(name),
+        "",
+        len(bins) - 1,
+        array.array("d", [float(v) for v in bins]),
+    )
+    hist.SetDirectory(0)
+    hist.Sumw2()
+    hist.SetStats(0)
+    for index, value in enumerate(values, start=1):
+        hist.SetBinContent(index, float(value))
+        if errors is not None:
+            hist.SetBinError(index, float(errors[index - 1]))
+        elif value >= 0:
+            hist.SetBinError(index, math.sqrt(float(value)))
+    if labels is not None:
+        for index, label in enumerate(labels, start=1):
+            hist.GetXaxis().SetBinLabel(index, str(label))
+    return hist
+
+
+def _save_stacked_root_plot(
+    root_path: Path,
+    plot_title: str,
+    x_title: str,
+    y_title: str,
+    bins: np.ndarray,
+    background_hists: List[Tuple[str, np.ndarray, np.ndarray]],
+    data_hist: Optional[np.ndarray],
+    luminosity: float,
+    labels: Optional[Sequence[str]] = None,
+) -> None:
+    if ROOT is None:
+        raise RuntimeError("ROOT is required for --save-root but is not available in this environment")
+
+    root_file = ROOT.TFile.Open(str(root_path), "RECREATE")
+    if root_file is None or root_file.IsZombie():
+        raise OSError(f"Could not create ROOT file: {root_path}")
+
+    try:
+        ROOT.gStyle.SetOptStat(0)
+        canvas = ROOT.TCanvas(_root_safe_name(f"c_{root_path.stem}"), plot_title, 1200, 900)
+        canvas.cd()
+
+        has_ratio = data_hist is not None
+        if has_ratio:
+            top_pad = ROOT.TPad("top_pad", "top_pad", 0.0, 0.30, 1.0, 1.0)
+            bottom_pad = ROOT.TPad("bottom_pad", "bottom_pad", 0.0, 0.0, 1.0, 0.30)
+            top_pad.SetBottomMargin(0.03)
+            bottom_pad.SetTopMargin(0.03)
+            bottom_pad.SetBottomMargin(0.33)
+            bottom_pad.SetGridy(False)
+            top_pad.Draw()
+            bottom_pad.Draw()
+        else:
+            top_pad = canvas
+            bottom_pad = None
+
+        # Main stack
+        top_pad.cd()
+        stack = ROOT.THStack(_root_safe_name(f"stack_{root_path.stem}"), "")
+        legend = ROOT.TLegend(0.63, 0.60, 0.92, 0.90)
+        legend.SetBorderSize(0)
+        legend.SetFillStyle(0)
+        legend.SetTextFont(42)
+
+        background_root_hists = []
+        total_values = np.zeros(len(bins) - 1, dtype=float)
+        total_sumw2 = np.zeros(len(bins) - 1, dtype=float)
+        color_map = _get_background_color_map([label for label, _, _ in background_hists])
+
+        for label, hist_values, hist_sumw2 in background_hists:
+            total_values += hist_values
+            total_sumw2 += hist_sumw2
+            root_hist = _root_hist_from_numpy(
+                f"h_{label}",
+                bins,
+                hist_values,
+                errors=np.sqrt(hist_sumw2),
+                labels=labels,
+            )
+            root_hist.SetFillColor(int(ROOT.TColor.GetColor(color_map.get(label, "#3f90da"))))
+            root_hist.SetLineColor(ROOT.kBlack)
+            root_hist.SetLineWidth(1)
+            background_root_hists.append(root_hist)
+            stack.Add(root_hist, "hist")
+            legend.AddEntry(root_hist, _get_legend_label(label), "f")
+
+        stack.SetTitle(f";{x_title};{y_title}")
+        stack.Draw("hist")
+        stack.GetYaxis().SetTitleOffset(1.2)
+        stack.SetMaximum(max(float(np.max(total_values)) * 1.4 if total_values.size else 1.0, 1.0))
+
+        total_band = _root_hist_from_numpy(
+            f"band_{root_path.stem}",
+            bins,
+            total_values,
+            errors=np.sqrt(total_sumw2),
+            labels=labels,
+        )
+        total_band.SetFillColor(ROOT.kGray + 2)
+        total_band.SetFillStyle(3004)
+        total_band.SetLineColor(ROOT.kGray + 2)
+        total_band.Draw("e2 same")
+        legend.AddEntry(total_band, "Uncertainty", "f")
+
+        data_graph = None
+        if data_hist is not None:
+            centers = 0.5 * (bins[:-1] + bins[1:])
+            half_width = 0.5 * (bins[1:] - bins[:-1])
+            data_graph = ROOT.TGraphErrors(int(len(data_hist)))
+            data_graph.SetName(_root_safe_name(f"data_{root_path.stem}"))
+            data_graph.SetMarkerStyle(20)
+            data_graph.SetMarkerSize(1.0)
+            data_graph.SetLineColor(ROOT.kBlack)
+            data_graph.SetMarkerColor(ROOT.kBlack)
+            for index, value in enumerate(data_hist):
+                data_graph.SetPoint(index, float(centers[index]), float(value))
+                data_graph.SetPointError(index, float(half_width[index]), math.sqrt(float(value)) if value > 0 else 0.0)
+            data_graph.Draw("P same")
+            legend.AddEntry(data_graph, "Data", "pe")
+
+        legend.Draw()
+
+        if has_ratio and bottom_pad is not None:
+            bottom_pad.cd()
+            ratio_hist = _root_hist_from_numpy(
+                f"ratio_{root_path.stem}",
+                bins,
+                np.ones(len(bins) - 1, dtype=float),
+                errors=np.divide(np.sqrt(total_sumw2), total_values, out=np.zeros_like(total_values), where=total_values > 0),
+                labels=labels,
+            )
+            ratio_hist.SetTitle(f";{x_title};Data / MC")
+            ratio_hist.SetMinimum(0.0)
+            ratio_hist.SetMaximum(2.0)
+            ratio_hist.SetFillColor(ROOT.kGray + 2)
+            ratio_hist.SetFillStyle(3004)
+            ratio_hist.SetLineColor(ROOT.kGray + 2)
+            ratio_hist.Draw("e2")
+
+            unity = ROOT.TLine(float(bins[0]), 1.0, float(bins[-1]), 1.0)
+            unity.SetLineColor(ROOT.kBlack)
+            unity.SetLineWidth(2)
+            unity.Draw("same")
+
+            if data_hist is not None:
+                centers = 0.5 * (bins[:-1] + bins[1:])
+                half_width = 0.5 * (bins[1:] - bins[:-1])
+                ratio_graph = ROOT.TGraphErrors(int(len(data_hist)))
+                ratio_graph.SetName(_root_safe_name(f"ratio_data_{root_path.stem}"))
+                ratio_graph.SetMarkerStyle(20)
+                ratio_graph.SetMarkerSize(1.0)
+                ratio_graph.SetLineColor(ROOT.kBlack)
+                ratio_graph.SetMarkerColor(ROOT.kBlack)
+                for index, value in enumerate(data_hist):
+                    pred = float(total_values[index])
+                    ratio = float(value) / pred if pred > 0 else 0.0
+                    ratio_err = math.sqrt(float(value)) / pred if pred > 0 and value > 0 else 0.0
+                    ratio_graph.SetPoint(index, float(centers[index]), ratio)
+                    ratio_graph.SetPointError(index, float(half_width[index]), ratio_err)
+                ratio_graph.Draw("P same")
+
+        canvas.Write()
+        for hist in background_root_hists:
+            hist.Write()
+        total_band.Write()
+        if data_graph is not None:
+            data_graph.Write()
+        root_file.Write()
+    finally:
+        root_file.Close()
 
 
 def _plot_stacked_variable(
@@ -1153,20 +1367,20 @@ def _plot_stacked_variable(
                 zorder=10,
             )
 
-        ax_ratio.set_ylabel("Data / SM", fontsize=22, labelpad=6)
+        ax_ratio.set_ylabel("Data / MC", fontsize=22, labelpad=6)
         ax_ratio.set_xlabel(_axis_label(variable), fontsize=22, labelpad=8)
-        ax_ratio.set_ylim(0.6, 1.4)
+        ax_ratio.set_ylim(0, 2.0)
         ax_ratio.set_xlim(x_lo, x_hi)
-        ax_ratio.axhline(0.6, color="none")  # force ylim anchor
+        ax_ratio.axhline(1.0, color="none")  # force ylim anchor
         ax_ratio.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]))
-        ax_ratio.yaxis.set_major_locator(matplotlib.ticker.FixedLocator([0.6, 0.8, 1.0, 1.2, 1.4]))
+        ax_ratio.yaxis.set_major_locator(matplotlib.ticker.FixedLocator([0, 0.5, 1.0, 1.5, 2.0]))
         ax_ratio.grid(False)
 
     # =========================== CMS Labels ===========================
     hep.cms.label(
         "Work in progress",
         data=data_hist is not None,
-        lumi=round(luminosity, 1),
+        lumi=round(luminosity, 2),
         com=13.6,
         loc=0,
         ax=ax,
@@ -1267,8 +1481,26 @@ def _plot_stacked_cutflow(
         )
         cumulative += values
 
-    # Cutflow stack is shown as MC totals only (no data overlay).
-    _ = data_cutflow
+    # Optional data overlay (restored): draw points with Poisson uncertainties.
+    has_data_overlay = False
+    if data_cutflow is not None:
+        mask = np.asarray(data_cutflow > 0, dtype=bool)
+        if np.any(mask):
+            has_data_overlay = True
+            ax.errorbar(
+                x[mask],
+                data_cutflow[mask],
+                yerr=np.sqrt(data_cutflow[mask]),
+                fmt="o",
+                color="black",
+                markerfacecolor="black",
+                markeredgecolor="black",
+                markersize=5.5,
+                elinewidth=1.2,
+                capsize=0,
+                label="Data",
+                zorder=10,
+            )
 
     ax.set_xticks(x)
     ax.set_xticklabels([str(label) for label in cut_labels], rotation=30, ha="right")
@@ -1279,16 +1511,36 @@ def _plot_stacked_cutflow(
 
     if y_scale == "log":
         positive = cumulative[cumulative > 0]
-        ymin = max(1e-3, float(np.min(positive)) * 0.5) if positive.size else 1e-3
-        ymax = max(1.0, float(np.max(cumulative)) if cumulative.size else 1.0)
+        data_positive = np.array([], dtype=float)
+        if data_cutflow is not None:
+            data_positive = np.asarray(data_cutflow[data_cutflow > 0], dtype=float)
+        if positive.size and data_positive.size:
+            ymin = max(1e-3, min(float(np.min(positive)), float(np.min(data_positive))) * 0.5)
+        elif positive.size:
+            ymin = max(1e-3, float(np.min(positive)) * 0.5)
+        elif data_positive.size:
+            ymin = max(1e-3, float(np.min(data_positive)) * 0.5)
+        else:
+            ymin = 1e-3
+        # Keep cutflow log-axis readable: always show down to at least 1e2.
+        ymin = min(ymin, 1e2)
+        ymax = max(
+            1.0,
+            float(np.max(cumulative)) if cumulative.size else 1.0,
+            float(np.max(data_cutflow)) if data_cutflow is not None and data_cutflow.size else 1.0,
+        )
         ax.set_ylim(ymin, ymax * 10.0)
     else:
-        ymax = max(1.0, float(np.max(cumulative)) if cumulative.size else 1.0)
+        ymax = max(
+            1.0,
+            float(np.max(cumulative)) if cumulative.size else 1.0,
+            float(np.max(data_cutflow)) if data_cutflow is not None and data_cutflow.size else 1.0,
+        )
         ax.set_ylim(0.0, ymax * 1.25)
 
     hep.cms.label(
         "Work in progress",
-        data=False,
+        data=has_data_overlay,
         lumi=round(luminosity, 1),
         com=13.6,
         loc=0,
@@ -1374,6 +1626,8 @@ def _load_sample_from_folder(
             "objects": {},
             "metadata_n_events_available": True,
             "cross_section": None,
+            "cutflow_labels": None,
+            "cutflow_values": None,
         }
 
         for root_file in sorted(root_files):
@@ -1382,6 +1636,8 @@ def _load_sample_from_folder(
             except Exception as exc:
                 print(f"Warning: Could not load ROOT file {root_file.name}: {exc}")
                 continue
+
+            parsed_cutflow = _extract_cutflow_from_root_file(root_file)
 
             if not loaded.get("metadata_n_events_available", False):
                 print(
@@ -1396,6 +1652,16 @@ def _load_sample_from_folder(
                     loaded.get("n_events", 0) or 0
                 )
                 unmatched_merged["objects"] = _merge_values(unmatched_merged.get("objects", {}), loaded.get("objects", {}))
+                if parsed_cutflow is not None:
+                    cf_labels, cf_values = parsed_cutflow
+                    merged_labels, merged_values = _merge_cutflow_series(
+                        unmatched_merged.get("cutflow_labels"),
+                        unmatched_merged.get("cutflow_values"),
+                        cf_labels,
+                        cf_values,
+                    )
+                    unmatched_merged["cutflow_labels"] = merged_labels
+                    unmatched_merged["cutflow_values"] = merged_values
                 continue
             process_key, xsec_pb = match
             group = per_process_merged.get(process_key)
@@ -1405,10 +1671,22 @@ def _load_sample_from_folder(
                     "objects": {},
                     "metadata_n_events_available": True,
                     "cross_section": xsec_pb,
+                    "cutflow_labels": None,
+                    "cutflow_values": None,
                 }
                 per_process_merged[process_key] = group
             group["n_events"] = int(group.get("n_events", 0) or 0) + int(loaded.get("n_events", 0) or 0)
             group["objects"] = _merge_values(group.get("objects", {}), loaded.get("objects", {}))
+            if parsed_cutflow is not None:
+                cf_labels, cf_values = parsed_cutflow
+                merged_labels, merged_values = _merge_cutflow_series(
+                    group.get("cutflow_labels"),
+                    group.get("cutflow_values"),
+                    cf_labels,
+                    cf_values,
+                )
+                group["cutflow_labels"] = merged_labels
+                group["cutflow_values"] = merged_values
 
         if unmatched_files:
             if per_process_merged:
@@ -1444,6 +1722,8 @@ def _load_sample_from_folder(
                     n_events=group_n_events,
                     objects=group.get("objects", {}),
                     cross_section=group_xsec,
+                    cutflow_labels=group.get("cutflow_labels"),
+                    cutflow_values=group.get("cutflow_values"),
                 )
             )
         unmatched_n_events = int(unmatched_merged.get("n_events", 0) or 0)
@@ -1457,6 +1737,8 @@ def _load_sample_from_folder(
                     n_events=unmatched_n_events,
                     objects=unmatched_merged.get("objects", {}),
                     cross_section=None,
+                    cutflow_labels=unmatched_merged.get("cutflow_labels"),
+                    cutflow_values=unmatched_merged.get("cutflow_values"),
                 )
             )
 
@@ -1510,6 +1792,7 @@ def run_plotting(
     year: Optional[str] = None,
     draw_cutflow: bool = False,
     draw_cutflow_frac: bool = False,
+    save_root: bool = False,
 ) -> List[Path]:
     if not background_folders:
         raise ValueError("At least one background folder is required")
@@ -1649,11 +1932,31 @@ def run_plotting(
         if merged_cut_labels is not None and merged_cut_values is not None:
             bkg_cutflows: List[Tuple[str, np.ndarray]] = []
             for sample in bkg_samples:
-                aligned = _align_cutflow_to_labels(sample.cutflow_labels, sample.cutflow_values, merged_cut_labels)
-                bkg_cutflows.append((sample.name, aligned))
+                if sample.sub_samples:
+                    # Mixed-process sample: normalize each process cutflow separately.
+                    normalized = np.zeros(len(merged_cut_labels), dtype=float)
+                    for sub in sample.sub_samples:
+                        sub_aligned = _align_cutflow_to_labels(sub.cutflow_labels, sub.cutflow_values, merged_cut_labels)
+                        normalized += _scale_cutflow(
+                            sub_aligned,
+                            sub.n_events,
+                            luminosity=sample.luminosity,
+                            cross_section_pb=sub.cross_section,
+                        )
+                    bkg_cutflows.append((sample.name, normalized))
+                else:
+                    aligned = _align_cutflow_to_labels(sample.cutflow_labels, sample.cutflow_values, merged_cut_labels)
+                    normalized = _scale_cutflow(
+                        aligned,
+                        sample.n_events,
+                        luminosity=sample.luminosity,
+                        cross_section_pb=sample.cross_section,
+                    )
+                    bkg_cutflows.append((sample.name, normalized))
 
             data_cutflow = None
             if data_sample is not None:
+                # Data should remain as raw counts.
                 data_cutflow = _align_cutflow_to_labels(data_sample.cutflow_labels, data_sample.cutflow_values, merged_cut_labels)
 
             cutflow_out = _plot_stacked_cutflow(
@@ -1665,6 +1968,19 @@ def run_plotting(
                 color_map=color_map,
             )
             created_files.append(cutflow_out)
+            if save_root:
+                cutflow_root_path = output_dir / "stacked_cutflow.root"
+                _save_stacked_root_plot(
+                    cutflow_root_path,
+                    "stacked_cutflow",
+                    "Cut step",
+                    "Events",
+                    np.arange(len(merged_cut_labels) + 1, dtype=float),
+                    [(label, values, np.zeros_like(values, dtype=float)) for label, values in bkg_cutflows],
+                    data_cutflow,
+                    luminosity,
+                    labels=merged_cut_labels,
+                )
 
             if draw_cutflow_frac:
                 bkg_cutflows_frac: List[Tuple[str, np.ndarray]] = []
@@ -1686,6 +2002,19 @@ def run_plotting(
                     y_scale="linear",
                 )
                 created_files.append(cutflow_frac_out)
+                if save_root:
+                    cutflow_frac_root_path = output_dir / "stacked_cutflow_frac.root"
+                    _save_stacked_root_plot(
+                        cutflow_frac_root_path,
+                        "stacked_cutflow_frac",
+                        "Cut step",
+                        "Fraction",
+                        np.arange(len(merged_cut_labels) + 1, dtype=float),
+                        [(sample_name, values, np.zeros_like(values, dtype=float)) for sample_name, values in bkg_cutflows_frac],
+                        None,
+                        luminosity,
+                        labels=merged_cut_labels,
+                    )
         else:
             print("Warning: --draw-cutflow enabled but no metdata/cf or Metadata cf_* branches were found in the provided ROOT samples.")
 
@@ -1753,6 +2082,18 @@ def run_plotting(
             color_map=color_map,
         )
         created_files.append(out_path)
+        if save_root:
+            root_path = output_dir / f"stacked_{variable}.root"
+            _save_stacked_root_plot(
+                root_path,
+                f"stacked_{variable}",
+                _axis_label(variable),
+                "Events / bin",
+                bins,
+                bkg_hists,
+                data_hist,
+                luminosity,
+            )
 
     return created_files
 
@@ -1809,6 +2150,11 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="If set with --draw-cutflow, also draw stacked cutflow fraction plot (normalized by first cut per sample).",
     )
+    parser.add_argument(
+        "--save-root",
+        action="store_true",
+        help="If set, also save each plot as a ROOT file alongside the PNG output.",
+    )
     return parser.parse_args()
 
 
@@ -1828,6 +2174,7 @@ def main() -> None:
         year=args.year,
         draw_cutflow=args.draw_cutflow,
         draw_cutflow_frac=args.draw_cutflow_frac,
+        save_root=args.save_root,
     )
     print(f"Created {len(output_paths)} stacked plot(s)")
     data_inputs: List[Path] = []
@@ -1848,6 +2195,7 @@ def main() -> None:
     print(f"File type: {args.file_type}")
     print(f"Draw cutflow: {args.draw_cutflow}")
     print(f"Draw cutflow frac: {args.draw_cutflow_frac}")
+    print(f"Save ROOT: {args.save_root}")
     for out in output_paths:
         print(out)
 

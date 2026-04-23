@@ -94,6 +94,7 @@ outputs/
 python3 scripts/event_stacked_plotter.py \
     --background-folders <bkg_folder1> [<bkg_folder2> ...] \
     [--data-folder <data_folder>] \
+    [--data-folders <data_folder1> <data_folder2> ...] \
     --output-dir <output_dir> \
     [OPTIONS]
 ```
@@ -107,6 +108,7 @@ python3 scripts/event_stacked_plotter.py \
 | `--background-folders` | ✅ | — | 一个或多个背景文件夹，每个文件夹合并为一个堆叠分量 |
 | `--output-dir` | ✅ | — | 输出 PNG 图片存放目录（不存在时自动创建） |
 | `--data-folder` | ❌ | 无 | 数据文件夹，合并后用黑色线段叠加；不指定则仅画背景 |
+| `--data-folders` | ❌ | 无 | 多个数据文件夹，会先合并再叠加；适合同时使用 2022C 和 2022D |
 | `--variables` | ❌ | 全部 | 只绘制指定变量，如 `--variables PFMET_pt jets_pt n_bjets` |
 | `--bins` | ❌ | `40` | 连续变量的分箱数（整数变量自动使用整数分箱） |
 | `--max-variables` | ❌ | 无 | 最多绘制的变量数（调试 / 快速预览用） |
@@ -129,7 +131,7 @@ python3 scripts/event_stacked_plotter.py \
         outputs/3-16/2022/newDIBOSON_2022_EVENTSELECTION \
     --output-dir outputs/3-16/stacked_plots_2022 \
     --variables PFMET_pt PFMET_phi electron_pt electron_eta muon_pt muon_eta jets_pt jets_eta \
-    --lumi 7.9
+    --lumi 7.99
 ```
 
 ### 2. 仅绘制指定变量
@@ -141,7 +143,7 @@ python3 scripts/event_stacked_plotter.py \
         outputs/newTop_2022_EVENTSELECTION/2022 \
     --output-dir outputs/stacked_met \
     --variables PFMET_pt PFMET_phi n_bjets \
-    --lumi 7.9
+    --lumi 7.99
 ```
 
 ### 3. 加入数据样本叠加
@@ -151,12 +153,33 @@ python3 scripts/event_stacked_plotter.py \
     --background-folders \
         outputs/newDIBOSON_2022_EVENTSELECTION/2022 \
         outputs/newTop_2022_EVENTSELECTION/2022 \
-    --data-folder outputs/data_2022/ \
+    --data-folders \
+        outputs/4-2/2022/Run2022C_met_22Sep2023-v1_EVENTSELECTION \
+        outputs/4-2/2022/Run2022D-22Sep2023-v1_EVENTSELECTION \
     --output-dir outputs/stacked_data_mc \
-    --lumi 7.9
+    --lumi 7.99
 ```
 
-### 4. 快速预览（限制变量数）
+### 4. 同时使用 2022C 和 2022D 的完整 2022 图
+
+```bash
+python3 scripts/event_stacked_plotter.py \
+    --background-folders \
+        outputs/4-2/2022/newDIBOSON_2022_EVENTSELECTION \
+        outputs/4-2/2022/newDYto2L-2Jets_2022_EVENTSELECTION \
+        outputs/4-2/2022/newTop_2022_EVENTSELECTION \
+        outputs/4-2/2022/newWtoLNU-2Jets_2022_EVENTSELECTION \
+        outputs/4-2/2022/newZto2Nu-2Jets_2022_EVENTSELECTION \
+    --data-folders \
+        outputs/4-2/2022/Run2022C_met_22Sep2023-v1_EVENTSELECTION \
+        outputs/4-2/2022/Run2022D-22Sep2023-v1_EVENTSELECTION \
+    --output-dir outputs/4-2/2022_full_physics_plots_2022CD_7p99 \
+    --xsection-json scripts/xsection_results.json \
+    --year 2022 \
+    --lumi 7.99
+```
+
+### 5. 快速预览（限制变量数）
 
 ```bash
 python3 scripts/event_stacked_plotter.py \
@@ -165,14 +188,14 @@ python3 scripts/event_stacked_plotter.py \
     --max-variables 5
 ```
 
-### 5. 强制使用 PKL 文件（忽略同目录 ROOT 文件）
+### 6. 强制使用 PKL 文件（忽略同目录 ROOT 文件）
 
 ```bash
 python3 scripts/event_stacked_plotter.py \
     --background-folders outputs/newTop_2022_EVENTSELECTION/2022 \
     --output-dir outputs/stacked_pkl_only \
     --file-type pkl \
-    --lumi 7.9
+    --lumi 7.99
 ```
 
 ---
@@ -201,7 +224,9 @@ outputs/stacked_plots_2022/
 - **Y 轴**：对数坐标，单位为 `Events × lumi / n_events`
 - **CMS 标注**：左上角 `CMS Simulation`，右上角显示积分亮度
 - **背景堆叠**：按总事件数从小（底）到大（顶）排布，标签自动简化（去除年份、前缀等）
-- **数据覆盖**：若提供 `--data-folder`，用黑色阶梯线叠加
+- **数据覆盖**：若提供 `--data-folder` 或 `--data-folders`，用黑色阶梯线叠加
+- **固定分箱**：`PFMET_pt` / `MET` / `Recoil` 使用 `[250, 300, 400, 550, 1000]`，`ctsValue` 使用 `[0, 0.25, 0.50, 0.75, 1.0]`
+- **颜色方案**：背景颜色已对齐参考脚本的 process palette
 
 ---
 
@@ -216,3 +241,6 @@ outputs/stacked_plots_2022/
 4. **MET 过滤**：变量名末尾为 `met_pt` 的分布自动过滤 `< 100 GeV` 部分，以隐去触发效率不完整区域。
 
 5. **整数变量分箱**：若变量值全为整数且不超过 20 个唯一值（如多重数），自动使用整数分箱而非等宽连续分箱。
+
+### 常用代码
+python3 scripts/event_stacked_plotter.py --background-folders outputs/4-2/2022/newDIBOSON_2022_EVENTSELECTION outputs/4-2/2022/newDYto2L-2Jets_2022_EVENTSELECTION outputs/4-2/2022/newTop_2022_EVENTSELECTION outputs/4-2/2022/newWtoLNU-2Jets_2022_EVENTSELECTION outputs/4-2/2022/newZto2Nu-2Jets_2022_EVENTSELECTION --data-folders outputs/4-2/2022/Run2022C_met_22Sep2023-v1_EVENTSELECTION outputs/4-2/2022/Run2022D-22Sep2023-v1_EVENTSELECTION --output-dir outputs/4-2/2022_full_physics_plots_2022CD_7p99 --xsection-json scripts/xsection_results.json --year 2022 --lumi 7.99

@@ -387,19 +387,19 @@
     {
       "year": "2022",
       "process": "TTto2L2Nu",
-      "xsection": 762.1,
+      "xsection": 80.02,
       "full_dataset": "TTto2L2Nu_TuneCP5_13p6TeV_powheg-pythia8"
     },
     {
       "year": "2022",
       "process": "TTtoLNu2Q",
-      "xsection": 762.1,
+      "xsection": 348.3,
       "full_dataset": "TTtoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8"
     },
     {
       "year": "2022",
       "process": "TTto4Q",
-      "xsection": 762.1,
+      "xsection": 333.8,
       "full_dataset": "TTto4Q_TuneCP5_13p6TeV_powheg-pythia8"
     },
     {

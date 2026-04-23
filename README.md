@@ -758,6 +758,26 @@ echo "Analysis complete! Plots saved to outputs/plots/{version}/"
 - **Analysis Structure**: See `docs/analysis_structure.md` for region naming conventions and structure flow
 - **Plotting Configuration**: See `docs/plotting_configuration.md` for plot exclusion configuration
 - **Validation Notebooks**: See `notebooks/README.md` for validation notebook documentation
+
+## Versioning And Release
+
+The project version is defined in `darkbottomline/_version.py` and currently set to `2.0.0`.
+
+When you release a new version later, use this workflow:
+
+1. Update `darkbottomline/_version.py`.
+2. If needed, verify the package version still matches `setup.py` and `darkbottomline/__init__.py`.
+3. Commit the change.
+4. Create a Git tag with a leading `v`, for example `v2.0.1`.
+5. Push both the branch and the tag to your fork.
+
+Example:
+
+```bash
+git tag -a v2.0.1 -m "Release v2.0.1"
+git push forkssh development
+git push forkssh v2.0.1
+```
 - **Developer Guide**: See `DEVELOPER_GUIDE.md` for a comprehensive guide on where to make changes (plotting, variables, histograms, regions, etc.)
 
 ## Contributing

@@ -42,6 +42,7 @@ class TestDarkBottomLineProcessor:
                 "min_taus": 0,
                 "max_taus": 2,
                 "min_jets": 2,
+                "max_jets": 6,
                 "min_bjets": 1,
                 "met_min": 50.0
             },
@@ -141,6 +142,7 @@ class TestDarkBottomLineProcessor:
                 "min_taus": 0,
                 "max_taus": 2,
                 "min_jets": 2,
+                "max_jets": 6,
                 "min_bjets": 1,
                 "met_min": 50.0
             },

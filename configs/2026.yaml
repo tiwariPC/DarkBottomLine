@@ -96,6 +96,7 @@ event_selection:
    min_taus: 0
    max_taus: 0
    min_jets: 1
+   max_jets: 6
    min_bjets: 1
    met_min: 250.0      # event passes if MET > 250 GeV or Recoil > 250 GeV
    jet1_pt_min: 100.0

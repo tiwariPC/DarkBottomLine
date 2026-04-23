@@ -27,7 +27,7 @@ def _build_event_cut_masks(
     muon_cut = (n_muons >= selection["min_muons"]) & (n_muons <= selection["max_muons"])
     electron_cut = (n_electrons >= selection["min_electrons"]) & (n_electrons <= selection["max_electrons"])
     tau_cut = (n_taus >= selection["min_taus"]) & (n_taus <= selection["max_taus"])
-    jet_cut = n_jets >= selection["min_jets"]
+    jet_cut = (n_jets >= selection["min_jets"]) & (n_jets <= selection["max_jets"])
     bjet_cut = n_bjets >= selection["min_bjets"]
 
     # Recoil mask
@@ -84,6 +84,7 @@ def _build_event_cut_masks(
         "n_taus_min": selection["min_taus"],
         "n_taus_max": selection["max_taus"],
         "n_jets_min": selection["min_jets"],
+        "n_jets_max": selection["max_jets"],
         "n_bjets_min": selection["min_bjets"],
         "recoil_min_obs": float(ak.min(recoil)),
         "recoil_max_obs": float(ak.max(recoil)),
@@ -125,7 +126,9 @@ def _build_event_cut_masks(
             f"    electron_cut ({selection['min_electrons']} <= n <= {selection['max_electrons']}): {ak.sum(electron_cut)} pass"
         )
         logger.info(f"    tau_cut (n <= {selection['max_taus']}): {ak.sum(tau_cut)} pass")
-        logger.info(f"    jet_cut (n >= {selection['min_jets']}): {ak.sum(jet_cut)} pass")
+        logger.info(
+            f"    jet_cut ({selection['min_jets']} <= n <= {selection['max_jets']}): {ak.sum(jet_cut)} pass"
+        )
         logger.info(f"    bjet_cut (n >= {selection['min_bjets']}): {ak.sum(bjet_cut)} pass [CRITICAL FOR Z->NU]")
         logger.info(f"  Recoil cut (threshold > {recoil_min} GeV):")
         logger.info(
