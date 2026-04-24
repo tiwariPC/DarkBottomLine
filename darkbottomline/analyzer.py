@@ -453,9 +453,9 @@ class DarkBottomLineAnalyzer:
         # Jet multiplicity; use tight pt>30 leptons for region-consistent variables
         jets = objects.get("jets", ak.Array([]))
         bjets = objects.get("bjets", ak.Array([]))
-        muons = objects.get("tight_muons_pt30", ak.Array([]))
-        electrons = objects.get("tight_electrons_pt30", ak.Array([]))
-        taus = objects.get("tight_taus_pt30", ak.Array([]))
+        muons = objects.get("tight_muons", ak.Array([]))
+        electrons = objects.get("tight_electrons", ak.Array([]))
+        taus = objects.get("tight_taus", ak.Array([]))
 
         # Check if objects are empty
         # Safe per-event count: use axis=1 for jagged arrays; depth-1 (sliced region) can raise
@@ -471,9 +471,9 @@ class DarkBottomLineAnalyzer:
 
         variables["n_jets"] = _safe_num_jagged(objects.get("jets"), n_ev)
         variables["n_bjets"] = _safe_num_jagged(objects.get("bjets"), n_ev)
-        variables["n_muons"] = _safe_num_jagged(objects.get("tight_muons_pt30"), n_ev)
-        variables["n_electrons"] = _safe_num_jagged(objects.get("tight_electrons_pt30"), n_ev)
-        variables["n_taus"] = _safe_num_jagged(objects.get("tight_taus_pt30"), n_ev)
+        variables["n_muons"] = _safe_num_jagged(objects.get("tight_muons"), n_ev)
+        variables["n_electrons"] = _safe_num_jagged(objects.get("tight_electrons"), n_ev)
+        variables["n_taus"] = _safe_num_jagged(objects.get("tight_taus"), n_ev)
 
         # DeltaPhi between MET and jets (use safe count; avoid axis=1 on depth-1 arrays)
         jets = objects.get("jets", ak.Array([]))

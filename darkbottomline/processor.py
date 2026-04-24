@@ -19,7 +19,8 @@ except ImportError:
     logging.warning("Coffea not available. Using fallback implementation.")
 
 from .objects import build_objects
-from .selections import apply_selection, calculate_recoil
+from .selections import apply_selection
+from .objects import calculate_recoil
 from .corrections import CorrectionManager
 from .histograms import HistogramManager
 
@@ -495,8 +496,8 @@ class DarkBottomLineProcessor:
                       met_pt = events['PFMET_pt'] if 'PFMET_pt' in events.fields else events['MET_pt']
                       met_phi = events['PFMET_phi'] if 'PFMET_phi' in events.fields else events['MET_phi']
 
-                      muons = objects.get('tight_muons_pt30', ak.Array([]))
-                      electrons = objects.get('tight_electrons_pt30', ak.Array([]))
+                      muons = objects.get('tight_muons', ak.Array([]))
+                      electrons = objects.get('tight_electrons', ak.Array([]))
 
                       lep_px = ak.zeros_like(met_pt)
                       lep_py = ak.zeros_like(met_pt)

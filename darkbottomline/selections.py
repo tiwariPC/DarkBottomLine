@@ -7,6 +7,7 @@ import numpy as np
 from typing import Dict, Any, List, Tuple
 
 
+
 def _build_event_cut_masks(
     events: ak.Array,
     objects: Dict[str, Any],
@@ -32,19 +33,17 @@ def _build_event_cut_masks(
     n_taus = ak.num(objects["taus"], axis=1)
     n_photons = ak.num(objects["photons"], axis=1)
     n_jets = ak.num(objects["jets"], axis=1)
-    n_bjets = ak.num(objects["bjets"], axis=1)
+    n_bjets = ak.num(objects["bjets"], axis=1)  # counted for diagnostics only
 
     # Multiplicity masks
     muon_cut = (n_muons >= selection["min_muons"]) & (n_muons <= selection["max_muons"])
     electron_cut = (n_electrons >= selection["min_electrons"]) & (n_electrons <= selection["max_electrons"])
     tau_cut = n_taus <= selection["max_taus"]
-    photon_cut = n_photons <= selection.get("max_photons", 0)
+    photon_cut = n_photons <= selection["max_photons"]
     jet_cut = (n_jets >= selection["min_jets"]) & (n_jets <= selection["max_jets"])
-    bjet_cut = n_bjets >= selection["min_bjets"]
-
-    # Recoil mask
-    recoil = calculate_recoil(events, objects)
-    recoil_min = selection.get("recoil_min", 250.0)
+    # Recoil — precomputed in build_objects for all events
+    recoil = objects["recoil"]
+    recoil_min = selection["recoil_min"]
     recoil_cut = recoil > recoil_min
 
     # Leading jet pt mask
@@ -78,13 +77,12 @@ def _build_event_cut_masks(
     masks = {
         "Pass trigger": trigger_cut,
         "Pass filters": filter_cut,
+        "Pass recoil": recoil_cut,
         "Pass muon multiplicity": muon_cut,
         "Pass electron multiplicity": electron_cut,
         "Pass tau multiplicity": tau_cut,
         "Pass photon veto": photon_cut,
         "Pass jet multiplicity": jet_cut,
-        "Pass bjet multiplicity": bjet_cut,
-        "Pass recoil": recoil_cut,
         "Pass leading jet pt": jet1_pt_cut,
         "Pass delta phi": delta_phi_cut,
     }
@@ -101,7 +99,6 @@ def _build_event_cut_masks(
         "n_photons_max": selection.get("max_photons", 0),
         "n_jets_min": selection["min_jets"],
         "n_jets_max": selection["max_jets"],
-        "n_bjets_min": selection["min_bjets"],
         "recoil_min_obs": float(ak.min(recoil)),
         "recoil_max_obs": float(ak.max(recoil)),
         "recoil_mean_obs": float(ak.mean(recoil)),
@@ -113,8 +110,6 @@ def _build_event_cut_masks(
         "n_taus_obs_max": int(ak.max(n_taus)),
         "n_jets_obs_min": int(ak.min(n_jets)),
         "n_jets_obs_max": int(ak.max(n_jets)),
-        "n_bjets_obs_min": int(ak.min(n_bjets)),
-        "n_bjets_obs_max": int(ak.max(n_bjets)),
     }
 
     if logger:
@@ -132,7 +127,7 @@ def _build_event_cut_masks(
             f"    n_jets: min={diagnostics['n_jets_obs_min']}, max={diagnostics['n_jets_obs_max']}, mean={ak.mean(n_jets):.2f}"
         )
         logger.info(
-            f"    n_bjets: min={diagnostics['n_bjets_obs_min']}, max={diagnostics['n_bjets_obs_max']}, mean={ak.mean(n_bjets):.2f}"
+            f"    n_bjets: mean={ak.mean(n_bjets):.2f}"
         )
         logger.info("  Multiplicity cuts (standalone):")
         logger.info(
@@ -145,7 +140,7 @@ def _build_event_cut_masks(
         logger.info(
             f"    jet_cut ({selection['min_jets']} <= n <= {selection['max_jets']}): {ak.sum(jet_cut)} pass"
         )
-        logger.info(f"    bjet_cut (n >= {selection['min_bjets']}): {ak.sum(bjet_cut)} pass [CRITICAL FOR Z->NU]")
+
         logger.info(f"  Recoil cut (threshold > {recoil_min} GeV):")
         logger.info(
             f"    Recoil: min={diagnostics['recoil_min_obs']:.1f}, max={diagnostics['recoil_max_obs']:.1f}, mean={diagnostics['recoil_mean_obs']:.1f}"
@@ -161,36 +156,6 @@ def _build_event_cut_masks(
             logger.info("  DeltaPhi cut: DISABLED")
 
     return masks, diagnostics
-
-
-def calculate_recoil(events: ak.Array, objects: Dict[str, Any]) -> ak.Array:
-    """
-    Calculate event-level recoil with the same object definition used by saved output.
-
-    Recoil = |-(MET + sum pT(leptons))|, with leptons from tight pt>30 collections.
-    """
-    met_pt = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
-    met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
-
-    muons = objects.get("tight_muons_pt30", ak.Array([]))
-    electrons = objects.get("tight_electrons_pt30", ak.Array([]))
-
-    lep_px = ak.zeros_like(met_pt)
-    lep_py = ak.zeros_like(met_pt)
-    try:
-        if len(ak.flatten(muons)) > 0:
-            lep_px = lep_px + ak.sum(muons.pt * np.cos(muons.phi), axis=1)
-            lep_py = lep_py + ak.sum(muons.pt * np.sin(muons.phi), axis=1)
-        if len(ak.flatten(electrons)) > 0:
-            lep_px = lep_px + ak.sum(electrons.pt * np.cos(electrons.phi), axis=1)
-            lep_py = lep_py + ak.sum(electrons.pt * np.sin(electrons.phi), axis=1)
-    except (Exception, BaseException):
-        pass
-
-    recoil_px = -(met_pt * np.cos(met_phi) + ak.fill_none(lep_px, 0.0))
-    recoil_py = -(met_pt * np.sin(met_phi) + ak.fill_none(lep_py, 0.0))
-    recoil = np.sqrt(recoil_px**2 + recoil_py**2)
-    return ak.fill_none(recoil, 0.0)
 
 
 def pass_triggers(events: ak.Array, trigger_paths: List[str]) -> ak.Array:

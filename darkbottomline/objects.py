@@ -32,17 +32,18 @@ def select_muons(events: ak.Array, config: Dict[str, Any], wp: str = "loose") ->
     muons = ak.zip(muon_fields)
 
     # Basic kinematic cuts: preselection uses pt_min_loose (default 10), region uses pt_min
-    pt_min = config.get("pt_min_loose", 10.0) if wp == "loose" else config["pt_min"]
+    pt_min = config["pt_min_loose"] if wp == "loose" else config["pt_min"]
     pt_mask = muons.pt > pt_min
     eta_mask = abs(muons.eta) < config["eta_max"]
 
     # ID and isolation by working point
+    iso_wp = config["iso_wp_loose"] if wp == "loose" else config["iso_wp_tight"]
     if wp == "loose":
         id_mask = muons.looseId == 1 if "looseId" in muons.fields else (muons.tightId == 1)
-        iso_mask = muons.pfIsoId >= 1  # loose isolation
+        iso_mask = muons.pfIsoId >= iso_wp
     else:
         id_mask = muons.tightId == 1
-        iso_mask = muons.pfIsoId >= 3  # tight isolation
+        iso_mask = muons.pfIsoId >= iso_wp
 
     selection_mask = pt_mask & eta_mask & id_mask & iso_mask
     return selection_mask
@@ -73,7 +74,7 @@ def select_electrons(events: ak.Array, config: Dict[str, Any], wp: str = "loose"
     electrons = ak.zip(ele_fields)
 
     # Basic kinematic cuts: preselection uses pt_min_loose (default 10), region uses pt_min
-    pt_min = config.get("pt_min_loose", 10.0) if wp == "loose" else config["pt_min"]
+    pt_min = config["pt_min_loose"] if wp == "loose" else config["pt_min"]
     pt_mask = electrons.pt > pt_min
     eta_mask = abs(electrons.eta) < config["eta_max"]
 
@@ -83,12 +84,13 @@ def select_electrons(events: ak.Array, config: Dict[str, Any], wp: str = "loose"
     in_gap = (abs(electrons.eta) > eta_gap_min) & (abs(electrons.eta) < eta_gap_max)
     gap_veto_mask = ~in_gap
 
-    # ID and isolation by working point (cutBased: 2=loose, 4=tight)
+    # ID and isolation by working point
+    id_wp = config["id_wp_loose"] if wp == "loose" else config["id_wp_tight"]
     if wp == "loose":
-        id_mask = electrons.cutBased >= 2
+        id_mask = electrons.cutBased >= id_wp
         iso_mask = electrons.mvaIso_WP90 == 1 if "mvaIso_WP90" in electrons.fields else (electrons.mvaIso_WP80 == 1)
     else:
-        id_mask = electrons.cutBased >= 4
+        id_mask = electrons.cutBased >= id_wp
         iso_mask = electrons.mvaIso_WP80 == 1
 
     selection_mask = pt_mask & eta_mask & gap_veto_mask & id_mask & iso_mask
@@ -121,8 +123,9 @@ def select_taus(events: ak.Array, config: Dict[str, Any], wp: str = "loose") -> 
     pt_mask = taus.pt > pt_min
     eta_mask = abs(taus.eta) < config["eta_max"]
 
-    # ID by working point (DeepTau: 4=medium/loose, 16=tight)
-    id_mask = (taus.idDeepTau2018v2p5VSjet >= 4) if wp == "loose" else (taus.idDeepTau2018v2p5VSjet >= 16)
+    # ID by working point
+    id_wp = config["id_wp_loose"] if wp == "loose" else config["id_wp_tight"]
+    id_mask = taus.idDeepTau2018v2p5VSjet >= id_wp
     # Check if decay mode is in allowed modes
     decay_mode_mask = ak.zeros_like(taus.pt, dtype=bool)
     for mode in config["decay_modes"]:
@@ -141,7 +144,7 @@ def select_photons(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
     })
     pt_mask = photons.pt > config["pt_min"]
     eta_mask = abs(photons.eta) < config["eta_max"]
-    id_mask = photons.cutBased >= 1  # >= 1 = loose
+    id_mask = photons.cutBased >= config["id_wp"]
     return pt_mask & eta_mask & id_mask
 
 
@@ -253,24 +256,14 @@ def get_bjet_mask(jets: ak.Array, config: Dict[str, Any]) -> ak.Array:
     """
     algorithm = config["algorithm"]
     wp = config["wp"]
+    score = config[f"score_{wp}"]
 
     if algorithm == "deepJet":
-        if wp == "loose":
-            return jets.btagDeepFlavB > 0.0490
-        elif wp == "medium":
-            return jets.btagDeepFlavB > 0.2783
-        elif wp == "tight":
-            return jets.btagDeepFlavB > 0.7100
+        return jets.btagDeepFlavB > score
     elif algorithm == "deepCSV":
-        if wp == "loose":
-            return jets.btagDeepB > 0.1208
-        elif wp == "medium":
-            return jets.btagDeepB > 0.4941
-        elif wp == "tight":
-            return jets.btagDeepB > 0.8001
+        return jets.btagDeepB > score
 
-    # Default to medium working point
-    return jets.btagDeepFlavB > 0.2783
+    raise ValueError(f"Unknown btagging algorithm: {algorithm}")
 
 
 def _dilepton_mass(l1: ak.Array, l2: ak.Array, m_default: float = 0.105) -> ak.Array:
@@ -314,7 +307,7 @@ def build_z_candidates(
     Returns:
         n_z_muons, n_z_electrons: 2 if valid Z candidate else 0 per event
         mll_mu, mll_el: invariant mass of pair (0 if no candidate)
-        z_lep_sum_x_mu, z_lep_sum_y_mu, z_lep_sum_x_el, z_lep_sum_y_el: pT vector sum for RecoilZ
+        z_lep_sum_x_mu, z_lep_sum_y_mu, z_lep_sum_x_el, z_lep_sum_y_el: pT vector sum of Z leptons
     """
     n_ev = len(loose_muons)
     # awkward has no ak.zeros; use numpy and wrap for compatibility
@@ -369,6 +362,51 @@ def build_z_candidates(
         n_z_muons, n_z_electrons, mll_mu, mll_el,
         z_lep_sum_x_mu, z_lep_sum_y_mu, z_lep_sum_x_el, z_lep_sum_y_el,
     )
+
+
+def calculate_costheta_star(jets: ak.Array) -> ak.Array:
+    """
+    cos(theta*) = |tanh(dEta_j1j2 / 2)|
+    Requires >= 2 jets. Returns -2 sentinel when < 2 jets.
+    """
+    n_jets = ak.num(jets, axis=1)
+    has_two = n_jets >= 2
+
+    if not ak.any(has_two):
+        return ak.full_like(n_jets, -2.0, dtype=float)
+
+    j1 = ak.firsts(jets)
+    j2 = ak.pad_none(jets, 2, axis=1)[:, 1]
+
+    deta = ak.fill_none(j1.eta, 0.0) - ak.fill_none(j2.eta, 0.0)
+    cos_ts = np.abs(np.tanh(deta / 2.0))
+
+    return ak.where(has_two, cos_ts, -2.0)
+
+
+def calculate_recoil(events: ak.Array, objects: Dict[str, Any]) -> ak.Array:
+    """Recoil = |-(MET_vec + sum pT(loose muons+electrons))|."""
+    met_pt = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
+    met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
+
+    muons = objects.get("muons", ak.Array([]))
+    electrons = objects.get("electrons", ak.Array([]))
+
+    lep_px = ak.zeros_like(met_pt)
+    lep_py = ak.zeros_like(met_pt)
+    try:
+        if len(ak.flatten(muons)) > 0:
+            lep_px = lep_px + ak.sum(muons.pt * np.cos(muons.phi), axis=1)
+            lep_py = lep_py + ak.sum(muons.pt * np.sin(muons.phi), axis=1)
+        if len(ak.flatten(electrons)) > 0:
+            lep_px = lep_px + ak.sum(electrons.pt * np.cos(electrons.phi), axis=1)
+            lep_py = lep_py + ak.sum(electrons.pt * np.sin(electrons.phi), axis=1)
+    except (Exception, BaseException):
+        pass
+
+    recoil_px = -(met_pt * np.cos(met_phi) + ak.fill_none(lep_px, 0.0))
+    recoil_py = -(met_pt * np.sin(met_phi) + ak.fill_none(lep_py, 0.0))
+    return ak.fill_none(np.sqrt(recoil_px**2 + recoil_py**2), 0.0)
 
 
 def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -491,15 +529,18 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
     tight_muons = muons[muon_mask_loose & muon_mask_tight]
     tight_electrons = electrons[electron_mask_loose & electron_mask_tight]
     tight_taus = taus[tau_mask_loose & tau_mask_tight]
-    # Tight pt>30: for all CRs (W, Top, etc.) leading lepton is tight with pt>30
-    tight_muons_pt30 = tight_muons[tight_muons.pt > 30.0]
-    tight_electrons_pt30 = tight_electrons[tight_electrons.pt > 30.0]
-    tight_taus_pt30 = tight_taus[tight_taus.pt > 30.0]
+    # Tight pt > pt_min (from config): leading lepton threshold for CRs
+    mu_pt_min  = config["objects"]["muons"]["pt_min"]       # 30 GeV
+    el_pt_min  = config["objects"]["electrons"]["pt_min"]   # 32 GeV
+    tau_pt_min = config["objects"]["taus"]["pt_min"]        # 20 GeV
+    tight_muons     = tight_muons[tight_muons.pt > mu_pt_min]
+    tight_electrons = tight_electrons[tight_electrons.pt > el_pt_min]
+    tight_taus      = tight_taus[tight_taus.pt > tau_pt_min]
 
-    # Z CR candidates: 2 OS leptons, leading tight pt>30, subleading loose pt>10
+    # Z CR candidates: leading tight pt > mu/el pt_min, subleading loose pt > 10
     (n_z_muons, n_z_electrons, mll_mu, mll_el,
      z_lep_sum_x_mu, z_lep_sum_y_mu, z_lep_sum_x_el, z_lep_sum_y_el) = build_z_candidates(
-        selected_muons, selected_electrons, pt_lead_min=30.0, pt_sublead_min=10.0
+        selected_muons, selected_electrons, pt_lead_min=min(mu_pt_min, el_pt_min), pt_sublead_min=10.0
     )
 
     selected_jets = jets[jet_mask]
@@ -527,10 +568,24 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
     # Get b-tagging mask for cleaned jets
     print("  Applying b-tagging...")
     bjet_mask = get_bjet_mask(cleaned_jets, config["btagging"])
-    print(f"    B-jets identified: {ak.sum(ak.num(cleaned_jets[bjet_mask], axis=1))}")
+    selected_bjets = cleaned_jets[bjet_mask]
+    print(f"    B-jets identified: {ak.sum(ak.num(selected_bjets, axis=1))}")
+
+    # Compute recoil once for all events: |-(MET_vec + sum pT(loose leptons))|
+    print("  Computing recoil...")
+    recoil = calculate_recoil(events, {
+        "muons": selected_muons,
+        "electrons": selected_electrons,
+    })
+
+    # cos(theta*): helicity angle of leading jet in dijet CoM; -2 sentinel when < 2 jets
+    print("  Computing cos(theta*)...")
+    costheta_star = calculate_costheta_star(cleaned_jets)
 
     print("  Object building complete!")
     return {
+        "recoil": recoil,
+        "costheta_star": costheta_star,
         "photons": selected_photons,
         "muons": selected_muons,
         "electrons": selected_electrons,
@@ -538,9 +593,6 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
         "tight_muons": tight_muons,
         "tight_electrons": tight_electrons,
         "tight_taus": tight_taus,
-        "tight_muons_pt30": tight_muons_pt30,
-        "tight_electrons_pt30": tight_electrons_pt30,
-        "tight_taus_pt30": tight_taus_pt30,
         "n_z_muons": n_z_muons,
         "n_z_electrons": n_z_electrons,
         "mll_mu": mll_mu,
@@ -551,7 +603,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
         "z_lep_sum_y_el": z_lep_sum_y_el,
         "jets": cleaned_jets,
         "fatjets": selected_fatjets,
-        "bjets": cleaned_jets[bjet_mask],
+        "bjets": selected_bjets,
         "muon_mask": muon_mask,
         "electron_mask": electron_mask,
         "tau_mask": tau_mask,

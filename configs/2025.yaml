@@ -54,6 +54,8 @@ objects:
       iso_loose: "loose"
       id_tight: "tight"
       iso_tight: "tight"
+      iso_wp_loose: 1    # pfIsoId >= 1 = loose
+      iso_wp_tight: 3    # pfIsoId >= 3 = tight
 
    electrons:
       pt_min: 32.0
@@ -63,12 +65,16 @@ objects:
       iso_loose: "loose"
       id_tight: "tight"
       iso_tight: "tight"
+      id_wp_loose: 2     # cutBased >= 2 = loose
+      id_wp_tight: 4     # cutBased >= 4 = tight
 
    taus:
       pt_min: 20.0
       eta_max: 2.3
       id_loose: "loose"
       id_tight: "tight"
+      id_wp_loose: 4     # deepTau VSjet >= 4 = loose
+      id_wp_tight: 16    # deepTau VSjet >= 16 = tight
       decay_modes: [0, 1, 2, 10, 11]
 
    jets:
@@ -80,6 +86,7 @@ objects:
       pt_min: 15.0
       eta_max: 2.5
       id: "loose"
+      id_wp: 1           # cutBased >= 1 = loose
 
    fatjets:
       pt_min: 200.0
@@ -90,6 +97,9 @@ objects:
 btagging:
    wp: "medium"   # loose, medium, tight
    algorithm: "deepJet"   # deepJet, deepCSV
+   score_loose: 0.0479    # Run3 2023+ deepJet WPs (BTV POG)
+   score_medium: 0.2431
+   score_tight: 0.6553
 
 # Event selection (aligned with SUS-23-008)
 event_selection:
@@ -101,8 +111,7 @@ event_selection:
    max_photons: 0
    min_jets: 1
    max_jets: 6
-   min_bjets: 1
-   met_min: 250.0      # event passes if MET > 250 GeV or Recoil > 250 GeV
+   recoil_min: 250.0
    jet1_pt_min: 100.0
    delta_phi_min: 0.5
 
