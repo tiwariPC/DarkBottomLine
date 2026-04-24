@@ -116,8 +116,8 @@ def select_taus(events: ak.Array, config: Dict[str, Any], wp: str = "loose") -> 
         "decayMode": events["Tau_decayMode"],
     })
 
-    # Basic kinematic cuts: preselection uses pt_min_loose (default 10), region uses pt_min
-    pt_min = config.get("pt_min_loose", 10.0) if wp == "loose" else config["pt_min"]
+    # Taus use single pt_min (20 GeV) for both loose and tight — no separate loose threshold
+    pt_min = config["pt_min"]
     pt_mask = taus.pt > pt_min
     eta_mask = abs(taus.eta) < config["eta_max"]
 
@@ -130,6 +130,19 @@ def select_taus(events: ak.Array, config: Dict[str, Any], wp: str = "loose") -> 
 
     selection_mask = pt_mask & eta_mask & id_mask & decay_mode_mask
     return selection_mask
+
+
+def select_photons(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
+    """Select photons for veto: loose ID, pt > 15, |eta| < 2.5."""
+    photons = ak.zip({
+        "pt": events["Photon_pt"],
+        "eta": events["Photon_eta"],
+        "cutBased": events["Photon_cutBased"],
+    })
+    pt_mask = photons.pt > config["pt_min"]
+    eta_mask = abs(photons.eta) < config["eta_max"]
+    id_mask = photons.cutBased >= 1  # >= 1 = loose
+    return pt_mask & eta_mask & id_mask
 
 
 def select_jets(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
@@ -206,35 +219,25 @@ def clean_jets_from_leptons(
     leptons: ak.Array,
     dr_min: float = 0.4
 ) -> ak.Array:
-    """
-    Remove jets that are too close to selected leptons.
-
-    Args:
-        jets: Selected jets
-        leptons: Selected leptons (muons, electrons, or taus)
-        dr_min: Minimum Delta-R separation
-
-    Returns:
-        Boolean mask for jets that pass cleaning
-    """
+    """Remove jets within dr_min of any lepton (muons, electrons, photons)."""
     if len(ak.flatten(leptons)) == 0:
-        # No leptons, all jets pass
         return ak.ones_like(jets.pt, dtype=bool)
 
-    # Calculate Delta-R between jets and all leptons
-    # This is a simplified version - would need proper 2D Delta-R calculation
-    jet_eta = jets.eta
-    jet_phi = jets.phi
-    lep_eta = ak.flatten(leptons.eta)
-    lep_phi = ak.flatten(leptons.phi)
+    # Broadcast jets vs leptons for ΔR: jets[:,np.newaxis] vs leptons[np.newaxis,:]
+    deta = jets.eta - ak.pad_none(leptons.eta, 1, axis=0)
+    dphi = jets.phi - ak.pad_none(leptons.phi, 1, axis=0)
 
-    # For each jet, check if it's far enough from any lepton
-    # This is a placeholder - actual implementation would use proper Delta-R
-    dr_mask = ak.ones_like(jets.pt, dtype=bool)
+    # Use ak.cartesian for proper per-event pairing
+    pairs = ak.cartesian({"jet": jets, "lep": leptons}, axis=1)
+    deta = pairs["jet"].eta - pairs["lep"].eta
+    dphi = pairs["jet"].phi - pairs["lep"].phi
+    dphi = ak.where(dphi > np.pi, dphi - 2 * np.pi, dphi)
+    dphi = ak.where(dphi < -np.pi, dphi + 2 * np.pi, dphi)
+    dr = np.sqrt(deta**2 + dphi**2)
 
-    # TODO: Implement proper Delta-R calculation
-    # For now, return all jets as passing
-    return dr_mask
+    # Jet fails if ANY lepton is within dr_min
+    too_close = ak.any(dr < dr_min, axis=1)
+    return ~too_close
 
 
 def get_bjet_mask(jets: ak.Array, config: Dict[str, Any]) -> ak.Array:
@@ -400,6 +403,16 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
     tau_mask = tau_mask_loose
     print(f"    Taus (loose): {ak.sum(tau_mask_loose)}, tight: {ak.sum(tau_mask_loose & tau_mask_tight)}")
 
+    print("  Selecting photons (veto)...")
+    photon_mask = select_photons(events, config["objects"]["photons"])
+    photons = ak.zip({
+        "pt": events["Photon_pt"],
+        "eta": events["Photon_eta"],
+        "cutBased": events["Photon_cutBased"],
+    })
+    selected_photons = photons[photon_mask]
+    print(f"    Photons (loose veto): {ak.sum(photon_mask)}")
+
     print("  Selecting jets...")
     jet_mask = select_jets(events, config["objects"]["jets"])
     print(f"    Jets selected: {ak.sum(jet_mask)}")
@@ -492,16 +505,19 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
     selected_jets = jets[jet_mask]
     selected_fatjets = fatjets[fatjet_mask]  # always empty while fat jets are disabled
 
-    # Clean jets from leptons
-    print("  Cleaning jets from leptons...")
-    all_leptons = ak.concatenate([
-        selected_muons, selected_electrons, selected_taus
+    # Clean jets from muons, electrons, photons (taus vetoed, not used for cleaning)
+    print("  Cleaning jets from leptons and photons...")
+    cleaning_objects = ak.concatenate([
+        selected_muons[["eta", "phi"]],
+        selected_electrons[["eta", "phi"]],
+        selected_photons[["eta", "phi"]],
     ], axis=1)
 
+    dr_jet = config["cleaning"].get("dr_jet", 0.4)
     jet_cleaning_mask = clean_jets_from_leptons(
         selected_jets,
-        all_leptons,
-        config["cleaning"]["dr_muon_jet"]
+        cleaning_objects,
+        dr_jet
     )
 
     # Apply jet cleaning
@@ -515,6 +531,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
 
     print("  Object building complete!")
     return {
+        "photons": selected_photons,
         "muons": selected_muons,
         "electrons": selected_electrons,
         "taus": selected_taus,

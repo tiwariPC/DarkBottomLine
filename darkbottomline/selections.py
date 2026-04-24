@@ -13,20 +13,32 @@ def _build_event_cut_masks(
     config: Dict[str, Any],
     logger: Any = None,
 ) -> Tuple[Dict[str, ak.Array], Dict[str, float]]:
-    """Build per-cut masks for event-level selection and optional diagnostics."""
+    """Build per-cut masks in the canonical selection order (trigger first)."""
     selection = config["event_selection"]
+
+    # --- Trigger (OR of all trigger types) ---
+    combined_trigger_mask = ak.zeros_like(events["event"], dtype=bool)
+    for trigger_paths in config["triggers"].values():
+        if trigger_paths:
+            combined_trigger_mask = combined_trigger_mask | pass_triggers(events, trigger_paths)
+    trigger_cut = combined_trigger_mask
+
+    # --- MET filters ---
+    filter_cut = pass_met_filters(events, config["met_filters"])
 
     # Count objects per event
     n_muons = ak.num(objects["muons"], axis=1)
     n_electrons = ak.num(objects["electrons"], axis=1)
     n_taus = ak.num(objects["taus"], axis=1)
+    n_photons = ak.num(objects["photons"], axis=1)
     n_jets = ak.num(objects["jets"], axis=1)
     n_bjets = ak.num(objects["bjets"], axis=1)
 
     # Multiplicity masks
     muon_cut = (n_muons >= selection["min_muons"]) & (n_muons <= selection["max_muons"])
     electron_cut = (n_electrons >= selection["min_electrons"]) & (n_electrons <= selection["max_electrons"])
-    tau_cut = (n_taus >= selection["min_taus"]) & (n_taus <= selection["max_taus"])
+    tau_cut = n_taus <= selection["max_taus"]
+    photon_cut = n_photons <= selection.get("max_photons", 0)
     jet_cut = (n_jets >= selection["min_jets"]) & (n_jets <= selection["max_jets"])
     bjet_cut = n_bjets >= selection["min_bjets"]
 
@@ -62,10 +74,14 @@ def _build_event_cut_masks(
     else:
         delta_phi_cut = ak.ones_like(events["event"], dtype=bool)
 
+    # Canonical order — trigger & filters first, then object cuts
     masks = {
+        "Pass trigger": trigger_cut,
+        "Pass filters": filter_cut,
         "Pass muon multiplicity": muon_cut,
         "Pass electron multiplicity": electron_cut,
         "Pass tau multiplicity": tau_cut,
+        "Pass photon veto": photon_cut,
         "Pass jet multiplicity": jet_cut,
         "Pass bjet multiplicity": bjet_cut,
         "Pass recoil": recoil_cut,
@@ -81,8 +97,8 @@ def _build_event_cut_masks(
         "n_muons_max": selection["max_muons"],
         "n_electrons_min": selection["min_electrons"],
         "n_electrons_max": selection["max_electrons"],
-        "n_taus_min": selection["min_taus"],
         "n_taus_max": selection["max_taus"],
+        "n_photons_max": selection.get("max_photons", 0),
         "n_jets_min": selection["min_jets"],
         "n_jets_max": selection["max_jets"],
         "n_bjets_min": selection["min_bjets"],
@@ -290,21 +306,9 @@ def get_cutflow(
     cutflow: Dict[str, int] = {}
     cutflow["Total events"] = int(len(events))
 
-    combined_trigger_mask = ak.zeros_like(events["event"], dtype=bool)
-    for trigger_paths in config["triggers"].values():
-        if trigger_paths:
-            combined_trigger_mask = combined_trigger_mask | pass_triggers(events, trigger_paths)
-
+    all_masks, _ = _build_event_cut_masks(events, objects, config)
     final_mask = ak.ones_like(events["event"], dtype=bool)
-    final_mask = final_mask & combined_trigger_mask
-    cutflow["Pass trigger"] = int(ak.sum(final_mask))
-
-    filter_mask = pass_met_filters(events, config["met_filters"])
-    final_mask = final_mask & filter_mask
-    cutflow["Pass filters"] = int(ak.sum(final_mask))
-
-    event_cut_masks, _ = _build_event_cut_masks(events, objects, config)
-    for step_name, step_mask in event_cut_masks.items():
+    for step_name, step_mask in all_masks.items():
         final_mask = final_mask & step_mask
         cutflow[step_name] = int(ak.sum(final_mask))
 
@@ -328,25 +332,12 @@ def apply_selection(
     Returns:
         Tuple of (selected_events, selected_objects, cutflow)
     """
-    combined_trigger_mask = ak.zeros_like(events["event"], dtype=bool)
-    for trigger_type, trigger_paths in config["triggers"].items():
-        if trigger_paths: # Only apply if there are paths for this type
-            type_mask = pass_triggers(events, trigger_paths)
-            combined_trigger_mask = combined_trigger_mask | type_mask
-    trigger_mask = combined_trigger_mask
-
-    print("  Applying MET filter selection...")
-    # Apply MET filter selection
-    filter_mask = pass_met_filters(events, config["met_filters"])
-    print(f"    Events passing MET filters: {ak.sum(filter_mask)}")
-
-    print("  Applying event selection...")
-    # Apply event selection
-    event_mask = select_events(events, objects, config)
-    print(f"    Events passing event selection: {ak.sum(event_mask)}")
-
-    # Combine all masks
-    final_mask = trigger_mask & filter_mask & event_mask
+    print("  Applying full selection (trigger → filters → object cuts)...")
+    all_masks, _ = _build_event_cut_masks(events, objects, config)
+    final_mask = ak.ones_like(events["event"], dtype=bool)
+    for step_name, step_mask in all_masks.items():
+        final_mask = final_mask & step_mask
+        print(f"    After {step_name}: {ak.sum(final_mask)}")
     print(f"    Events passing all selections: {ak.sum(final_mask)}")
 
     # Apply selection to events and objects
