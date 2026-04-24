@@ -35,7 +35,7 @@ if [[ "$confirm" =~ ^[Yy]$ ]]; then
     gh release create "$GIT_TAG" \
         --title "$GIT_TAG" \
         --notes "Release ${GIT_TAG}" \
-        --target "$(git rev-parse $GIT_TAG)"
+        --target "$(git rev-parse ${GIT_TAG}^{})"
     echo "GitHub release created: $GIT_TAG"
 else
     echo "Skipped. Run manually:"
