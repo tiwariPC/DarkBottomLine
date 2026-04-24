@@ -7,6 +7,14 @@ import numpy as np
 from typing import Dict, Any, List, Tuple
 
 
+def _safe_float(val, default=0.0) -> float:
+    return default if val is None else float(val)
+
+
+def _safe_int(val, default=0) -> int:
+    return default if val is None else int(val)
+
+
 
 def _build_event_cut_masks(
     events: ak.Array,
@@ -99,35 +107,35 @@ def _build_event_cut_masks(
         "n_photons_max": selection.get("max_photons", 0),
         "n_jets_min": selection["min_jets"],
         "n_jets_max": selection["max_jets"],
-        "recoil_min_obs": float(ak.min(recoil)),
-        "recoil_max_obs": float(ak.max(recoil)),
-        "recoil_mean_obs": float(ak.mean(recoil)),
-        "n_muons_obs_min": int(ak.min(n_muons)),
-        "n_muons_obs_max": int(ak.max(n_muons)),
-        "n_electrons_obs_min": int(ak.min(n_electrons)),
-        "n_electrons_obs_max": int(ak.max(n_electrons)),
-        "n_taus_obs_min": int(ak.min(n_taus)),
-        "n_taus_obs_max": int(ak.max(n_taus)),
-        "n_jets_obs_min": int(ak.min(n_jets)),
-        "n_jets_obs_max": int(ak.max(n_jets)),
+        "recoil_min_obs": _safe_float(ak.min(recoil)),
+        "recoil_max_obs": _safe_float(ak.max(recoil)),
+        "recoil_mean_obs": _safe_float(ak.mean(recoil)),
+        "n_muons_obs_min": _safe_int(ak.min(n_muons)),
+        "n_muons_obs_max": _safe_int(ak.max(n_muons)),
+        "n_electrons_obs_min": _safe_int(ak.min(n_electrons)),
+        "n_electrons_obs_max": _safe_int(ak.max(n_electrons)),
+        "n_taus_obs_min": _safe_int(ak.min(n_taus)),
+        "n_taus_obs_max": _safe_int(ak.max(n_taus)),
+        "n_jets_obs_min": _safe_int(ak.min(n_jets)),
+        "n_jets_obs_max": _safe_int(ak.max(n_jets)),
     }
 
     if logger:
         logger.info("  Object counts per event:")
         logger.info(
-            f"    n_muons: min={diagnostics['n_muons_obs_min']}, max={diagnostics['n_muons_obs_max']}, mean={ak.mean(n_muons):.2f}"
+            f"    n_muons: min={diagnostics['n_muons_obs_min']}, max={diagnostics['n_muons_obs_max']}, mean={_safe_float(ak.mean(n_muons)):.2f}"
         )
         logger.info(
-            f"    n_electrons: min={diagnostics['n_electrons_obs_min']}, max={diagnostics['n_electrons_obs_max']}, mean={ak.mean(n_electrons):.2f}"
+            f"    n_electrons: min={diagnostics['n_electrons_obs_min']}, max={diagnostics['n_electrons_obs_max']}, mean={_safe_float(ak.mean(n_electrons)):.2f}"
         )
         logger.info(
-            f"    n_taus: min={diagnostics['n_taus_obs_min']}, max={diagnostics['n_taus_obs_max']}, mean={ak.mean(n_taus):.2f}"
+            f"    n_taus: min={diagnostics['n_taus_obs_min']}, max={diagnostics['n_taus_obs_max']}, mean={_safe_float(ak.mean(n_taus)):.2f}"
         )
         logger.info(
-            f"    n_jets: min={diagnostics['n_jets_obs_min']}, max={diagnostics['n_jets_obs_max']}, mean={ak.mean(n_jets):.2f}"
+            f"    n_jets: min={diagnostics['n_jets_obs_min']}, max={diagnostics['n_jets_obs_max']}, mean={_safe_float(ak.mean(n_jets)):.2f}"
         )
         logger.info(
-            f"    n_bjets: mean={ak.mean(n_bjets):.2f}"
+            f"    n_bjets: mean={_safe_float(ak.mean(n_bjets)):.2f}"
         )
         logger.info("  Multiplicity cuts (standalone):")
         logger.info(

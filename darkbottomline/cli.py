@@ -85,7 +85,7 @@ def run_analysis(args):
         events = uproot.concatenate([f"{path}:Events" for path in input_files])
 
         # Limit events if specified
-        if args.max_events and len(events) > args.max_events:
+        if args.max_events and args.max_events > 0 and len(events) > args.max_events:
             events = events[:args.max_events]
             logging.info(f"Limited to {args.max_events} events")
 
@@ -200,17 +200,17 @@ def run_analyzer(args):
 
         # Total events before selection to be saved into event-selection-output metadata.
         # Rule: use --max-events when specified; otherwise use total events from input files.
-        n_events_total = args.max_events if args.max_events is not None else None
-        if n_events_total is None and args.event_selection_output:
+        total_events = args.max_events if (args.max_events is not None and args.max_events > 0) else None
+        if total_events is None and args.event_selection_output:
             try:
-                n_events_total = 0
+                total_events = 0
                 for file_path in input_files:
                     tree = uproot.open(f"{file_path}:Events")
-                    n_events_total += int(tree.num_entries)
-                logging.info(f"Computed n_events_total={n_events_total} from input files")
+                    total_events += int(tree.num_entries)
+                logging.info(f"Computed total_events={total_events} from input files")
             except Exception as e:
-                logging.warning(f"Could not compute n_events_total from input files: {e}")
-                n_events_total = None
+                logging.warning(f"Could not compute total_events from input files: {e}")
+                total_events = None
 
         # Parse chunk size argument (can be "auto" or int)
         chunk_size = None
@@ -282,7 +282,7 @@ def run_analyzer(args):
             coffea_analyzer = DarkBottomLineAnalyzerCoffeaProcessor(
                 config, regions_config_for_coffea, event_selection_output=args.event_selection_output,
                 event_selection_only=event_selection_only, output_format=output_format_to_use,
-                max_events=args.max_events, n_events_total=n_events_total
+                max_events=args.max_events, total_events=total_events
             )
 
             if args.executor == "futures":
@@ -363,7 +363,7 @@ def run_analyzer(args):
 
                     events = uproot.open(f"{file_path}:Events")
 
-                    if args.max_events:
+                    if args.max_events and args.max_events > 0:
                         events = events.arrays(entry_stop=args.max_events)
                     else:
                         events = events.arrays()
@@ -383,7 +383,7 @@ def run_analyzer(args):
                 logging.info(f"Loading events from {len(input_files)} files")
                 events = uproot.concatenate([f"{path}:Events" for path in input_files])
 
-                if args.max_events and len(events) > args.max_events:
+                if args.max_events and args.max_events > 0 and len(events) > args.max_events:
                     events = events[:args.max_events]
                     logging.info(f"Limited to {args.max_events} events")
 
@@ -404,12 +404,12 @@ def run_analyzer(args):
                     analyzer = DarkBottomLineAnalyzer(config, None)  # No regions config needed for event selection only
                     results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                               event_selection_only=True, output_format=output_format_to_use,
-                                              n_events_total=n_events_total)
+                                              total_events=total_events)
                     logging.info(f"Event selection completed, saved to {args.event_selection_output}")
                 else:
                     results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                               event_selection_only=False, output_format=output_format_to_use,
-                                              n_events_total=n_events_total)
+                                              total_events=total_events)
                     outdir = os.path.dirname(args.output)
                     if outdir:
                         os.makedirs(outdir, exist_ok=True)

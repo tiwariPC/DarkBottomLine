@@ -6,6 +6,8 @@ import awkward as ak
 import numpy as np
 from typing import Dict, Any, Tuple
 
+SENTINEL = -9.0  # fill value for variables undefined due to insufficient objects
+
 
 def select_muons(events: ak.Array, config: Dict[str, Any], wp: str = "loose") -> ak.Array:
     """
@@ -364,13 +366,13 @@ def build_z_candidates(
 def calculate_costheta_star(jets: ak.Array) -> ak.Array:
     """
     cos(theta*) = |tanh(dEta_j1j2 / 2)|
-    Requires >= 2 jets. Returns -2 sentinel when < 2 jets.
+    Requires >= 2 jets. Returns SENTINEL when < 2 jets.
     """
     n_jets = ak.num(jets, axis=1)
     has_two = n_jets >= 2
 
     if not ak.any(has_two):
-        return ak.full_like(n_jets, -2.0, dtype=float)
+        return ak.full_like(n_jets, SENTINEL, dtype=float)
 
     j1 = ak.firsts(jets)
     j2 = ak.pad_none(jets, 2, axis=1)[:, 1]
@@ -378,7 +380,7 @@ def calculate_costheta_star(jets: ak.Array) -> ak.Array:
     deta = ak.fill_none(j1.eta, 0.0) - ak.fill_none(j2.eta, 0.0)
     cos_ts = np.abs(np.tanh(deta / 2.0))
 
-    return ak.where(has_two, cos_ts, -2.0)
+    return ak.where(has_two, cos_ts, SENTINEL)
 
 
 def calculate_recoil(events: ak.Array, objects: Dict[str, Any]):
@@ -579,7 +581,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
         "electrons": selected_electrons,
     })
 
-    # cos(theta*): helicity angle of leading jet in dijet CoM; -2 sentinel when < 2 jets
+    # cos(theta*): helicity angle of leading jet in dijet CoM; SENTINEL when < 2 jets
     print("  Computing cos(theta*)...")
     costheta_star = calculate_costheta_star(cleaned_jets)
 

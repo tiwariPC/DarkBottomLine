@@ -162,7 +162,7 @@ class DarkBottomLineAnalyzer:
             }
 
     def process(self, events: ak.Array, event_selection_output: Optional[str] = None,
-                n_events_total: Optional[int] = None, event_selection_only: bool = False,
+                total_events: Optional[int] = None, event_selection_only: bool = False,
                 output_format: str = "pkl") -> Dict[str, Any]:
         """
         Process events through all regions.
@@ -173,7 +173,7 @@ class DarkBottomLineAnalyzer:
         Args:
             events: Awkward Array of events
             event_selection_output: If set, save preselected events to this path (AFTER weight corrections)
-            n_events_total: Total number of events before selection (from input files)
+            total_events: Total number of events before selection (from input files)
             event_selection_only: If True, stop after saving event_selection_output (skip region analysis)
             output_format: Output format for event selection ("pkl", "root", "parquet")
 
@@ -203,8 +203,8 @@ class DarkBottomLineAnalyzer:
             events = self.base_processor.apply_lumi_mask(events)
             logging.info(f"Events after golden JSON filter: {len(events)}")
 
-        # Compute h_total_weight from raw events before any selection
-        h_total_weight = self.base_processor.correction_manager.get_h_total_weight(events)
+        # Compute weighted_total_events from raw events before any selection
+        weighted_total_events = self.base_processor.correction_manager.get_weighted_total_events(events)
 
         # Build physics objects
         logging.info("Building physics objects...")
@@ -243,7 +243,7 @@ class DarkBottomLineAnalyzer:
                 weight_results = self.base_processor.correction_manager.compute_event_weights(
                     events, objects
                 )
-                event_weights_nominal = np.asarray(ak.to_numpy(weight_results["total_weight"]))
+                event_weights_nominal = np.asarray(ak.to_numpy(weight_results["full_event_weight"]))
                 event_weights_save = _build_event_weights_for_save(weight_results)
             except Exception as e:
                 logging.warning(f"Weight calculation failed, using unit weights: {e}", exc_info=True)
@@ -261,8 +261,8 @@ class DarkBottomLineAnalyzer:
                 self.base_processor._save_event_selection(
                     event_selection_output, events, objects,
                     max_events=self.base_processor.config.get("max_events"),
-                    n_events_total=n_events_total,
-                    h_total_weight=h_total_weight,
+                    total_events=total_events,
+                    weighted_total_events=weighted_total_events,
                     event_weights=event_weights_save,
                     cutflow=cutflow,
                     output_format=output_format
@@ -798,15 +798,15 @@ if COFFEA_AVAILABLE:
 
         def __init__(self, config: Dict[str, Any], regions_config_path: Optional[str] = None,
                         event_selection_output: Optional[str] = None,
-                        n_events_total: Optional[int] = None,
+                        total_events: Optional[int] = None,
                         event_selection_only: bool = False,
                         output_format: Optional[str] = None,
                         max_events: Optional[int] = None):
             self.config = config
             self.regions_config_path = regions_config_path
             self.event_selection_output = event_selection_output
-            self.n_events_total = n_events_total  # Total events before selection
-            self.h_total_weight = None  # Set on first chunk in process()
+            self.total_events = total_events  # Total events before selection
+            self.weighted_total_events = None  # Set on first chunk in process()
             self.event_selection_only = event_selection_only
             self.max_events = max_events  # Maximum events to process
             self.processed_events = 0  # Track number of events processed
@@ -881,9 +881,9 @@ if COFFEA_AVAILABLE:
             self.processed_events += len(events_to_process)
             logging.info(f"Processing {len(events_to_process)} events (total processed: {self.processed_events}/{self.max_events if self.max_events else 'unlimited'})")
 
-            # Accumulate h_total_weight across chunks
-            chunk_h = self.analyzer.base_processor.correction_manager.get_h_total_weight(events_to_process)
-            self.h_total_weight = (self.h_total_weight or 0.0) + chunk_h
+            # Accumulate weighted_total_events across chunks
+            chunk_h = self.analyzer.base_processor.correction_manager.get_weighted_total_events(events_to_process)
+            self.weighted_total_events = (self.weighted_total_events or 0.0) + chunk_h
 
             # Call analyzer.process() with appropriate parameters
             # In event_selection_only mode, analyzer will skip region analysis
@@ -894,7 +894,7 @@ if COFFEA_AVAILABLE:
                 event_selection_output=None,
                 event_selection_only=self.event_selection_only,
                 output_format=self.output_format,
-                n_events_total=self.n_events_total
+                total_events=self.total_events
             )
 
             # If event_selection_output is requested, collect selected events from this chunk
@@ -1043,7 +1043,7 @@ if COFFEA_AVAILABLE:
             payload = {k: result[k] for k in ("regions", "region_histograms",
                                                "region_cutflow", "region_validation",
                                                "metadata") if k in result}
-            payload["h_total_weight"] = float(chunk_h)
+            payload["weighted_total_events"] = float(chunk_h)
             try:
                 with open(result_file, "wb") as f:
                     pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -1062,7 +1062,7 @@ if COFFEA_AVAILABLE:
                                       "overlaps": {}, "warnings": []},
                 "metadata": {"n_events_processed": 0, "n_regions": 0,
                              "processing_time": 0.0},
-                "h_total_weight": 0.0,
+                "weighted_total_events": 0.0,
             }
             for rf in sorted(result_files):
                 try:
@@ -1139,8 +1139,8 @@ if COFFEA_AVAILABLE:
                 if "n_regions" in meta:
                     merged["metadata"]["n_regions"] = meta["n_regions"]
 
-                # h_total_weight: sum across all chunks
-                merged["h_total_weight"] += float(chunk.get("h_total_weight", 0.0))
+                # weighted_total_events: sum across all chunks
+                merged["weighted_total_events"] += float(chunk.get("weighted_total_events", 0.0))
 
             # Recompute fractions
             total_cf = merged["region_cutflow"]["total_events"]
@@ -1194,10 +1194,10 @@ if COFFEA_AVAILABLE:
                     accumulator["region_cutflow"] = merged_analysis["region_cutflow"]
                     accumulator["region_validation"] = merged_analysis["region_validation"]
                     accumulator["metadata"] = merged_analysis["metadata"]
-                    # Propagate summed h_total_weight back to the processor instance so
+                    # Propagate summed weighted_total_events back to the processor instance so
                     # _save_event_selection (called below) receives the correct value.
-                    if merged_analysis.get("h_total_weight"):
-                        self.h_total_weight = merged_analysis["h_total_weight"]
+                    if merged_analysis.get("weighted_total_events"):
+                        self.weighted_total_events = merged_analysis["weighted_total_events"]
                     logging.info(f"Merged region analysis from {len(analysis_files)} chunks: "
                                  f"{len(merged_analysis['regions'])} regions, "
                                  f"{merged_analysis['metadata']['n_events_processed']} events processed")
@@ -1294,7 +1294,7 @@ if COFFEA_AVAILABLE:
                                     all_selected_objects[key] = ak.concatenate(arrays_to_concat)
                     else:
                         # No events passed selection across all chunks — still write the output
-                        # file so Metadata (n_events, h_total_weight) is present for downstream tools.
+                        # file so Metadata (n_events, weighted_total_events) is present for downstream tools.
                         logging.warning(
                             f"No selected events found in {len(chunk_files)} chunk files — "
                             f"writing metadata-only output to {self.event_selection_output}"
@@ -1307,8 +1307,8 @@ if COFFEA_AVAILABLE:
                     self.analyzer.base_processor._save_event_selection(
                         self.event_selection_output, all_selected_events, all_selected_objects,
                         max_events=self.config.get("max_events"),
-                        n_events_total=self.n_events_total,
-                        h_total_weight=self.h_total_weight,
+                        total_events=self.total_events,
+                        weighted_total_events=self.weighted_total_events,
                         output_format=self.output_format
                     )
                     # Verify file was created

@@ -3,12 +3,12 @@
 Standalone stacked plotting tool for event-level output PKL/ROOT files.
 
 Features:
-- Reads event-level PKL format (keys: n_events/events/objects)
-- Reads ROOT files (Events tree with branches, Metadata tree with n_events)
+- Reads event-level PKL format (keys: weighted_total_events/events/objects)
+- Reads ROOT files (Events tree with branches, Metadata tree with weighted_total_events)
 - Merges multiple PKL/ROOT files inside each input folder
 - Supports multiple background folders and optional data folder
 - Draws log-scale stacked background plot with data overlay
-- Normalizes all histograms by n_events and luminosity
+- Normalizes all histograms by weighted_total_events and luminosity
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ except Exception:
 @dataclass
 class SubSampleData:
     process: str
-    n_events: int
+    weighted_total_events: int
     objects: Dict[str, Any]
     cross_section: Optional[float] = None  # pb
     cutflow_labels: Optional[List[str]] = None
@@ -55,11 +55,11 @@ class SubSampleData:
 @dataclass
 class SampleData:
     name: str
-    n_events: int
+    weighted_total_events: int
     objects: Dict[str, Any]
     luminosity: float = 1.0  # Luminosity normalization factor
     cross_section: Optional[float] = None  # Cross-section in pb; None means no cross-section weighting
-    metadata_n_events_available: bool = True  # Whether n_events is from metadata (for ROOT inputs)
+    metadata_weighted_total_events_available: bool = True  # Whether weighted_total_events is from metadata (for ROOT inputs)
     sub_samples: Optional[List[SubSampleData]] = None  # Optional per-process components for mixed-pt samples
     cutflow_labels: Optional[List[str]] = None
     cutflow_values: Optional[np.ndarray] = None
@@ -246,30 +246,30 @@ def _load_single_root(path: Path, target_variables: Optional[Sequence[str]] = No
             except Exception as e:
                 print(f"Warning: Could not read branch {branch_name}: {e}")
 
-        # Get n_events — new format: flat TH1 at root level; legacy: Metadata TTree
-        n_events = 0
-        metadata_n_events_available = False
-        for _key in ('n_events', 'n_events;1'):
+        # Get weighted_total_events — new format: flat TH1 at root level; legacy: Metadata TTree
+        weighted_total_events = 0
+        metadata_weighted_total_events_available = False
+        for _key in ('weighted_total_events', 'weighted_total_events;1'):
             if _key in f:
                 try:
-                    n_events = int(round(float(f[_key].values()[0])))
-                    metadata_n_events_available = n_events > 0
+                    weighted_total_events = int(round(float(f[_key].values()[0])))
+                    metadata_weighted_total_events_available = weighted_total_events > 0
                     break
                 except Exception:
                     pass
-        if not metadata_n_events_available and "Metadata" in f:
+        if not metadata_weighted_total_events_available and "Metadata" in f:
             meta_tree = f["Metadata"]
-            if "n_events" in meta_tree.keys():
-                n_events_arr = meta_tree["n_events"].array(library="np")
-                n_events = int(np.sum(n_events_arr)) if len(n_events_arr) > 0 else 0
-                metadata_n_events_available = n_events > 0
+            if "weighted_total_events" in meta_tree.keys():
+                weighted_total_events_arr = meta_tree["weighted_total_events"].array(library="np")
+                weighted_total_events = int(np.sum(weighted_total_events_arr)) if len(weighted_total_events_arr) > 0 else 0
+                metadata_weighted_total_events_available = weighted_total_events > 0
 
         # Do not fallback to selected entries for MC normalization.
-        # If metadata is missing, keep n_events=0 and let caller decide whether to fail.
+        # If metadata is missing, keep weighted_total_events=0 and let caller decide whether to fail.
         return {
-            "n_events": n_events,
+            "weighted_total_events": weighted_total_events,
             "objects": objects,
-            "metadata_n_events_available": metadata_n_events_available,
+            "metadata_weighted_total_events_available": metadata_weighted_total_events_available,
         }
 
 
@@ -504,7 +504,7 @@ def merge_pkl_folder(folder: Path, target_variables: Optional[Sequence[str]] = N
         if not isinstance(objects, dict):
             objects = {}
         reduced_data = {
-            "n_events": data.get("n_events", 0) or 0,
+            "weighted_total_events": data.get("weighted_total_events", 0) or 0,
             "objects": objects,
         }
         merged = _merge_values(merged, reduced_data)
@@ -519,7 +519,7 @@ def merge_pkl_folder(folder: Path, target_variables: Optional[Sequence[str]] = N
     if skipped_files > 0:
         print(f"  Loaded {loaded_files}/{total_files} PKL files (skipped {skipped_files})")
 
-    merged.setdefault("n_events", 0)
+    merged.setdefault("weighted_total_events", 0)
     merged.setdefault("objects", {})
     if not isinstance(merged["objects"], dict):
         raise ValueError(f"Merged objects is not a dictionary in folder: {folder}")
@@ -542,9 +542,9 @@ def merge_root_folder(folder: Path, target_variables: Optional[Sequence[str]] = 
     for idx, root_path in enumerate(root_files, 1):
         try:
             data = _load_single_root(root_path, target_variables=target_variables)
-            if not data.get("metadata_n_events_available", False):
+            if not data.get("metadata_weighted_total_events_available", False):
                 skipped_files += 1
-                print(f"Warning: ROOT file {root_path.name} is missing Metadata.n_events; skipping file.")
+                print(f"Warning: ROOT file {root_path.name} is missing Metadata.weighted_total_events; skipping file.")
                 continue
             merged = _merge_values(merged, data)
             loaded_files += 1
@@ -560,9 +560,9 @@ def merge_root_folder(folder: Path, target_variables: Optional[Sequence[str]] = 
     if skipped_files > 0:
         print(f"  Loaded {loaded_files}/{total_files} ROOT files (skipped {skipped_files})")
 
-    merged.setdefault("n_events", 0)
+    merged.setdefault("weighted_total_events", 0)
     merged.setdefault("objects", {})
-    merged["metadata_n_events_available"] = loaded_files > 0
+    merged["metadata_weighted_total_events_available"] = loaded_files > 0
     if not isinstance(merged["objects"], dict):
         raise ValueError(f"Merged objects is not a dictionary in folder: {folder}")
 
@@ -786,23 +786,23 @@ def _make_bins(all_values: Sequence[np.ndarray], n_bins: int, variable: Optional
     return np.linspace(data_min, data_max, n_bins + 1)
 
 
-def _histogram(values: np.ndarray, bins: np.ndarray, n_events: int, luminosity: float = 1.0, cross_section_pb: Optional[float] = None) -> np.ndarray:
-    """Create histogram normalized by n_events and scaled by luminosity and cross-section.
+def _histogram(values: np.ndarray, bins: np.ndarray, weighted_total_events: int, luminosity: float = 1.0, cross_section_pb: Optional[float] = None) -> np.ndarray:
+    """Create histogram normalized by weighted_total_events and scaled by luminosity and cross-section.
 
     Normalization formula:
-    - If cross_section_pb is provided: weight = (luminosity × cross_section_fb) / n_events
+    - If cross_section_pb is provided: weight = (luminosity × cross_section_fb) / weighted_total_events
       where cross_section_fb = cross_section_pb × 1000 (convert pb to fb)
-    - If cross_section_pb is None: weight = luminosity / n_events
+    - If cross_section_pb is None: weight = luminosity / weighted_total_events
     """
-    if values.size == 0 or n_events <= 0:
+    if values.size == 0 or weighted_total_events <= 0:
         return np.zeros(len(bins) - 1, dtype=float)
 
     if cross_section_pb is not None:
         # Convert cross-section from pb to fb and apply
         cross_section_fb = cross_section_pb * 1000.0
-        weight = (luminosity * cross_section_fb) / float(n_events)
+        weight = (luminosity * cross_section_fb) / float(weighted_total_events)
     else:
-        weight = luminosity / float(n_events)
+        weight = luminosity / float(weighted_total_events)
 
     values = _clip_overflow(values, bins)
     weights = np.full(values.shape[0], weight, dtype=float)
@@ -810,24 +810,24 @@ def _histogram(values: np.ndarray, bins: np.ndarray, n_events: int, luminosity: 
     return hist
 
 
-def _event_weight(n_events: int, luminosity: float = 1.0, cross_section_pb: Optional[float] = None) -> float:
-    """Compute per-event weight with the same convention used by histogram normalization."""
-    if n_events <= 0:
+def _event_normalisation(weighted_total_events: int, luminosity: float = 1.0, cross_section_pb: Optional[float] = None) -> float:
+    """Compute per-event normalisation with the same convention used by histogram normalization."""
+    if weighted_total_events <= 0:
         return 0.0
     if cross_section_pb is not None:
         # Keep consistency with histogram code: convert pb to fb.
-        return (luminosity * cross_section_pb * 1000.0) / float(n_events)
-    return luminosity / float(n_events)
+        return (luminosity * cross_section_pb * 1000.0) / float(weighted_total_events)
+    return luminosity / float(weighted_total_events)
 
 
 def _scale_cutflow(
     cutflow_values: np.ndarray,
-    n_events: int,
+    weighted_total_events: int,
     luminosity: float = 1.0,
     cross_section_pb: Optional[float] = None,
 ) -> np.ndarray:
-    weight = _event_weight(n_events, luminosity=luminosity, cross_section_pb=cross_section_pb)
-    return np.asarray(cutflow_values, dtype=float) * weight
+    normalisation = _event_normalisation(weighted_total_events, luminosity=luminosity, cross_section_pb=cross_section_pb)
+    return np.asarray(cutflow_values, dtype=float) * normalisation
 
 
 def _clip_overflow(values: np.ndarray, bins: np.ndarray) -> np.ndarray:
@@ -845,7 +845,7 @@ def _clip_overflow(values: np.ndarray, bins: np.ndarray) -> np.ndarray:
 def _histogram_and_sumw2(
     values: np.ndarray,
     bins: np.ndarray,
-    n_events: int,
+    weighted_total_events: int,
     luminosity: float = 1.0,
     cross_section_pb: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
@@ -855,15 +855,15 @@ def _histogram_and_sumw2(
     equivalent to ROOT TH1 Sumw2 behavior after scaling.
     Overflow/underflow are merged into the first/last bin (matches ROOT behaviour).
     """
-    if n_events <= 0 or values.size == 0:
+    if weighted_total_events <= 0 or values.size == 0:
         zeros = np.zeros(len(bins) - 1, dtype=float)
         return zeros, zeros
 
     if cross_section_pb is not None:
         cross_section_fb = cross_section_pb * 1000.0
-        weight = (luminosity * cross_section_fb) / float(n_events)
+        weight = (luminosity * cross_section_fb) / float(weighted_total_events)
     else:
-        weight = luminosity / float(n_events)
+        weight = luminosity / float(weighted_total_events)
 
     values = _clip_overflow(values, bins)
     counts, _ = np.histogram(values, bins=bins)
@@ -1060,8 +1060,8 @@ def _save_stacked_root_plot(
     x_title: str,
     y_title: str,
     bins: np.ndarray,
-    background_hists: List[Tuple[str, np.ndarray, np.ndarray]],
-    data_hist: Optional[np.ndarray],
+    background_ndarrays: List[Tuple[str, np.ndarray, np.ndarray]],
+    data_ndarray: Optional[np.ndarray],
     luminosity: float,
     labels: Optional[Sequence[str]] = None,
 ) -> None:
@@ -1077,7 +1077,7 @@ def _save_stacked_root_plot(
         canvas = ROOT.TCanvas(_root_safe_name(f"c_{root_path.stem}"), plot_title, 1200, 900)
         canvas.cd()
 
-        has_ratio = data_hist is not None
+        has_ratio = data_ndarray is not None
         if has_ratio:
             top_pad = ROOT.TPad("top_pad", "top_pad", 0.0, 0.30, 1.0, 1.0)
             bottom_pad = ROOT.TPad("bottom_pad", "bottom_pad", 0.0, 0.0, 1.0, 0.30)
@@ -1102,9 +1102,9 @@ def _save_stacked_root_plot(
         background_root_hists = []
         total_values = np.zeros(len(bins) - 1, dtype=float)
         total_sumw2 = np.zeros(len(bins) - 1, dtype=float)
-        color_map = _get_background_color_map([label for label, _, _ in background_hists])
+        color_map = _get_background_color_map([label for label, _, _ in background_ndarrays])
 
-        for label, hist_values, hist_sumw2 in background_hists:
+        for label, hist_values, hist_sumw2 in background_ndarrays:
             total_values += hist_values
             total_sumw2 += hist_sumw2
             root_hist = _root_hist_from_numpy(
@@ -1139,21 +1139,17 @@ def _save_stacked_root_plot(
         total_band.Draw("e2 same")
         legend.AddEntry(total_band, "Uncertainty", "f")
 
-        data_graph = None
-        if data_hist is not None:
-            centers = 0.5 * (bins[:-1] + bins[1:])
-            half_width = 0.5 * (bins[1:] - bins[:-1])
-            data_graph = ROOT.TGraphErrors(int(len(data_hist)))
-            data_graph.SetName(_root_safe_name(f"data_{root_path.stem}"))
-            data_graph.SetMarkerStyle(20)
-            data_graph.SetMarkerSize(1.0)
-            data_graph.SetLineColor(ROOT.kBlack)
-            data_graph.SetMarkerColor(ROOT.kBlack)
-            for index, value in enumerate(data_hist):
-                data_graph.SetPoint(index, float(centers[index]), float(value))
-                data_graph.SetPointError(index, float(half_width[index]), math.sqrt(float(value)) if value > 0 else 0.0)
-            data_graph.Draw("P same")
-            legend.AddEntry(data_graph, "Data", "pe")
+        data_root_hist = None
+        if data_ndarray is not None:
+            data_root_hist = _root_hist_from_numpy(
+                f"data_{root_path.stem}", bins, data_ndarray, labels=labels
+            )
+            data_root_hist.SetMarkerStyle(20)
+            data_root_hist.SetMarkerSize(1.0)
+            data_root_hist.SetLineColor(ROOT.kBlack)
+            data_root_hist.SetMarkerColor(ROOT.kBlack)
+            data_root_hist.Draw("E1 same")
+            legend.AddEntry(data_root_hist, "Data", "pe")
 
         legend.Draw()
 
@@ -1179,29 +1175,28 @@ def _save_stacked_root_plot(
             unity.SetLineWidth(2)
             unity.Draw("same")
 
-            if data_hist is not None:
-                centers = 0.5 * (bins[:-1] + bins[1:])
-                half_width = 0.5 * (bins[1:] - bins[:-1])
-                ratio_graph = ROOT.TGraphErrors(int(len(data_hist)))
-                ratio_graph.SetName(_root_safe_name(f"ratio_data_{root_path.stem}"))
-                ratio_graph.SetMarkerStyle(20)
-                ratio_graph.SetMarkerSize(1.0)
-                ratio_graph.SetLineColor(ROOT.kBlack)
-                ratio_graph.SetMarkerColor(ROOT.kBlack)
-                for index, value in enumerate(data_hist):
-                    pred = float(total_values[index])
-                    ratio = float(value) / pred if pred > 0 else 0.0
-                    ratio_err = math.sqrt(float(value)) / pred if pred > 0 and value > 0 else 0.0
-                    ratio_graph.SetPoint(index, float(centers[index]), ratio)
-                    ratio_graph.SetPointError(index, float(half_width[index]), ratio_err)
-                ratio_graph.Draw("P same")
+            if data_ndarray is not None:
+                ratio_values = np.divide(data_ndarray, total_values, out=np.zeros_like(data_ndarray, dtype=float), where=total_values > 0)
+                ratio_errors = np.where(
+                    (total_values > 0) & (data_ndarray > 0),
+                    np.sqrt(data_ndarray) / np.where(total_values > 0, total_values, 1.0),
+                    0.0,
+                )
+                ratio_data_hist = _root_hist_from_numpy(
+                    f"ratio_data_{root_path.stem}", bins, ratio_values, errors=ratio_errors, labels=labels
+                )
+                ratio_data_hist.SetMarkerStyle(20)
+                ratio_data_hist.SetMarkerSize(1.0)
+                ratio_data_hist.SetLineColor(ROOT.kBlack)
+                ratio_data_hist.SetMarkerColor(ROOT.kBlack)
+                ratio_data_hist.Draw("E1 same")
 
         canvas.Write()
         for hist in background_root_hists:
             hist.Write()
         total_band.Write()
-        if data_graph is not None:
-            data_graph.Write()
+        if data_root_hist is not None:
+            data_root_hist.Write()
         root_file.Write()
     finally:
         root_file.Close()
@@ -1210,20 +1205,20 @@ def _save_stacked_root_plot(
 def _plot_stacked_variable(
     variable: str,
     bins: np.ndarray,
-    background_hists: List[Tuple[str, np.ndarray, np.ndarray]],
-    data_hist: Optional[np.ndarray],
+    background_ndarrays: List[Tuple[str, np.ndarray, np.ndarray]],
+    data_ndarray: Optional[np.ndarray],
     output_dir: Path,
     luminosity: float = 1.0,
     color_map: Optional[Dict[str, str]] = None,
-) -> Path:
+) -> List[Path]:
     """Produce CMS-style stacked histogram matching StackPlotter_addMeanWeight.py."""
-    background_hists = [(_simplify_sample_label(label), hist, sumw2) for label, hist, sumw2 in background_hists]
-    background_hists = sorted(background_hists, key=lambda item: float(np.sum(item[1])))
+    background_ndarrays = [(_simplify_sample_label(label), hist, sumw2) for label, hist, sumw2 in background_ndarrays]
+    background_ndarrays = sorted(background_ndarrays, key=lambda item: float(np.sum(item[1])))
 
     if color_map is None:
-        color_map = _get_background_color_map([label for label, _, _ in background_hists])
+        color_map = _get_background_color_map([label for label, _, _ in background_ndarrays])
 
-    show_ratio = data_hist is not None
+    show_ratio = data_ndarray is not None
 
     if show_ratio:
         fig, (ax, ax_ratio) = plt.subplots(
@@ -1242,7 +1237,7 @@ def _plot_stacked_variable(
     cumulative = np.zeros(len(bins) - 1, dtype=float)
     cumulative_sq = np.zeros(len(bins) - 1, dtype=float)
 
-    for label, hist_values, hist_sumw2 in background_hists:
+    for label, hist_values, hist_sumw2 in background_ndarrays:
         next_cumulative = cumulative + hist_values
         cumulative_sq += hist_sumw2
         color = color_map.get(label, "#3f90da")
@@ -1279,20 +1274,19 @@ def _plot_stacked_variable(
         edgecolor="#666666",
         linewidth=0.0,
         alpha=0.8,
-        label="Uncertainty",
         zorder=5,
     )
 
     # Data: filled circle, x errors to bin edges, y errors Poisson
-    if data_hist is not None:
+    if data_ndarray is not None:
         half_width = 0.5 * (bins[1:] - bins[:-1])
-        mask = data_hist > 0
+        mask = data_ndarray > 0
         if np.any(mask):
             ax.errorbar(
                 centers[mask],
-                data_hist[mask],
+                data_ndarray[mask],
                 xerr=half_width[mask],
-                yerr=np.sqrt(data_hist[mask]),
+                yerr=np.sqrt(data_ndarray[mask]),
                 fmt="o",
                 color="black",
                 markerfacecolor="black",
@@ -1307,7 +1301,7 @@ def _plot_stacked_variable(
     # Y axis: "Events / bin", scientific notation max 3 digits (×10³ style)
     ax.set_yscale("log")
     stacked_max = float(np.max(cumulative)) if cumulative.size else 0.0
-    data_max = float(np.max(data_hist)) if data_hist is not None and data_hist.size else 0.0
+    data_max = float(np.max(data_ndarray)) if data_ndarray is not None and data_ndarray.size else 0.0
     ymax = max(stacked_max, data_max, 1e-3) * 1000.0
     ax.set_ylim(0.1, ymax)
 
@@ -1321,8 +1315,8 @@ def _plot_stacked_variable(
         x_hi = float(bins[nonzero_mc[-1] + 1])
     else:
         x_lo, x_hi = float(bins[0]), float(bins[-1])
-    if data_hist is not None:
-        nonzero_data = np.where(data_hist > 0)[0]
+    if data_ndarray is not None:
+        nonzero_data = np.where(data_ndarray > 0)[0]
         if nonzero_data.size:
             x_lo = min(x_lo, float(bins[nonzero_data[0]]))
             x_hi = max(x_hi, float(bins[nonzero_data[-1] + 1]))
@@ -1339,19 +1333,19 @@ def _plot_stacked_variable(
     ax.grid(False)
 
     # =========================== Ratio Plot (Data / SM) ===========================
-    if show_ratio and ax_ratio is not None and data_hist is not None:
+    if show_ratio and ax_ratio is not None and data_ndarray is not None:
         pred = cumulative
 
         data_ratio = np.divide(
-            data_hist,
+            data_ndarray,
             pred,
-            out=np.full_like(data_hist, np.nan, dtype=float),
+            out=np.full_like(data_ndarray, np.nan, dtype=float),
             where=pred > 0,
         )
         data_ratio_err = np.divide(
-            np.sqrt(data_hist),
+            np.sqrt(data_ndarray),
             pred,
-            out=np.zeros_like(data_hist, dtype=float),
+            out=np.zeros_like(data_ndarray, dtype=float),
             where=pred > 0,
         )
         ratio_mask = np.isfinite(data_ratio)
@@ -1379,6 +1373,7 @@ def _plot_stacked_variable(
             edgecolor="#3d3d3d",
             linewidth=0.0,
             alpha=0.8,
+            label="Stat. unc.",
             zorder=5,
         )
 
@@ -1399,6 +1394,7 @@ def _plot_stacked_variable(
                 zorder=10,
             )
 
+        ax_ratio.legend(loc="upper right", fontsize=20, frameon=False)
         ax_ratio.set_ylabel("Data / MC", fontsize=22, labelpad=6)
         ax_ratio.set_xlabel(_axis_label(variable), fontsize=22, labelpad=8)
         ax_ratio.set_ylim(0, 2.0)
@@ -1411,7 +1407,7 @@ def _plot_stacked_variable(
     # =========================== CMS Labels ===========================
     hep.cms.label(
         "Work in progress",
-        data=data_hist is not None,
+        data=data_ndarray is not None,
         lumi=round(luminosity, 2),
         com=13.6,
         loc=0,
@@ -1454,10 +1450,90 @@ def _plot_stacked_variable(
         )
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    out_path = output_dir / f"stacked_{variable}.png"
-    fig.savefig(out_path, dpi=200, bbox_inches="tight")
+    stem = output_dir / f"preselection_{variable}"
+
+    png_path = stem.with_suffix(".png")
+    pdf_path = stem.with_suffix(".pdf")
+    txt_path = stem.with_suffix(".txt")
+
+    fig.savefig(png_path, dpi=200, bbox_inches="tight")
+    fig.savefig(pdf_path, bbox_inches="tight")
     plt.close(fig)
-    return out_path
+
+    n_bins = len(bins) - 1
+    mc_total = np.zeros(n_bins, dtype=float)
+    mc_total_sumw2 = np.zeros(n_bins, dtype=float)
+    for _, hist_values, hist_sumw2 in background_ndarrays:
+        mc_total += hist_values
+        mc_total_sumw2 += hist_sumw2
+
+    bin_labels = [f"[{bins[i]:.4g},{bins[i+1]:.4g})" for i in range(n_bins)]
+
+    # --- rows: one per sample + Total_Bkg + data ---
+    rows: List[Tuple[str, np.ndarray, np.ndarray]] = list(background_ndarrays)
+    rows.append(("Total_Bkg", mc_total, mc_total_sumw2))
+    if data_ndarray is not None:
+        rows.append(("data_obs", data_ndarray, np.sqrt(data_ndarray)))
+
+    # txt: plain-text table (sample | bin[lo,hi] ...)
+    col_w = 20
+    with open(txt_path, "w") as _f:
+        header = f"{'Sample':<24}" + "".join(f"{b:>{col_w}}" for b in bin_labels)
+        _f.write(header + "\n")
+        _f.write("-" * len(header) + "\n")
+        for label, vals, sumw2 in rows:
+            cells = "".join(
+                f"{f'{vals[i]:.2f}±{np.sqrt(sumw2[i]):.2f}':>{col_w}}" for i in range(n_bins)
+            )
+            _f.write(f"{label:<24}{cells}\n")
+
+    # tex: LaTeX tabular yield table (booktabs style)
+    tex_path = stem.with_suffix(".tex")
+    with open(tex_path, "w") as _f:
+        col_spec = "l" + "c" * n_bins
+        bin_header = " & ".join(f"\\textbf{{{b}}}" for b in bin_labels)
+        _f.write("\\begin{table}[htbp]\n\\centering\n")
+        _f.write(f"\\caption{{Yield table for {variable}}}\n")
+        _f.write(f"\\label{{tab:{variable}}}\n")
+        _f.write(f"\\begin{{tabular}}{{{col_spec}}}\n\\toprule\n")
+        _f.write(f"\\textbf{{Sample}} & {bin_header} \\\\ \\midrule\n")
+        # bkg rows
+        for label, vals, sumw2 in rows:
+            if label in ("Total_Bkg", "data_obs"):
+                continue
+            cells = " & ".join(f"${vals[i]:.2f} \\pm {np.sqrt(sumw2[i]):.2f}$" for i in range(n_bins))
+            _f.write(f"{label} & {cells} \\\\\n")
+        # Total Bkg with midrule before it
+        for label, vals, sumw2 in rows:
+            if label != "Total_Bkg":
+                continue
+            cells = " & ".join(f"${vals[i]:.2f} \\pm {np.sqrt(sumw2[i]):.2f}$" for i in range(n_bins))
+            _f.write(f"\\midrule\nTotal Bkg & {cells} \\\\ \\midrule\n")
+        # data row
+        for label, vals, sumw2 in rows:
+            if label != "data_obs":
+                continue
+            cells = " & ".join(f"${vals[i]:.2f} \\pm {np.sqrt(sumw2[i]):.2f}$" for i in range(n_bins))
+            _f.write(f"Data obs & {cells} \\\\ \\bottomrule\n")
+        _f.write("\\end{tabular}\n\\end{table}\n")
+
+    saved = [png_path, pdf_path, txt_path, tex_path]
+
+    if ROOT is not None:
+        root_path = stem.with_suffix(".root")
+        _save_stacked_root_plot(
+            root_path,
+            f"preselection_{variable}",
+            _axis_label(variable),
+            "Events / bin",
+            bins,
+            background_ndarrays,
+            data_ndarray,
+            luminosity,
+        )
+        saved.append(root_path)
+
+    return saved
 
 
 def _align_cutflow_to_labels(
@@ -1646,9 +1722,9 @@ def _load_sample_from_folder(
         else:
             raise FileNotFoundError(f"No .pkl or .root files found in folder: {folder}")
 
-    n_events = int(merged.get("n_events", 0) or 0)
+    weighted_total_events = int(merged.get("weighted_total_events", 0) or 0)
     objects = merged.get("objects", {})
-    metadata_n_events_available = bool(merged.get("metadata_n_events_available", True))
+    metadata_weighted_total_events_available = bool(merged.get("metadata_weighted_total_events_available", True))
     if not isinstance(objects, dict):
         raise ValueError(f"objects is not a dictionary for folder: {folder}")
 
@@ -1664,9 +1740,9 @@ def _load_sample_from_folder(
         per_process_merged: Dict[str, Dict[str, Any]] = {}
         unmatched_files: List[str] = []
         unmatched_merged: Dict[str, Any] = {
-            "n_events": 0,
+            "weighted_total_events": 0,
             "objects": {},
-            "metadata_n_events_available": True,
+            "metadata_weighted_total_events_available": True,
             "cross_section": None,
             "cutflow_labels": None,
             "cutflow_values": None,
@@ -1681,17 +1757,17 @@ def _load_sample_from_folder(
 
             parsed_cutflow = _extract_cutflow_from_root_file(root_file)
 
-            if not loaded.get("metadata_n_events_available", False):
+            if not loaded.get("metadata_weighted_total_events_available", False):
                 print(
-                    f"Warning: ROOT file {root_file.name} is missing Metadata.n_events; skipping for xsection grouping."
+                    f"Warning: ROOT file {root_file.name} is missing Metadata.weighted_total_events; skipping for xsection grouping."
                 )
                 continue
 
             match = _match_root_file_to_process(root_file.name, process_to_xsec)
             if match is None:
                 unmatched_files.append(root_file.name)
-                unmatched_merged["n_events"] = int(unmatched_merged.get("n_events", 0) or 0) + int(
-                    loaded.get("n_events", 0) or 0
+                unmatched_merged["weighted_total_events"] = int(unmatched_merged.get("weighted_total_events", 0) or 0) + int(
+                    loaded.get("weighted_total_events", 0) or 0
                 )
                 unmatched_merged["objects"] = _merge_values(unmatched_merged.get("objects", {}), loaded.get("objects", {}))
                 if parsed_cutflow is not None:
@@ -1709,15 +1785,15 @@ def _load_sample_from_folder(
             group = per_process_merged.get(process_key)
             if group is None:
                 group = {
-                    "n_events": 0,
+                    "weighted_total_events": 0,
                     "objects": {},
-                    "metadata_n_events_available": True,
+                    "metadata_weighted_total_events_available": True,
                     "cross_section": xsec_pb,
                     "cutflow_labels": None,
                     "cutflow_values": None,
                 }
                 per_process_merged[process_key] = group
-            group["n_events"] = int(group.get("n_events", 0) or 0) + int(loaded.get("n_events", 0) or 0)
+            group["weighted_total_events"] = int(group.get("weighted_total_events", 0) or 0) + int(loaded.get("weighted_total_events", 0) or 0)
             group["objects"] = _merge_values(group.get("objects", {}), loaded.get("objects", {}))
             if parsed_cutflow is not None:
                 cf_labels, cf_values = parsed_cutflow
@@ -1747,36 +1823,36 @@ def _load_sample_from_folder(
         print(f"Process-xsection mapping for {folder.name} ({year}):")
         for process_key in sorted(per_process_merged.keys()):
             group = per_process_merged[process_key]
-            group_n_events = int(group.get("n_events", 0) or 0)
+            group_weighted_total_events = int(group.get("weighted_total_events", 0) or 0)
             group_xsec = float(group.get("cross_section", 0.0))
-            print(f"  {process_key} -> xsec={group_xsec:.6g} pb, n_events={group_n_events}")
-            if group_n_events <= 0:
+            print(f"  {process_key} -> xsec={group_xsec:.6g} pb, weighted_total_events={group_weighted_total_events}")
+            if group_weighted_total_events <= 0:
                 raise ValueError(
-                    f"Invalid n_events={group_n_events} for sub-sample {process_key} in {folder.name}."
+                    f"Invalid weighted_total_events={group_weighted_total_events} for sub-sample {process_key} in {folder.name}."
                 )
-            if not bool(group.get("metadata_n_events_available", True)):
+            if not bool(group.get("metadata_weighted_total_events_available", True)):
                 raise ValueError(
-                    f"Sub-sample {process_key} in {folder.name} has ROOT file(s) without Metadata.n_events."
+                    f"Sub-sample {process_key} in {folder.name} has ROOT file(s) without Metadata.weighted_total_events."
                 )
             sub_samples.append(
                 SubSampleData(
                     process=process_key,
-                    n_events=group_n_events,
+                    weighted_total_events=group_weighted_total_events,
                     objects=group.get("objects", {}),
                     cross_section=group_xsec,
                     cutflow_labels=group.get("cutflow_labels"),
                     cutflow_values=group.get("cutflow_values"),
                 )
             )
-        unmatched_n_events = int(unmatched_merged.get("n_events", 0) or 0)
-        if unmatched_n_events > 0:
+        unmatched_weighted_total_events = int(unmatched_merged.get("weighted_total_events", 0) or 0)
+        if unmatched_weighted_total_events > 0:
             print(
-                f"  __unmatched__ -> xsec=None (fallback), n_events={unmatched_n_events}"
+                f"  __unmatched__ -> xsec=None (fallback), weighted_total_events={unmatched_weighted_total_events}"
             )
             sub_samples.append(
                 SubSampleData(
                     process="__unmatched__",
-                    n_events=unmatched_n_events,
+                    weighted_total_events=unmatched_weighted_total_events,
                     objects=unmatched_merged.get("objects", {}),
                     cross_section=None,
                     cutflow_labels=unmatched_merged.get("cutflow_labels"),
@@ -1793,7 +1869,7 @@ def _load_sample_from_folder(
             print(f"Found cross-section for {folder.name} ({year}): {cross_section_pb:.4f} pb")
 
     # Enforce strict MC normalization:
-    # 1) n_events must come from metadata for ROOT-based samples
+    # 1) weighted_total_events must come from metadata for ROOT-based samples
     # 2) when xsection mode is enabled, MC sample must have a matched cross-section
     if not is_data:
         if xsection_data and year and cross_section_pb is None and not sub_samples:
@@ -1801,19 +1877,19 @@ def _load_sample_from_folder(
                 f"No cross-section found for MC sample {folder.name} in year {year}. "
                 "Cannot apply strict MC normalization."
             )
-        if n_events <= 0:
+        if weighted_total_events <= 0:
             raise ValueError(
-                f"Invalid n_events={n_events} for MC sample {folder.name}. "
+                f"Invalid weighted_total_events={weighted_total_events} for MC sample {folder.name}. "
                 "Expected positive total generated events from metadata."
             )
 
     return SampleData(
         name=folder.name,
-        n_events=n_events,
+        weighted_total_events=weighted_total_events,
         objects=objects,
         luminosity=luminosity,
         cross_section=cross_section_pb,
-        metadata_n_events_available=metadata_n_events_available,
+        metadata_weighted_total_events_available=metadata_weighted_total_events_available,
         sub_samples=sub_samples,
         cutflow_labels=cutflow_labels,
         cutflow_values=cutflow_values,
@@ -1872,7 +1948,7 @@ def run_plotting(
 
     data_sample: Optional[SampleData] = None
     if combined_data_folders:
-        merged_data: Dict[str, Any] = {"n_events": 0, "objects": {}}
+        merged_data: Dict[str, Any] = {"weighted_total_events": 0, "objects": {}}
         for folder in combined_data_folders:
             loaded_data = _load_sample_from_folder(
                 folder,
@@ -1884,7 +1960,7 @@ def run_plotting(
                 is_data=True,
                 load_cutflow=draw_cutflow,
             )
-            merged_data["n_events"] = int(merged_data.get("n_events", 0) or 0) + int(loaded_data.n_events)
+            merged_data["weighted_total_events"] = int(merged_data.get("weighted_total_events", 0) or 0) + int(loaded_data.weighted_total_events)
             merged_data["objects"] = _merge_values(merged_data.get("objects", {}), loaded_data.objects)
 
             if draw_cutflow and loaded_data.cutflow_labels is not None and loaded_data.cutflow_values is not None:
@@ -1901,7 +1977,7 @@ def run_plotting(
 
         data_sample = SampleData(
             name="data",
-            n_events=int(merged_data.get("n_events", 0) or 0),
+            weighted_total_events=int(merged_data.get("weighted_total_events", 0) or 0),
             objects=merged_data.get("objects", {}),
             luminosity=luminosity,
             cutflow_labels=merged_data.get("cutflow_labels"),
@@ -1924,22 +2000,22 @@ def run_plotting(
             matched = sum(1 for sub in sample.sub_samples if sub.cross_section is not None)
             unmatched = len(sample.sub_samples) - matched
             print(
-                f"  {sample.name}: n_events={sample.n_events}, lumi={sample.luminosity} fb^-1, "
+                f"  {sample.name}: weighted_total_events={sample.weighted_total_events}, lumi={sample.luminosity} fb^-1, "
                 f"xsec=per-process ({matched} matched"
                 + (f", {unmatched} fallback" if unmatched > 0 else "")
                 + ")"
             )
         elif sample.cross_section is not None:
-            event_weight = (sample.luminosity * sample.cross_section * 1000.0) / float(sample.n_events)
+            event_normalisation = (sample.luminosity * sample.cross_section * 1000.0) / float(sample.weighted_total_events)
             print(
-                f"  {sample.name}: n_events={sample.n_events}, lumi={sample.luminosity} fb^-1, "
-                f"xsec={sample.cross_section:.6g} pb, event_weight={event_weight:.6g}"
+                f"  {sample.name}: weighted_total_events={sample.weighted_total_events}, lumi={sample.luminosity} fb^-1, "
+                f"xsec={sample.cross_section:.6g} pb, event_normalisation={event_normalisation:.6g}"
             )
         else:
-            event_weight = sample.luminosity / float(sample.n_events) if sample.n_events > 0 else 0.0
+            event_normalisation = sample.luminosity / float(sample.weighted_total_events) if sample.weighted_total_events > 0 else 0.0
             print(
-                f"  {sample.name}: n_events={sample.n_events}, lumi={sample.luminosity} fb^-1, "
-                f"xsec=None, fallback_event_weight={event_weight:.6g}"
+                f"  {sample.name}: weighted_total_events={sample.weighted_total_events}, lumi={sample.luminosity} fb^-1, "
+                f"xsec=None, fallback_event_normalisation={event_normalisation:.6g}"
             )
 
     variable_names: set[str] = set()
@@ -1981,7 +2057,7 @@ def run_plotting(
                         sub_aligned = _align_cutflow_to_labels(sub.cutflow_labels, sub.cutflow_values, merged_cut_labels)
                         normalized += _scale_cutflow(
                             sub_aligned,
-                            sub.n_events,
+                            sub.weighted_total_events,
                             luminosity=sample.luminosity,
                             cross_section_pb=sub.cross_section,
                         )
@@ -1990,7 +2066,7 @@ def run_plotting(
                     aligned = _align_cutflow_to_labels(sample.cutflow_labels, sample.cutflow_values, merged_cut_labels)
                     normalized = _scale_cutflow(
                         aligned,
-                        sample.n_events,
+                        sample.weighted_total_events,
                         luminosity=sample.luminosity,
                         cross_section_pb=sample.cross_section,
                     )
@@ -2086,7 +2162,7 @@ def run_plotting(
                     sub_hist, sub_sumw2 = _histogram_and_sumw2(
                         values,
                         bins,
-                        sub.n_events,
+                        sub.weighted_total_events,
                         sample.luminosity,
                         cross_section_pb=sub.cross_section,
                     )
@@ -2099,7 +2175,7 @@ def run_plotting(
                 hist_values, hist_sumw2 = _histogram_and_sumw2(
                     values,
                     bins,
-                    sample.n_events,
+                    sample.weighted_total_events,
                     sample.luminosity,
                     cross_section_pb=sample.cross_section,
                 )
@@ -2114,7 +2190,7 @@ def run_plotting(
             values = _apply_variable_plot_filter(variable, values)
             data_hist = _histogram_counts(values, bins)
 
-        out_path = _plot_stacked_variable(
+        created_files.extend(_plot_stacked_variable(
             variable,
             bins,
             bkg_hists,
@@ -2122,20 +2198,7 @@ def run_plotting(
             output_dir,
             luminosity,
             color_map=color_map,
-        )
-        created_files.append(out_path)
-        if save_root:
-            root_path = output_dir / f"stacked_{variable}.root"
-            _save_stacked_root_plot(
-                root_path,
-                f"stacked_{variable}",
-                _axis_label(variable),
-                "Events / bin",
-                bins,
-                bkg_hists,
-                data_hist,
-                luminosity,
-            )
+        ))
 
     return created_files
 

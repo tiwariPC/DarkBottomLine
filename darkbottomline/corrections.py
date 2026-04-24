@@ -900,7 +900,7 @@ class CorrectionManager:
 
         return corrections
 
-    def get_h_total_weight(self, events: ak.Array) -> float:
+    def get_weighted_total_events(self, events: ak.Array) -> float:
         """
         Compute the normalization sum from all events before any selection.
         For MC: sum of sign(genWeight) over all events (+1 or -1 per event).
@@ -924,14 +924,14 @@ class CorrectionManager:
         """
         Compute total event weight and per-systematic up/down variations.
 
-        total_weight = genweight * weight_pileup * weight_btag * weight_muon
-                       * weight_electron * weight_electronHLT * weight_JEC
+        full_event_weight = genweight * weight_pileup * weight_btag * weight_muon
+                            * weight_electron * weight_electronHLT * weight_JEC
 
         For each component X:
-            weight_XUP   = (total_weight / weight_X_central) * weight_X_up
-            weight_XDOWN = (total_weight / weight_X_central) * weight_X_down
+            weight_XUP   = (full_event_weight / weight_X_central) * weight_X_up
+            weight_XDOWN = (full_event_weight / weight_X_central) * weight_X_down
 
-        Returns dict with keys: total_weight, weight_pileupUP/DOWN,
+        Returns dict with keys: full_event_weight, weight_pileupUP/DOWN,
         weight_btagUP/DOWN, weight_muonUP/DOWN, weight_electronUP/DOWN,
         weight_electronHLTUP/DOWN, weight_JECUP/DOWN.
         """
@@ -990,7 +990,7 @@ class CorrectionManager:
         else:
             w_jec = w_jec_up = w_jec_down = ones
 
-        total_weight = genweight * w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_jec
+        full_event_weight = genweight * w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_jec
 
         def _vary(total, central, variation):
             """Replace central component with variation: (total / central) * variation."""
@@ -998,19 +998,19 @@ class CorrectionManager:
             return (total / safe) * variation
 
         return {
-            "total_weight": total_weight,
-            "weight_pileupUP": _vary(total_weight, w_pu, w_pu_up),
-            "weight_pileupDOWN": _vary(total_weight, w_pu, w_pu_down),
-            "weight_btagUP": _vary(total_weight, w_btag, w_btag_up),
-            "weight_btagDOWN": _vary(total_weight, w_btag, w_btag_down),
-            "weight_muonUP": _vary(total_weight, w_muon, w_muon_up),
-            "weight_muonDOWN": _vary(total_weight, w_muon, w_muon_down),
-            "weight_electronUP": _vary(total_weight, w_electron, w_electron_up),
-            "weight_electronDOWN": _vary(total_weight, w_electron, w_electron_down),
-            "weight_electronHLTUP": _vary(total_weight, w_ele_hlt, w_ele_hlt_up),
-            "weight_electronHLTDOWN": _vary(total_weight, w_ele_hlt, w_ele_hlt_down),
-            "weight_JECUP": _vary(total_weight, w_jec, w_jec_up),
-            "weight_JECDOWN": _vary(total_weight, w_jec, w_jec_down),
+            "full_event_weight": full_event_weight,
+            "weight_pileupUP": _vary(full_event_weight, w_pu, w_pu_up),
+            "weight_pileupDOWN": _vary(full_event_weight, w_pu, w_pu_down),
+            "weight_btagUP": _vary(full_event_weight, w_btag, w_btag_up),
+            "weight_btagDOWN": _vary(full_event_weight, w_btag, w_btag_down),
+            "weight_muonUP": _vary(full_event_weight, w_muon, w_muon_up),
+            "weight_muonDOWN": _vary(full_event_weight, w_muon, w_muon_down),
+            "weight_electronUP": _vary(full_event_weight, w_electron, w_electron_up),
+            "weight_electronDOWN": _vary(full_event_weight, w_electron, w_electron_down),
+            "weight_electronHLTUP": _vary(full_event_weight, w_ele_hlt, w_ele_hlt_up),
+            "weight_electronHLTDOWN": _vary(full_event_weight, w_ele_hlt, w_ele_hlt_down),
+            "weight_JECUP": _vary(full_event_weight, w_jec, w_jec_up),
+            "weight_JECDOWN": _vary(full_event_weight, w_jec, w_jec_down),
         }
 
     def get_systematic_variations(self) -> list:

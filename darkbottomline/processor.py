@@ -163,9 +163,9 @@ class DarkBottomLineProcessor:
             events = self.apply_lumi_mask(events)
             print(f"  Events after golden JSON filter: {len(events)}")
 
-        # h_total_weight: sum of sign(genWeight) over ALL events before any selection
-        h_total_weight = self.correction_manager.get_h_total_weight(events)
-        print(f"  h_total_weight (normalization): {h_total_weight}")
+        # weighted_total_events: sum of sign(genWeight) over ALL events before any selection
+        weighted_total_events = self.correction_manager.get_weighted_total_events(events)
+        print(f"  weighted_total_events (normalization): {weighted_total_events}")
 
         # Build physics objects
         print("Step 1: Building physics objects...")
@@ -194,8 +194,8 @@ class DarkBottomLineProcessor:
                 logging.info(f"Saving event-level selection to {event_selection_output} ({len(selected_events)} events)")
                 self._save_event_selection(event_selection_output, selected_events, selected_objects,
                                             max_events=self.config.get("max_events"),
-                                            n_events_total=len(events),
-                                            h_total_weight=h_total_weight,
+                                            total_events=len(events),
+                                            weighted_total_events=weighted_total_events,
                                             cutflow=cutflow)
                 # Verify file was created
                 import os
@@ -216,7 +216,7 @@ class DarkBottomLineProcessor:
             weight_results = self.correction_manager.compute_event_weights(
                 selected_events, selected_objects
             )
-            event_weights = np.asarray(ak.to_numpy(weight_results["total_weight"]))
+            event_weights = np.asarray(ak.to_numpy(weight_results["full_event_weight"]))
             print(f"  Weights calculated successfully: {len(event_weights)} weights")
 
             event_weights_save = _build_event_weights_for_save(weight_results)
@@ -258,7 +258,7 @@ class DarkBottomLineProcessor:
         self.accumulator["metadata"] = {
             "n_events_processed": len(events),
             "n_events_selected": len(selected_events),
-            "h_total_weight": h_total_weight,
+            "weighted_total_events": weighted_total_events,
             "processing_time": processing_time,
             "weight_statistics": _compute_weight_statistics(event_weights),
         }
@@ -315,8 +315,8 @@ class DarkBottomLineProcessor:
         return skimmed
 
     def _save_event_selection(self, output_file: str, events: ak.Array, objects: Dict[str, Any],
-                              max_events: Optional[int] = None, n_events_total: Optional[int] = None,
-                              h_total_weight: Optional[float] = None,
+                              max_events: Optional[int] = None, total_events: Optional[int] = None,
+                              weighted_total_events: Optional[float] = None,
                               event_weights: Optional[Dict[str, Any]] = None,
                               cutflow: Optional[Dict[str, int]] = None,
                               output_format: str = "pkl"):
@@ -330,7 +330,7 @@ class DarkBottomLineProcessor:
             events: Selected events (after event-level selection)
             objects: Selected objects (after event-level selection)
             max_events: Maximum events parameter from config (optional)
-            n_events_total: Total number of events BEFORE selection (optional)
+            total_events: Total number of events BEFORE selection (optional)
             event_weights: Event weights dictionary (optional, includes all corrections)
             cutflow: Event-selection cutflow dictionary (optional)
             output_format: Output format ("pkl", "root"). Default: "pkl" (saves both pkl and root)
@@ -377,13 +377,13 @@ class DarkBottomLineProcessor:
         if save_pkl:
             # Build serializable dict — always include metadata even when no events passed selection.
             serializable = {}
-            if n_events_total is not None:
-                serializable["n_events"] = n_events_total
+            if total_events is not None:
+                serializable["total_events"] = total_events
             if max_events is not None:
                 serializable["total_event"] = max_events
-            serializable["n_selected_events"] = 0 if no_events else len(events)
-            if h_total_weight is not None:
-                serializable["h_total_weight"] = h_total_weight
+            serializable["selected_events"] = 0 if no_events else len(events)
+            if weighted_total_events is not None:
+                serializable["weighted_total_events"] = weighted_total_events
 
             if not no_events:
                 try:
@@ -465,7 +465,8 @@ class DarkBottomLineProcessor:
                 if outdir:
                     os.makedirs(outdir, exist_ok=True)
 
-                n_selected = 0 if no_events else len(events)
+                _ew = event_weights.get("full_event_weight") if event_weights else None
+                selected_events = float(np.sum(_ew)) if _ew is not None and len(_ew) > 0 else float(0 if no_events else len(events))
                 with uproot.recreate(output_file_root) as f:
                     if not no_events and branches:
                         scalar_branches = {}
@@ -502,10 +503,10 @@ class DarkBottomLineProcessor:
 
                     # Flat 1-bin TH1 per scalar — hadd sums bin contents correctly
                     edges_1bin = np.array([0.0, 1.0])
-                    f['n_events']          = (np.array([float(n_events_total) if n_events_total is not None else 0.0]), edges_1bin)
-                    f['n_selected_events'] = (np.array([float(n_selected)]),                                            edges_1bin)
-                    f['total_weight']      = (np.array([float(h_total_weight) if h_total_weight is not None else 0.0]), edges_1bin)
-                    logging.info(f"Saved Metadata histograms: n_events={n_events_total}, n_selected={n_selected}, h_total_weight={h_total_weight}")
+                    f['total_events']             = (np.array([float(total_events) if total_events is not None else 0.0]), edges_1bin)
+                    f['selected_events'] = (np.array([selected_events]),                                     edges_1bin)
+                    f['weighted_total_events']    = (np.array([float(weighted_total_events) if weighted_total_events is not None else 0.0]), edges_1bin)
+                    logging.info(f"Saved Metadata histograms: total_events={total_events}, selected_events={selected_events:.2f}, weighted_total_events={weighted_total_events}")
 
                     # Labeled TH1 cutflow — bin labels = cut names, hadd sums correctly
                     if cutflow:
@@ -527,7 +528,7 @@ class DarkBottomLineProcessor:
                 # Verify file was created
                 if os.path.exists(output_file_root):
                     file_size = os.path.getsize(output_file_root)
-                    logging.info(f"✓ Event selection exported to ROOT file {output_file_root} ({file_size} bytes, {n_selected} events)")
+                    logging.info(f"✓ Event selection exported to ROOT file {output_file_root} ({file_size} bytes, {selected_events:.0f} events)")
                 else:
                     logging.error(f"✗ ROOT file {output_file_root} was not created!")
             except Exception as e:
@@ -545,11 +546,10 @@ class DarkBottomLineProcessor:
                     if a.ndim == 1:
                         scalar_data[k] = a
                 df = pd.DataFrame(scalar_data)
-                _n_sel = 0 if no_events else len(events)
                 df.attrs.update({
-                    'n_events':      float(n_events_total or 0),
-                    'n_selected':    float(_n_sel),
-                    'h_total_weight': float(h_total_weight or 0),
+                    'total_events':             float(total_events or 0),
+                    'selected_events': selected_events,
+                    'weighted_total_events':    float(weighted_total_events or 0),
                 })
                 df.to_parquet(output_file_parquet, index=False)
                 logging.info(f"✓ Event selection exported to parquet {output_file_parquet} ({len(df)} rows)")

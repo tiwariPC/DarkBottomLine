@@ -7,12 +7,13 @@ To add a new variable: implement a function and register it in compute_event_var
 Return value of compute_event_variables(): flat dict[str, np.ndarray | ak.Array]
   - 1D numpy arrays  → scalar branches (one value per event)
   - 2D ak.Arrays     → jagged branches (vector<float> in ROOT)
-  - sentinel -9.0    → variable undefined for this event (e.g. < N jets required)
+  - SENTINEL (-9.0)  → variable undefined for this event (e.g. < N jets required)
 """
 
 import numpy as np
 import awkward as ak
 from typing import Dict, Any
+from darkbottomline.objects import SENTINEL
 
 
 # ---------------------------------------------------------------------------
@@ -24,7 +25,7 @@ def _scalar(arr, default=0.0):
     return ak.to_numpy(ak.fill_none(ak.values_astype(arr, np.float32), np.float32(default)))
 
 
-def _lead(jagged, idx, default=-9.0):
+def _lead(jagged, idx, default=SENTINEL):
     """Extract scalar at position idx from a jagged array; fill missing with default."""
     pad = ak.pad_none(jagged, idx + 1, clip=True)
     return ak.to_numpy(ak.fill_none(pad[:, idx], np.float32(default))).astype(np.float32)
@@ -126,15 +127,15 @@ def _jet_lead_variables(objects: Dict[str, Any], btag_algo: str) -> Dict[str, np
         'Jet1Pt':              _lead(jets.pt,  0),
         'Jet1Eta':             _lead(jets.eta, 0),
         'Jet1Phi':             _lead(jets.phi, 0),
-        f'Jet1{btag_algo}':    _lead(btag,     0, default=-1.0),
+        f'Jet1{btag_algo}':    _lead(btag,     0, default=SENTINEL),
         'Jet2Pt':              _lead(jets.pt,  1),
         'Jet2Eta':             _lead(jets.eta, 1),
         'Jet2Phi':             _lead(jets.phi, 1),
-        f'Jet2{btag_algo}':    _lead(btag,     1, default=-1.0),
+        f'Jet2{btag_algo}':    _lead(btag,     1, default=SENTINEL),
         'Jet3Pt':              _lead(jets.pt,  2),
         'Jet3Eta':             _lead(jets.eta, 2),
         'Jet3Phi':             _lead(jets.phi, 2),
-        f'Jet3{btag_algo}':    _lead(btag,     2, default=-1.0),
+        f'Jet3{btag_algo}':    _lead(btag,     2, default=SENTINEL),
         'JetHT':               _scalar(ak.sum(jets.pt, axis=1)),
     }
 
@@ -157,14 +158,14 @@ def _jet_composite_variables(
     out: Dict[str, np.ndarray] = {}
 
     # Jet1/MET ratios
-    out['rJet1PtMET']   = np.where(has_j1 & (met_pt > 0), j1pt / np.maximum(met_pt, 1e-6), np.float32(-9.0)).astype(np.float32)
-    out['ratioPtJet21'] = np.where(has_2j,                 j2pt / np.maximum(j1pt,  1e-6), np.float32(-9.0)).astype(np.float32)
+    out['ratioJet1PtMET']   = np.where(has_j1 & (met_pt > 0), j1pt / np.maximum(met_pt, 1e-6), np.float32(SENTINEL)).astype(np.float32)
+    out['ratioPtJet21'] = np.where(has_2j,                 j2pt / np.maximum(j1pt,  1e-6), np.float32(SENTINEL)).astype(np.float32)
 
     # Dijet angular
-    out['dEtaJet12'] = np.where(has_2j, np.abs(j1eta - j2eta),  np.float32(-9.0)).astype(np.float32)
-    out['dPhiJet12'] = np.where(has_2j, _dphi(j1phi, j2phi),    np.float32(-9.0)).astype(np.float32)
-    out['dRJet12']   = np.where(has_2j, np.sqrt(out['dEtaJet12']**2 + out['dPhiJet12']**2), np.float32(-9.0)).astype(np.float32)
-    out['dPhiJet13'] = np.where(has_3j, _dphi(j1phi, j3phi),    np.float32(-9.0)).astype(np.float32)
+    out['dEtaJet12'] = np.where(has_2j, np.abs(j1eta - j2eta),  np.float32(SENTINEL)).astype(np.float32)
+    out['dPhiJet12'] = np.where(has_2j, _dphi(j1phi, j2phi),    np.float32(SENTINEL)).astype(np.float32)
+    out['dRJet12']   = np.where(has_2j, np.sqrt(out['dEtaJet12']**2 + out['dPhiJet12']**2), np.float32(SENTINEL)).astype(np.float32)
+    out['dPhiJet13'] = np.where(has_3j, _dphi(j1phi, j3phi),    np.float32(SENTINEL)).astype(np.float32)
 
     # Dijet 4-vector masses + kinematics (use jet mass=0 sentinel → treat as massless when -9)
     j1m = np.where(j1pt > 0, jet_lead.get('_j1m', np.zeros_like(j1pt)), 0.0).astype(np.float32)
@@ -176,13 +177,13 @@ def _jet_composite_variables(
     px3, py3, pz3, e3 = _4vec(j3pt, j3eta, j3phi, j3m)
 
     m12, pt12, eta12, phi12 = _dijet(px1, py1, pz1, e1, px2, py2, pz2, e2)
-    out['M_Jet1Jet2']   = np.where(has_2j, m12,   np.float32(-9.0)).astype(np.float32)
-    out['pT_Jet1Jet2']  = np.where(has_2j, pt12,  np.float32(-9.0)).astype(np.float32)
-    out['eta_Jet1Jet2'] = np.where(has_2j, eta12, np.float32(-9.0)).astype(np.float32)
-    out['phi_Jet1Jet2'] = np.where(has_2j, phi12, np.float32(-9.0)).astype(np.float32)
+    out['M_Jet1Jet2']   = np.where(has_2j, m12,   np.float32(SENTINEL)).astype(np.float32)
+    out['pT_Jet1Jet2']  = np.where(has_2j, pt12,  np.float32(SENTINEL)).astype(np.float32)
+    out['eta_Jet1Jet2'] = np.where(has_2j, eta12, np.float32(SENTINEL)).astype(np.float32)
+    out['phi_Jet1Jet2'] = np.where(has_2j, phi12, np.float32(SENTINEL)).astype(np.float32)
 
     m13, _, _, _ = _dijet(px1, py1, pz1, e1, px3, py3, pz3, e3)
-    out['M_Jet1Jet3'] = np.where(has_3j, m13, np.float32(-9.0)).astype(np.float32)
+    out['M_Jet1Jet3'] = np.where(has_3j, m13, np.float32(SENTINEL)).astype(np.float32)
 
     # min dPhi(jet, MET) over all jets — needs jagged jets, handled separately via _dphi_jet_met
     return out
@@ -193,7 +194,7 @@ def _dphi_jet_met(objects: Dict[str, Any], met_phi: np.ndarray) -> np.ndarray:
     jets = objects.get('jets', ak.Array([]))
     raw = np.abs(ak.to_numpy(ak.fill_none(
         ak.min(np.abs(jets.phi - met_phi.astype(np.float32)), axis=1),
-        np.float32(-9.0),
+        np.float32(SENTINEL),
     )))
     return np.where(raw >= 0, np.minimum(raw, np.float32(2 * np.pi) - raw), raw).astype(np.float32)
 
@@ -271,9 +272,9 @@ def compute_event_variables(
 
     # --- cos(theta*) ---
     try:
-        out['costheta_star'] = ak.to_numpy(ak.fill_none(objects['costheta_star'], np.float32(-2.0))).astype(np.float32)
+        out['costheta_star'] = ak.to_numpy(ak.fill_none(objects['costheta_star'], np.float32(SENTINEL))).astype(np.float32)
     except Exception:
-        out['costheta_star'] = np.full(n_ev, -2.0, dtype=np.float32)
+        out['costheta_star'] = np.full(n_ev, SENTINEL, dtype=np.float32)
 
     # --- Multiplicities ---
     out.update(_multiplicity_variables(objects))
