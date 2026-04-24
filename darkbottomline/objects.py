@@ -226,20 +226,16 @@ def clean_jets_from_leptons(
     if len(ak.flatten(leptons)) == 0:
         return ak.ones_like(jets.pt, dtype=bool)
 
-    # Broadcast jets vs leptons for ΔR: jets[:,np.newaxis] vs leptons[np.newaxis,:]
-    deta = jets.eta - ak.pad_none(leptons.eta, 1, axis=0)
-    dphi = jets.phi - ak.pad_none(leptons.phi, 1, axis=0)
-
-    # Use ak.cartesian for proper per-event pairing
-    pairs = ak.cartesian({"jet": jets, "lep": leptons}, axis=1)
+    # nested=True → shape: events × jets × leptons (axis=2 reduces over leptons per jet)
+    pairs = ak.cartesian({"jet": jets, "lep": leptons}, axis=1, nested=True)
     deta = pairs["jet"].eta - pairs["lep"].eta
     dphi = pairs["jet"].phi - pairs["lep"].phi
     dphi = ak.where(dphi > np.pi, dphi - 2 * np.pi, dphi)
     dphi = ak.where(dphi < -np.pi, dphi + 2 * np.pi, dphi)
     dr = np.sqrt(deta**2 + dphi**2)
 
-    # Jet fails if ANY lepton is within dr_min
-    too_close = ak.any(dr < dr_min, axis=1)
+    # True per jet if ANY lepton within dr_min
+    too_close = ak.any(dr < dr_min, axis=2)
     return ~too_close
 
 
@@ -446,6 +442,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
     photons = ak.zip({
         "pt": events["Photon_pt"],
         "eta": events["Photon_eta"],
+        "phi": events["Photon_phi"],
         "cutBased": events["Photon_cutBased"],
     })
     selected_photons = photons[photon_mask]

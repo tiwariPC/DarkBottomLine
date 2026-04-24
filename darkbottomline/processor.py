@@ -491,32 +491,17 @@ class DarkBottomLineProcessor:
                   branches['PFMET_phi'] = _get_met_field_array('PFMET_phi', 'MET_phi')
                   branches['PFMET_significance'] = _get_met_field_array('PFMET_significance', 'MET_significance')
 
-                  # Recoil (event-level scalar)
+                  # Recoil — use precomputed value from objects (loose leptons + MET)
                   try:
-                      met_pt = events['PFMET_pt'] if 'PFMET_pt' in events.fields else events['MET_pt']
-                      met_phi = events['PFMET_phi'] if 'PFMET_phi' in events.fields else events['MET_phi']
-
-                      muons = objects.get('tight_muons', ak.Array([]))
-                      electrons = objects.get('tight_electrons', ak.Array([]))
-
-                      lep_px = ak.zeros_like(met_pt)
-                      lep_py = ak.zeros_like(met_pt)
-                      try:
-                          if len(ak.flatten(muons)) > 0:
-                              lep_px = lep_px + ak.sum(muons.pt * np.cos(muons.phi), axis=1)
-                              lep_py = lep_py + ak.sum(muons.pt * np.sin(muons.phi), axis=1)
-                          if len(ak.flatten(electrons)) > 0:
-                              lep_px = lep_px + ak.sum(electrons.pt * np.cos(electrons.phi), axis=1)
-                              lep_py = lep_py + ak.sum(electrons.pt * np.sin(electrons.phi), axis=1)
-                      except (Exception, BaseException):
-                          pass
-
-                      recoil_px = -(met_pt * np.cos(met_phi) + lep_px)
-                      recoil_py = -(met_pt * np.sin(met_phi) + lep_py)
-                      recoil = np.sqrt(recoil_px**2 + recoil_py**2)
-                      branches['recoil'] = ak.to_numpy(ak.fill_none(recoil, 0.0))
+                      branches['recoil'] = ak.to_numpy(ak.fill_none(objects['recoil'], 0.0))
                   except Exception:
                       branches['recoil'] = np.zeros(len(events), dtype=float)
+
+                  # cos(theta*) — helicity angle of leading dijet; -2 sentinel when <2 jets
+                  try:
+                      branches['costheta_star'] = ak.to_numpy(ak.fill_none(objects['costheta_star'], -2.0))
+                  except Exception:
+                      branches['costheta_star'] = np.full(len(events), -2.0, dtype=float)
 
                   # Object multiplicities
                   def safe_num(obj_key):
