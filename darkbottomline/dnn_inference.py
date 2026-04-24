@@ -220,13 +220,13 @@ class DNNInference:
                 n_bjets = ak.num(objects.get("bjets", ak.Array([])), axis=1)
                 features.append(ak.to_numpy(n_bjets))
             elif feature == "n_muons":
-                n_muons = ak.num(objects.get("tight_muons_pt30", ak.Array([])), axis=1)
+                n_muons = ak.num(objects.get("tight_muons", ak.Array([])), axis=1)
                 features.append(ak.to_numpy(n_muons))
             elif feature == "n_electrons":
-                n_electrons = ak.num(objects.get("tight_electrons_pt30", ak.Array([])), axis=1)
+                n_electrons = ak.num(objects.get("tight_electrons", ak.Array([])), axis=1)
                 features.append(ak.to_numpy(n_electrons))
             elif feature == "n_taus":
-                n_taus = ak.num(objects.get("tight_taus_pt30", ak.Array([])), axis=1)
+                n_taus = ak.num(objects.get("tight_taus", ak.Array([])), axis=1)
                 features.append(ak.to_numpy(n_taus))
             elif feature == "ht":
                 # HT calculation

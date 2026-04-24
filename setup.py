@@ -1,9 +1,20 @@
+from pathlib import Path
+import re
+
 from setuptools import setup, find_packages
+
+
+def get_version() -> str:
+    version_file = Path(__file__).resolve().parent / "darkbottomline" / "_version.py"
+    match = re.search(r'__version__\s*=\s*"([^"]+)"', version_file.read_text())
+    if not match:
+        raise RuntimeError(f"Unable to read version from {version_file}")
+    return match.group(1)
 
 # Normalize version format for setuptools compatibility
 setup(
     name="darkbottomline",
-    version="1.0.0b0",  # Changed from "1.0.0-beta" to avoid normalization warning
+    version=get_version(),
     description="Modular Coffea-based analysis framework for CMS Run 3 bbMET analysis",
     author="DarkBottomLine Team",
     python_requires=">=3.9",

@@ -487,9 +487,9 @@ class HistogramManager:
         n_ev = len(events)
         n_jets = _safe_num(objects.get("jets"), n_ev)
         n_bjets = _safe_num(objects.get("bjets"), n_ev)
-        n_muons = _safe_num(objects.get("tight_muons_pt30"), n_ev)
-        n_electrons = _safe_num(objects.get("tight_electrons_pt30"), n_ev)
-        n_taus = _safe_num(objects.get("tight_taus_pt30"), n_ev)
+        n_muons = _safe_num(objects.get("tight_muons"), n_ev)
+        n_electrons = _safe_num(objects.get("tight_electrons"), n_ev)
+        n_taus = _safe_num(objects.get("tight_taus"), n_ev)
 
         histograms["n_jets"].fill(n_jets=n_jets, weight=weights)
         histograms["n_bjets"].fill(n_bjets=n_bjets, weight=weights)
@@ -515,7 +515,7 @@ class HistogramManager:
             pass
 
         # Fill muon kinematics (numpy for hist)
-        tight_mu = objects.get("tight_muons_pt30", ak.Array([]))
+        tight_mu = objects.get("tight_muons", ak.Array([]))
         try:
             if tight_mu is not None and len(tight_mu) > 0 and len(ak.flatten(tight_mu)) > 0:
                 muon_pt = np.asarray(ak.to_numpy(ak.flatten(tight_mu.pt)))
@@ -527,7 +527,7 @@ class HistogramManager:
             pass
 
         # Fill electron kinematics (numpy for hist)
-        tight_el = objects.get("tight_electrons_pt30", ak.Array([]))
+        tight_el = objects.get("tight_electrons", ak.Array([]))
         try:
             if tight_el is not None and len(tight_el) > 0 and len(ak.flatten(tight_el)) > 0:
                 electron_pt = np.asarray(ak.to_numpy(ak.flatten(tight_el.pt)))

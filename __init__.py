@@ -4,8 +4,7 @@ DarkBottomLine Framework
 A modular Coffea-based analysis framework for CMS Run 3 bbMET analysis.
 """
 
+from darkbottomline._version import __version__
 
-
-__version__ = "1.0.0-beta"
 __author__ = "DarkBottomLine Team"
 

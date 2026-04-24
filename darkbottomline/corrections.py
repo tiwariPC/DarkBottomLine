@@ -853,9 +853,9 @@ class CorrectionManager:
         corrections["pileup"] = self.get_pileup_weight(events, systematic)
 
         # Muon: product of SF over all muons -> weight_muon_id (ID/iso as in correction file)
-        if "tight_muons_pt30" in objects and len(ak.flatten(objects["tight_muons_pt30"])) > 0:
-            mu_sf = self.get_muon_sf(objects["tight_muons_pt30"], systematic)
-            mu_var = self.get_muon_sf_nominal_up_down(objects["tight_muons_pt30"])
+        if "tight_muons" in objects and len(ak.flatten(objects["tight_muons"])) > 0:
+            mu_sf = self.get_muon_sf(objects["tight_muons"], systematic)
+            mu_var = self.get_muon_sf_nominal_up_down(objects["tight_muons"])
             corrections["weight_muon_id"] = {
                 "central": self._per_event_product(mu_sf),
                 "up": self._per_event_product(mu_var["up"]),
@@ -863,9 +863,9 @@ class CorrectionManager:
             }
 
         # Electron: product of SF over all electrons -> weight_electron_id
-        if "tight_electrons_pt30" in objects and len(ak.flatten(objects["tight_electrons_pt30"])) > 0:
-            ele_sf = self.get_electron_sf(objects["tight_electrons_pt30"], systematic)
-            ele_var = self.get_electron_sf_nominal_up_down(objects["tight_electrons_pt30"])
+        if "tight_electrons" in objects and len(ak.flatten(objects["tight_electrons"])) > 0:
+            ele_sf = self.get_electron_sf(objects["tight_electrons"], systematic)
+            ele_var = self.get_electron_sf_nominal_up_down(objects["tight_electrons"])
             corrections["weight_electron_id"] = {
                 "central": self._per_event_product(ele_sf),
                 "up": self._per_event_product(ele_var["up"]),
@@ -883,9 +883,9 @@ class CorrectionManager:
             }
 
         # Electron HLT trigger SF: product of SF over all electrons -> weight_electronHLT
-        if "tight_electrons_pt30" in objects and len(ak.flatten(objects["tight_electrons_pt30"])) > 0:
-            hlt_sf = self.get_electronHLT_sf(objects["tight_electrons_pt30"], systematic)
-            hlt_var = self.get_electronHLT_sf_nominal_up_down(objects["tight_electrons_pt30"])
+        if "tight_electrons" in objects and len(ak.flatten(objects["tight_electrons"])) > 0:
+            hlt_sf = self.get_electronHLT_sf(objects["tight_electrons"], systematic)
+            hlt_var = self.get_electronHLT_sf_nominal_up_down(objects["tight_electrons"])
             corrections["weight_electronHLT"] = {
                 "central": self._per_event_product(hlt_sf),
                 "up": self._per_event_product(hlt_var["up"]),
@@ -969,17 +969,17 @@ class CorrectionManager:
 
         # Muon
         w_muon, w_muon_up, w_muon_down = _prod_or_ones(
-            "tight_muons_pt30", self.get_muon_sf, self.get_muon_sf_nominal_up_down
+            "tight_muons", self.get_muon_sf, self.get_muon_sf_nominal_up_down
         )
 
         # Electron ID
         w_electron, w_electron_up, w_electron_down = _prod_or_ones(
-            "tight_electrons_pt30", self.get_electron_sf, self.get_electron_sf_nominal_up_down
+            "tight_electrons", self.get_electron_sf, self.get_electron_sf_nominal_up_down
         )
 
         # Electron HLT
         w_ele_hlt, w_ele_hlt_up, w_ele_hlt_down = _prod_or_ones(
-            "tight_electrons_pt30", self.get_electronHLT_sf, self.get_electronHLT_sf_nominal_up_down
+            "tight_electrons", self.get_electronHLT_sf, self.get_electronHLT_sf_nominal_up_down
         )
 
         # JEC

@@ -20,6 +20,7 @@ except ImportError:
 
 from .objects import build_objects
 from .selections import apply_selection
+from .objects import calculate_recoil
 from .corrections import CorrectionManager
 from .histograms import HistogramManager
 
@@ -194,7 +195,8 @@ class DarkBottomLineProcessor:
                 self._save_event_selection(event_selection_output, selected_events, selected_objects,
                                            max_events=self.config.get("max_events"),
                                            n_events_total=len(events),
-                                           h_total_weight=h_total_weight)
+                                           h_total_weight=h_total_weight,
+                                           cutflow=cutflow)
                 # Verify file was created
                 import os
                 if os.path.exists(event_selection_output):
@@ -315,7 +317,9 @@ class DarkBottomLineProcessor:
     def _save_event_selection(self, output_file: str, events: ak.Array, objects: Dict[str, Any],
                               max_events: Optional[int] = None, n_events_total: Optional[int] = None,
                               h_total_weight: Optional[float] = None,
-                              event_weights: Optional[Dict[str, Any]] = None, output_format: str = "pkl"):
+                              event_weights: Optional[Dict[str, Any]] = None,
+                              cutflow: Optional[Dict[str, int]] = None,
+                              output_format: str = "pkl"):
         """
         Save selected events and corresponding objects to a file.
 
@@ -328,6 +332,7 @@ class DarkBottomLineProcessor:
             max_events: Maximum events parameter from config (optional)
             n_events_total: Total number of events BEFORE selection (optional)
             event_weights: Event weights dictionary (optional, includes all corrections)
+            cutflow: Event-selection cutflow dictionary (optional)
             output_format: Output format ("pkl", "root"). Default: "pkl" (saves both pkl and root)
         """
         import os
@@ -486,32 +491,17 @@ class DarkBottomLineProcessor:
                   branches['PFMET_phi'] = _get_met_field_array('PFMET_phi', 'MET_phi')
                   branches['PFMET_significance'] = _get_met_field_array('PFMET_significance', 'MET_significance')
 
-                  # Recoil (event-level scalar)
+                  # Recoil — use precomputed value from objects (loose leptons + MET)
                   try:
-                      met_pt = events['PFMET_pt'] if 'PFMET_pt' in events.fields else events['MET_pt']
-                      met_phi = events['PFMET_phi'] if 'PFMET_phi' in events.fields else events['MET_phi']
-
-                      muons = objects.get('tight_muons_pt30', ak.Array([]))
-                      electrons = objects.get('tight_electrons_pt30', ak.Array([]))
-
-                      lep_px = ak.zeros_like(met_pt)
-                      lep_py = ak.zeros_like(met_pt)
-                      try:
-                          if len(ak.flatten(muons)) > 0:
-                              lep_px = lep_px + ak.sum(muons.pt * np.cos(muons.phi), axis=1)
-                              lep_py = lep_py + ak.sum(muons.pt * np.sin(muons.phi), axis=1)
-                          if len(ak.flatten(electrons)) > 0:
-                              lep_px = lep_px + ak.sum(electrons.pt * np.cos(electrons.phi), axis=1)
-                              lep_py = lep_py + ak.sum(electrons.pt * np.sin(electrons.phi), axis=1)
-                      except (Exception, BaseException):
-                          pass
-
-                      recoil_px = -(met_pt * np.cos(met_phi) + lep_px)
-                      recoil_py = -(met_pt * np.sin(met_phi) + lep_py)
-                      recoil = np.sqrt(recoil_px**2 + recoil_py**2)
-                      branches['recoil'] = ak.to_numpy(ak.fill_none(recoil, 0.0))
+                      branches['recoil'] = ak.to_numpy(ak.fill_none(objects['recoil'], 0.0))
                   except Exception:
                       branches['recoil'] = np.zeros(len(events), dtype=float)
+
+                  # cos(theta*) — helicity angle of leading dijet; -2 sentinel when <2 jets
+                  try:
+                      branches['costheta_star'] = ak.to_numpy(ak.fill_none(objects['costheta_star'], -2.0))
+                  except Exception:
+                      branches['costheta_star'] = np.full(len(events), -2.0, dtype=float)
 
                   # Object multiplicities
                   def safe_num(obj_key):

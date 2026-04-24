@@ -8,9 +8,6 @@ regions:
       Nbjets: "==1"
       Njets: "<=2"
       Nleptons: "==0"
-      Ntaus: "==0"
-      MET: ">250"
-      DeltaPhi: ">0.5"
 
   "2b:SR":
     description: "Signal region, 2 b-tag category (paper: 2 b-tags, up to 1 additional jet)"
@@ -19,9 +16,6 @@ regions:
       Njets: "<=3"
       NjetsMin: ">=2"
       Nleptons: "==0"
-      Ntaus: "==0"
-      MET: ">250"
-      DeltaPhi: ">0.5"
 
   "1b:CR_Wlnu_mu":
     description: "W+jets control region in 1b category (muon)"
@@ -69,44 +63,40 @@ regions:
     cuts:
       NmuonsZ: "==2"
       NelectronsZ: "==0"
-      RecoilZ: ">250"
+      Recoil: ">250"
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=2"
-      Jet1Pt: ">100"
   "1b:CR_Zll_el":
     description: "Z+jets CR (1b) electron: 2 OS electrons, leading tight pt>30, subleading loose pt>10"
     cuts:
       NelectronsZ: "==2"
       NmuonsZ: "==0"
-      RecoilZ: ">250"
+      Recoil: ">250"
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=2"
-      Jet1Pt: ">100"
 
   "2b:CR_Zll_mu":
     description: "Z+jets CR (2b) muon: 2 OS muons, leading tight pt>30, subleading loose pt>10"
     cuts:
       NmuonsZ: "==2"
       NelectronsZ: "==0"
-      RecoilZ: ">250"
+      Recoil: ">250"
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=3"
       NjetsMin: ">1"
-      Jet1Pt: ">100"
   "2b:CR_Zll_el":
     description: "Z+jets CR (2b) electron: 2 OS electrons, leading tight pt>30, subleading loose pt>10"
     cuts:
       NelectronsZ: "==2"
       NmuonsZ: "==0"
-      RecoilZ: ">250"
+      Recoil: ">250"
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=3"
       NjetsMin: ">1"
-      Jet1Pt: ">100"
 
 # Global region settings
 settings:

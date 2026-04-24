@@ -31,7 +31,7 @@ data:
 triggers:
    MET: ["HLT_PFMETNoMu120_PFMHTNoMu120_IDTight","HLT_PFMETNoMu130_PFMHTNoMu130_IDTight","HLT_PFMETNoMu140_PFMHTNoMu140_IDTight"]
    SingleMuon: ["HLT_IsoMu24", "HLT_IsoMu27"]
-   SingleElectron: ["HLT_Ele30_WPTight_Gsf_v"]
+   EGamma: ["HLT_Ele30_WPTight_Gsf", "HLT_Photon200"]
 
 # MET filters
 met_filters:
@@ -46,27 +46,46 @@ met_filters:
 # Object selection cuts
 objects:
    muons:
-      pt_min: 20.0
+      pt_min: 30.0
+      pt_min_loose: 10.0
       eta_max: 2.4
-      id: "tight"
-      iso: "tight"
+      id_loose: "loose"
+      iso_loose: "loose"
+      id_tight: "tight"
+      iso_tight: "tight"
+      iso_wp_loose: 1    # pfIsoId >= 1 = loose
+      iso_wp_tight: 3    # pfIsoId >= 3 = tight
 
    electrons:
-      pt_min: 20.0
+      pt_min: 32.0
+      pt_min_loose: 10.0
       eta_max: 2.5
-      id: "tight"
-      iso: "tight"
+      id_loose: "loose"
+      iso_loose: "loose"
+      id_tight: "tight"
+      iso_tight: "tight"
+      id_wp_loose: 2     # cutBased >= 2 = loose
+      id_wp_tight: 4     # cutBased >= 4 = tight
 
    taus:
       pt_min: 20.0
       eta_max: 2.3
-      id: "tight"
+      id_loose: "loose"
+      id_tight: "tight"
+      id_wp_loose: 4     # deepTau VSjet >= 4 = loose
+      id_wp_tight: 16    # deepTau VSjet >= 16 = tight
       decay_modes: [0, 1, 2, 10, 11]
 
    jets:
       pt_min: 30.0
       eta_max: 2.4
       id: "tight"
+
+   photons:
+      pt_min: 15.0
+      eta_max: 2.5
+      id: "loose"
+      id_wp: 1           # cutBased >= 1 = loose
 
    fatjets:
       pt_min: 200.0
@@ -77,6 +96,9 @@ objects:
 btagging:
    wp: "medium"   # loose, medium, tight
    algorithm: "deepJet"   # deepJet, deepCSV
+   score_loose: 0.0490    # Run3 2022 deepJet WPs (BTV POG)
+   score_medium: 0.2783
+   score_tight: 0.7100
 
 # Event selection
 event_selection:
@@ -84,14 +106,14 @@ event_selection:
    max_muons: 2
    min_electrons: 0
    max_electrons: 2
-   min_taus: 0
-   max_taus: 2
-   min_jets: 2
-   min_bjets: 1
-   met_min: 50.0
+   max_taus: 0
+   max_photons: 0
+   min_jets: 1
+   max_jets: 6
+   recoil_min: 250.0
+   jet1_pt_min: 100.0
+   delta_phi_min: 0.5
 
 # Cleaning parameters
 cleaning:
-   dr_muon_jet: 0.4
-   dr_electron_jet: 0.4
-   dr_tau_jet: 0.4
+   dr_jet: 0.4
