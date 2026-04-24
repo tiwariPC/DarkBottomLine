@@ -23,7 +23,8 @@ from .utils.chunk_optimizer import (
 # Try to import Coffea for chunk-size support
 try:
     from coffea import processor
-    from coffea.processor import run_uproot_job, FuturesExecutor
+    from coffea.processor import Runner, FuturesExecutor
+    from coffea.nanoevents import BaseSchema
     try:
         from dask.distributed import Client
         from coffea.processor import DaskExecutor
@@ -81,6 +82,9 @@ def run_analysis(args):
 
         input_files = _get_input_files(args.input)
         logging.info(f"Loading events from {str(input_files)} files")
+
+        if args.max_events is not None and args.max_events < 0:
+            args.max_events = None
 
         events = uproot.concatenate([f"{path}:Events" for path in input_files])
 
@@ -198,9 +202,13 @@ def run_analyzer(args):
         is_txt_input = len(args.input) == 1 and args.input[0].endswith(".txt")
         input_files = _get_input_files(args.input)
 
+        # -1 (or any negative) means "no limit" — treat as None throughout
+        if args.max_events is not None and args.max_events < 0:
+            args.max_events = None
+
         # Total events before selection to be saved into event-selection-output metadata.
         # Rule: use --max-events when specified; otherwise use total events from input files.
-        total_events = args.max_events if (args.max_events is not None and args.max_events > 0) else None
+        total_events = args.max_events if args.max_events is not None else None
         if total_events is None and args.event_selection_output:
             try:
                 total_events = 0
@@ -286,42 +294,35 @@ def run_analyzer(args):
             )
 
             if args.executor == "futures":
-                result = run_uproot_job(
-                    fileset,
-                    "Events",
-                    coffea_analyzer,
-                    executor=FuturesExecutor,
-                    executor_args={"workers": args.workers},
+                runner = Runner(
+                    executor=FuturesExecutor(workers=args.workers),
                     chunksize=chunksize,
                     maxchunks=maxchunks,
+                    schema=BaseSchema,
                 )
+                result = runner(fileset, coffea_analyzer, treename="Events")
             elif args.executor == "dask" and DASK_AVAILABLE:
                 client = None
                 try:
-                    # Start Dask client
                     client = Client(n_workers=args.workers, timeout=120)
-
-                    # Wait for workers to be ready (with timeout)
                     try:
                         client.wait_for_workers(args.workers, timeout=60)
                         logging.info(f"Dask client ready with {len(client.scheduler_info()['workers'])} workers")
                     except Exception as e:
                         logging.warning(f"Timeout waiting for workers, continuing anyway: {e}")
 
-                    result = run_uproot_job(
-                        fileset,
-                        "Events",
-                        coffea_analyzer,
-                        executor=DaskExecutor,
-                        executor_args={"client": client},
-                        chunksize=chunksize if chunksize != 50000 else 200000,  # Default 200k for dask
+                    dask_chunksize = chunksize if chunksize != 50000 else 200000
+                    runner = Runner(
+                        executor=DaskExecutor(client=client),
+                        chunksize=dask_chunksize,
                         maxchunks=maxchunks,
+                        schema=BaseSchema,
                     )
+                    result = runner(fileset, coffea_analyzer, treename="Events")
                 except Exception as e:
                     logging.error(f"Dask execution error: {e}")
                     raise
                 finally:
-                    # Ensure client is properly closed
                     if client is not None:
                         try:
                             client.close()
@@ -330,7 +331,7 @@ def run_analyzer(args):
             else:
                 raise ValueError(f"Executor {args.executor} not available or not supported")
 
-            # Ensure postprocess is called (run_uproot_job should call it, but be explicit)
+            # Runner calls postprocess automatically; call again only as safety net
             if hasattr(coffea_analyzer, 'postprocess'):
                 logging.info("Calling postprocess to finalize event_selection_output if needed...")
                 result = coffea_analyzer.postprocess(result)
