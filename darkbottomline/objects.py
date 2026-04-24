@@ -163,6 +163,7 @@ def select_jets(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
         "pt": events["Jet_pt"],
         "eta": events["Jet_eta"],
         "phi": events["Jet_phi"],
+        "mass": events["Jet_mass"] if "Jet_mass" in events.fields else ak.zeros_like(events["Jet_pt"]),
         "btagDeepFlavB": events["Jet_btagDeepFlavB"],
     }
     if "Jet_hadronFlavour" in events.fields:
@@ -380,8 +381,8 @@ def calculate_costheta_star(jets: ak.Array) -> ak.Array:
     return ak.where(has_two, cos_ts, -2.0)
 
 
-def calculate_recoil(events: ak.Array, objects: Dict[str, Any]) -> ak.Array:
-    """Recoil = |-(MET_vec + sum pT(loose muons+electrons))|."""
+def calculate_recoil(events: ak.Array, objects: Dict[str, Any]):
+    """Recoil = |-(MET_vec + sum pT(loose muons+electrons))|. Returns (recoil_pt, recoil_phi)."""
     met_pt = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
     met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
 
@@ -402,7 +403,9 @@ def calculate_recoil(events: ak.Array, objects: Dict[str, Any]) -> ak.Array:
 
     recoil_px = -(met_pt * np.cos(met_phi) + ak.fill_none(lep_px, 0.0))
     recoil_py = -(met_pt * np.sin(met_phi) + ak.fill_none(lep_py, 0.0))
-    return ak.fill_none(np.sqrt(recoil_px**2 + recoil_py**2), 0.0)
+    recoil_pt  = ak.fill_none(np.sqrt(recoil_px**2 + recoil_py**2), 0.0)
+    recoil_phi = ak.fill_none(np.arctan2(recoil_py, recoil_px), 0.0)
+    return recoil_pt, recoil_phi
 
 
 def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -497,6 +500,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
         "pt": events["Jet_pt"],
         "eta": events["Jet_eta"],
         "phi": events["Jet_phi"],
+        "mass": events["Jet_mass"] if "Jet_mass" in events.fields else ak.zeros_like(events["Jet_pt"]),
         "btagDeepFlavB": events["Jet_btagDeepFlavB"],
     }
     if "Jet_hadronFlavour" in events.fields:
@@ -570,7 +574,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Compute recoil once for all events: |-(MET_vec + sum pT(loose leptons))|
     print("  Computing recoil...")
-    recoil = calculate_recoil(events, {
+    recoil, recoil_phi = calculate_recoil(events, {
         "muons": selected_muons,
         "electrons": selected_electrons,
     })
@@ -582,6 +586,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
     print("  Object building complete!")
     return {
         "recoil": recoil,
+        "recoil_phi": recoil_phi,
         "costheta_star": costheta_star,
         "photons": selected_photons,
         "muons": selected_muons,

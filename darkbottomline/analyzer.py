@@ -275,7 +275,7 @@ class DarkBottomLineAnalyzer:
                     logging.error(f"✗ File {event_selection_output} was not created!")
             except Exception as e:
                 logging.error(f"Failed to save event selection to {event_selection_output}: {e}", exc_info=True)
-            
+
             # If event_selection_only mode is enabled, return early
             if event_selection_only:
                 logging.info("event_selection_only mode: stopping after event selection (no region analysis)")
@@ -302,7 +302,7 @@ class DarkBottomLineAnalyzer:
                 "metadata": {},
                 "event_weights": {},
             }
-        
+
         logging.info("Applying region cuts...")
         region_masks = self.region_manager.apply_regions(events, objects)
 
@@ -706,7 +706,7 @@ class DarkBottomLineAnalyzer:
                 output_file_with_format = output_file
         else:
             output_file_with_format = output_file
-        
+
         # Route to appropriate save function based on format
         if output_file_with_format.endswith('.parquet'):
             self._save_parquet(output_file_with_format)
@@ -754,9 +754,14 @@ class DarkBottomLineAnalyzer:
                     for hist_name, hist in histograms.items():
                         f[f"{region_name}_{hist_name}"] = hist
 
-                # Save metadata as a JSON string
-                metadata_str = json.dumps(self.accumulator.get("metadata", {}))
-                f["metadata"] = metadata_str
+                # Save metadata as 1-bin TH1 per scalar — hadd sums correctly
+                metadata = self.accumulator.get("metadata", {})
+                edges_1bin = np.array([0.0, 1.0])
+                for mk, mv in metadata.items():
+                    try:
+                        f[f"Metadata/h_{mk}"] = (np.array([float(mv)]), edges_1bin)
+                    except (TypeError, ValueError):
+                        pass
 
                 # Per-event weights as TTree
                 event_weights = self.accumulator.get("event_weights", {})
@@ -768,6 +773,9 @@ class DarkBottomLineAnalyzer:
             logging.info(f"Saved region results to {output_file}")
         except ImportError:
             logging.warning("uproot not available. Falling back to pickle.")
+            self._save_pickle(output_file)
+        except Exception as e:
+            logging.error(f"ROOT write failed: {e}. Falling back to pickle.")
             self._save_pickle(output_file)
 
     def _save_pickle(self, output_file: str):
@@ -788,12 +796,12 @@ if COFFEA_AVAILABLE:
         Coffea-compatible processor wrapper for multi-region analyzer.
         """
 
-        def __init__(self, config: Dict[str, Any], regions_config_path: Optional[str] = None, 
-                     event_selection_output: Optional[str] = None,
-                     n_events_total: Optional[int] = None,
-                     event_selection_only: bool = False,
-                     output_format: Optional[str] = None,
-                     max_events: Optional[int] = None):
+        def __init__(self, config: Dict[str, Any], regions_config_path: Optional[str] = None,
+                        event_selection_output: Optional[str] = None,
+                        n_events_total: Optional[int] = None,
+                        event_selection_only: bool = False,
+                        output_format: Optional[str] = None,
+                        max_events: Optional[int] = None):
             self.config = config
             self.regions_config_path = regions_config_path
             self.event_selection_output = event_selection_output
@@ -822,7 +830,7 @@ if COFFEA_AVAILABLE:
                 "event_weights": processor.dict_accumulator({}),
                 "_event_selection_chunk_files": processor.dict_accumulator({}),  # Use dict_accumulator for proper merging
             })
-            
+
             # Store selected events/objects for event_selection_output
             # Use file-based approach for cross-worker compatibility
             # Always create _temp_dir so event_weights can be saved to chunk files
@@ -868,7 +876,7 @@ if COFFEA_AVAILABLE:
                 if len(events_to_process) > events_remaining:
                     events_to_process = events_to_process[:events_remaining]
                     logging.info(f"Limiting chunk to {len(events_to_process)} events (max_events={self.max_events}, already processed={self.processed_events})")
-            
+
             # Track processed events
             self.processed_events += len(events_to_process)
             logging.info(f"Processing {len(events_to_process)} events (total processed: {self.processed_events}/{self.max_events if self.max_events else 'unlimited'})")
@@ -929,7 +937,7 @@ if COFFEA_AVAILABLE:
                     logging.info(f"Saved chunk to {chunk_file}, accumulator will scan dir in postprocess")
                 except Exception as e:
                     logging.warning(f"Failed to collect selected events for event_selection_output: {e}", exc_info=True)
-            
+
             # If event_selection_only mode is enabled, don't merge results (no region analysis was done)
             if self.event_selection_only:
                 logging.info("event_selection_only mode: skipping accumulator merge (no region analysis)")

@@ -246,15 +246,21 @@ def _load_single_root(path: Path, target_variables: Optional[Sequence[str]] = No
             except Exception as e:
                 print(f"Warning: Could not read branch {branch_name}: {e}")
 
-        # Get n_events from Metadata tree if available
+        # Get n_events — new format: flat TH1 at root level; legacy: Metadata TTree
         n_events = 0
         metadata_n_events_available = False
-        if "Metadata" in f:
+        for _key in ('n_events', 'n_events;1'):
+            if _key in f:
+                try:
+                    n_events = int(round(float(f[_key].values()[0])))
+                    metadata_n_events_available = n_events > 0
+                    break
+                except Exception:
+                    pass
+        if not metadata_n_events_available and "Metadata" in f:
             meta_tree = f["Metadata"]
             if "n_events" in meta_tree.keys():
                 n_events_arr = meta_tree["n_events"].array(library="np")
-                # hadd-merged files can carry one n_events entry per source file.
-                # Sum all entries so normalization uses the total generated event count.
                 n_events = int(np.sum(n_events_arr)) if len(n_events_arr) > 0 else 0
                 metadata_n_events_available = n_events > 0
 
@@ -300,10 +306,36 @@ def _extract_cut_labels_from_tree(tree: Any, n_cuts: int) -> List[str]:
     return [f"Cut {i + 1}" for i in range(n_cuts)]
 
 
+_CUTFLOW_CUT_NAMES = [
+    'Total', 'Trigger', 'MET filters', 'Recoil',
+    'Muons', 'Electrons', 'Taus', 'Photons',
+    'Jets', 'Lead jet pT', 'Delta phi', 'Selected',
+]
+
+
 def _extract_cutflow_from_root_file(path: Path) -> Optional[Tuple[List[str], np.ndarray]]:
     try:
         with uproot.open(path) as f:
-            # Fallback: cutflow stored in Metadata tree as cf_XX_<step> branches.
+            # Primary: flat TH1 named 'cutflow' at root level (current format)
+            for key in ('cutflow', 'cutflow;1'):
+                if key in f:
+                    try:
+                        h = f[key]
+                        values = h.values().astype(float)
+                        # Try to read bin labels from axis (boost_histogram StrCategory)
+                        try:
+                            labels = list(h.axis().labels())
+                        except Exception:
+                            labels = []
+                        if not labels:
+                            labels = _CUTFLOW_CUT_NAMES[:len(values)]
+                        if len(labels) < len(values):
+                            labels += [f'Cut {i+1}' for i in range(len(labels), len(values))]
+                        return labels[:len(values)], values
+                    except Exception:
+                        pass
+
+            # Legacy: cutflow stored in Metadata tree as cf_XX_<step> branches.
             if "Metadata" in f:
                 meta = f["Metadata"]
                 if hasattr(meta, "keys"):
@@ -1445,6 +1477,27 @@ def _align_cutflow_to_labels(
     return aligned
 
 
+def _root_to_mpl_label(label: str) -> str:
+    """Convert ROOT LaTeX (N_{#mu}, #tau Veto) to matplotlib math."""
+    _greek = {
+        '#mu': r'\mu', '#tau': r'\tau', '#gamma': r'\gamma',
+        '#nu': r'\nu', '#phi': r'\phi', '#eta': r'\eta',
+        '#Delta': r'\Delta', '#Sigma': r'\Sigma', '#Pi': r'\Pi',
+    }
+    import re
+    s = label
+    for root_sym, mpl_sym in _greek.items():
+        s = s.replace(root_sym, mpl_sym)
+    # wrap math tokens (containing ^, _, or \) in $...$ leaving plain words outside
+    def _wrap_token(m):
+        tok = m.group(0)
+        if any(c in tok for c in ('^', '_', '\\')):
+            return f'${tok}$'
+        return tok
+    s = re.sub(r'\S+', _wrap_token, s)
+    return s
+
+
 def _plot_stacked_cutflow(
     cut_labels: Sequence[str],
     background_cutflows: List[Tuple[str, np.ndarray]],
@@ -1462,110 +1515,99 @@ def _plot_stacked_cutflow(
     if color_map is None:
         color_map = _get_background_color_map([label for label, _ in background_cutflows])
 
-    fig, ax = plt.subplots(figsize=(14, 9))
-    fig.subplots_adjust(top=0.9, bottom=0.25, left=0.12, right=0.95)
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(12, 12),
+        gridspec_kw={"height_ratios": [3.0, 1.0], "hspace": 0.08},
+        sharex=True,
+    )
+    fig.subplots_adjust(top=0.92, bottom=0.09, left=0.14, right=0.95)
 
     x = np.arange(len(cut_labels), dtype=float)
     cumulative = np.zeros(len(cut_labels), dtype=float)
 
     for label, values in background_cutflows:
         color = color_map.get(label, "#3f90da")
-        ax.bar(
-            x,
-            values,
-            bottom=cumulative,
-            width=0.8,
-            color=color,
-            edgecolor="none",
+        ax1.bar(
+            x, values, bottom=cumulative, width=0.8,
+            color=color, edgecolor="none",
             label=_get_legend_label(label),
         )
         cumulative += values
 
-    # Optional data overlay (restored): draw points with Poisson uncertainties.
+    # Data overlay with Poisson error bars
     has_data_overlay = False
+    ref_total = cumulative  # use stacked total as reference for ratio panel
     if data_cutflow is not None:
         mask = np.asarray(data_cutflow > 0, dtype=bool)
         if np.any(mask):
             has_data_overlay = True
-            ax.errorbar(
-                x[mask],
-                data_cutflow[mask],
+            ax1.errorbar(
+                x[mask], data_cutflow[mask],
                 yerr=np.sqrt(data_cutflow[mask]),
-                fmt="o",
-                color="black",
-                markerfacecolor="black",
-                markeredgecolor="black",
-                markersize=5.5,
-                elinewidth=1.2,
-                capsize=0,
-                label="Data",
-                zorder=10,
+                fmt="o", color="black",
+                markerfacecolor="black", markeredgecolor="black",
+                markersize=5.5, elinewidth=1.2, capsize=0,
+                label="Data", zorder=10,
             )
+            ref_total = data_cutflow  # ratio panel uses data as reference
 
-    ax.set_xticks(x)
-    ax.set_xticklabels([str(label) for label in cut_labels], rotation=30, ha="right")
-    ax.set_ylabel(y_label, fontsize=22, labelpad=6)
-    ax.set_xlabel("Cut step", fontsize=22)
-    ax.grid(False)
-    ax.set_yscale(y_scale)
+    # --- top panel axis ---
+    ax1.set_ylabel(y_label, fontsize=22, labelpad=6)
+    ax1.grid(False)
+    ax1.set_yscale(y_scale)
 
     if y_scale == "log":
-        positive = cumulative[cumulative > 0]
-        data_positive = np.array([], dtype=float)
-        if data_cutflow is not None:
-            data_positive = np.asarray(data_cutflow[data_cutflow > 0], dtype=float)
-        if positive.size and data_positive.size:
-            ymin = max(1e-3, min(float(np.min(positive)), float(np.min(data_positive))) * 0.5)
-        elif positive.size:
-            ymin = max(1e-3, float(np.min(positive)) * 0.5)
-        elif data_positive.size:
-            ymin = max(1e-3, float(np.min(data_positive)) * 0.5)
-        else:
-            ymin = 1e-3
-        # Keep cutflow log-axis readable: always show down to at least 1e2.
-        ymin = min(ymin, 1e2)
-        ymax = max(
-            1.0,
-            float(np.max(cumulative)) if cumulative.size else 1.0,
-            float(np.max(data_cutflow)) if data_cutflow is not None and data_cutflow.size else 1.0,
-        )
-        ax.set_ylim(ymin, ymax * 10.0)
+        pos = cumulative[cumulative > 0]
+        ymin = max(1e-3, min(float(np.min(pos)), 1e2)) if pos.size else 1e-3
+        ymax = max(1.0, float(np.max(cumulative)) if cumulative.size else 1.0,
+                   float(np.max(data_cutflow)) if data_cutflow is not None and data_cutflow.size else 1.0)
+        ax1.set_ylim(ymin, ymax * 10.0)
     else:
-        ymax = max(
-            1.0,
-            float(np.max(cumulative)) if cumulative.size else 1.0,
-            float(np.max(data_cutflow)) if data_cutflow is not None and data_cutflow.size else 1.0,
-        )
-        ax.set_ylim(0.0, ymax * 1.25)
+        ymax = max(1.0, float(np.max(cumulative)) if cumulative.size else 1.0,
+                   float(np.max(data_cutflow)) if data_cutflow is not None and data_cutflow.size else 1.0)
+        ax1.set_ylim(0.0, ymax * 1.25)
 
-    hep.cms.label(
-        "Work in progress",
-        data=has_data_overlay,
-        lumi=round(luminosity, 1),
-        com=13.6,
-        loc=0,
-        ax=ax,
-    )
+    # Annotate bar tops with event counts (use cumulative stack total)
+    for xi, n in zip(x, cumulative):
+        if n > 0:
+            ax1.text(xi, n * (1.15 if y_scale == "log" else 1.01),
+                     f"{int(round(n))}", ha="center", va="bottom", fontsize=11)
 
-    handles, labels = ax.get_legend_handles_labels()
+    hep.cms.label("Work in progress", data=has_data_overlay,
+                  lumi=round(luminosity, 1), com=13.6, loc=0, ax=ax1)
+
+    handles, leg_labels = ax1.get_legend_handles_labels()
     if handles:
-        data_idx = next((i for i, l in enumerate(labels) if l == "Data"), None)
-        ordered_idx = ([data_idx] if data_idx is not None else []) + [i for i in range(len(labels)) if i != data_idx]
-        handles = [handles[i] for i in ordered_idx]
-        labels = [labels[i] for i in ordered_idx]
-        ax.legend(
-            handles,
-            labels,
-            loc="upper right",
-            bbox_to_anchor=(0.97, 0.97),
-            ncol=2,
-            frameon=False,
-            borderaxespad=0.0,
-            handlelength=1.5,
-            columnspacing=1.0,
-            handletextpad=0.5,
-            fontsize=16,
+        data_idx = next((i for i, l in enumerate(leg_labels) if l == "Data"), None)
+        ordered = ([data_idx] if data_idx is not None else []) + [i for i in range(len(leg_labels)) if i != data_idx]
+        ax1.legend(
+            [handles[i] for i in ordered], [leg_labels[i] for i in ordered],
+            loc="upper right", bbox_to_anchor=(0.97, 0.97),
+            ncol=2, frameon=False, handlelength=1.5,
+            columnspacing=1.0, handletextpad=0.5, fontsize=20,
         )
+
+    # --- ratio panel: % of total (first cut = 100%) ---
+    total0 = float(ref_total[0]) if len(ref_total) > 0 and ref_total[0] > 0 else 1.0
+    eff_abs = 100.0 * ref_total / total0
+
+    half = 0.4  # half-width of each bar in x units
+    for xi, e in zip(x, eff_abs):
+        ax2.fill_between(
+            [xi - half, xi + half], [0, 0], [e, e],
+            hatch="////", facecolor="#bbbbbb", edgecolor="#666666",
+            linewidth=0.0, alpha=0.8,
+        )
+    ax2.set_ylim(0, 115)
+    ax2.set_ylabel("% of total", fontsize=22, labelpad=6)
+    ax2.axhline(100, color="black", linestyle="-", linewidth=1.2)
+    ax2.grid(False)
+    for xi, e in zip(x, eff_abs):
+        ax2.text(xi, e + 2, f"{e:.0f}%", ha="center", va="bottom", fontsize=11)
+
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([_root_to_mpl_label(str(lbl)) for lbl in cut_labels], rotation=35, ha="right", fontsize=16)
+    ax2.set_xlabel("", fontsize=22)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     out_path = output_dir / output_name

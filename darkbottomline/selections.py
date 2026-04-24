@@ -75,16 +75,16 @@ def _build_event_cut_masks(
 
     # Canonical order — trigger & filters first, then object cuts
     masks = {
-        "Pass trigger": trigger_cut,
-        "Pass filters": filter_cut,
-        "Pass recoil": recoil_cut,
-        "Pass muon multiplicity": muon_cut,
-        "Pass electron multiplicity": electron_cut,
-        "Pass tau multiplicity": tau_cut,
-        "Pass photon veto": photon_cut,
-        "Pass jet multiplicity": jet_cut,
-        "Pass leading jet pt": jet1_pt_cut,
-        "Pass delta phi": delta_phi_cut,
+        "Trigger":          trigger_cut,
+        "MET filters":      filter_cut,
+        "Recoil":           recoil_cut,
+        "N_{#mu}":          muon_cut,
+        "N_{e}":            electron_cut,
+        "#tau Veto":        tau_cut,
+        "#gamma Veto":      photon_cut,
+        "N_{j}":            jet_cut,
+        "p_{T}^{Jet1}":     jet1_pt_cut,
+        "#Delta#phi":       delta_phi_cut,
     }
 
     diagnostics = {
@@ -269,15 +269,13 @@ def get_cutflow(
         Dictionary with cut names and event counts
     """
     cutflow: Dict[str, int] = {}
-    cutflow["Total events"] = int(len(events))
+    cutflow["Total"] = int(len(events))
 
     all_masks, _ = _build_event_cut_masks(events, objects, config)
     final_mask = ak.ones_like(events["event"], dtype=bool)
     for step_name, step_mask in all_masks.items():
         final_mask = final_mask & step_mask
         cutflow[step_name] = int(ak.sum(final_mask))
-
-    cutflow["Final selection"] = int(ak.sum(final_mask))
     return cutflow
 
 
