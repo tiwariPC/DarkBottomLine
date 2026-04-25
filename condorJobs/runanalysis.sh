@@ -33,9 +33,9 @@ ls -la | head -20
 echo ""
 
 # Source LCG environment (critical for CERN systems)
-if [ -f "/cvmfs/sft.cern.ch/lcg/views/LCG_105/x86_64-el9-gcc11-opt/setup.sh" ]; then
+if [ -f "/cvmfs/sft.cern.ch/lcg/views/LCG_109/x86_64-el9-gcc15-opt/setup.sh" ]; then
     echo "Sourcing LCG environment..."
-    source /cvmfs/sft.cern.ch/lcg/views/LCG_105/x86_64-el9-gcc11-opt/setup.sh
+    source /cvmfs/sft.cern.ch/lcg/views/LCG_109/x86_64-el9-gcc15-opt/setup.sh
 else
     echo "⚠ Warning: LCG setup script not found. Continuing anyway..."
 fi

@@ -2,6 +2,67 @@
 Multi-region analyzer for DarkBottomLine framework.
 """
 
+# ── Compatibility patch for coffea 2025.12.0 + uproot 5.x (LCG_109) ─────────
+# uproot 5.x removed uproot.behaviors.RNTuple. coffea.util._is_interpretable
+# references it unconditionally → AttributeError in every loky worker process.
+# This module is imported by workers (via cloudpickle), so the patch runs there.
+try:
+    import uproot.behaviors as _uproot_behaviors
+    if not hasattr(_uproot_behaviors, "RNTuple"):
+        import types as _types, sys as _sys
+        _rnt = _types.ModuleType("uproot.behaviors.RNTuple")
+        class _HasFields:
+            pass
+        _rnt.HasFields = _HasFields
+        _uproot_behaviors.RNTuple = _rnt
+        _sys.modules.setdefault("uproot.behaviors.RNTuple", _rnt)
+        # Re-patch coffea.util._is_interpretable if already imported without the fix
+        try:
+            import coffea.util as _coffea_util
+            import uproot as _uproot
+            import warnings as _warnings
+            def _is_interpretable_patched(branch, emit_warning=True):
+                try:
+                    _rnt_cls = _uproot_behaviors.RNTuple.HasFields
+                    if isinstance(branch, _rnt_cls):
+                        if branch.path.startswith("_collection") or "." in branch.path:
+                            return False
+                        return True
+                except Exception:
+                    pass
+                if isinstance(branch.interpretation,
+                              _uproot.interpretation.identify.uproot.AsGrouped):
+                    for _, interp in branch.interpretation.subbranches.items():
+                        if isinstance(interp,
+                                      _uproot.interpretation.identify.UnknownInterpretation):
+                            if emit_warning:
+                                _warnings.warn(f"Skipping {branch.name} as it is not interpretable by Uproot")
+                            return False
+                if isinstance(branch.interpretation,
+                              _uproot.interpretation.identify.UnknownInterpretation):
+                    if emit_warning:
+                        _warnings.warn(f"Skipping {branch.name} as it is not interpretable by Uproot")
+                    return False
+                try:
+                    branch.interpretation.awkward_form(None)
+                except _uproot.interpretation.objects.CannotBeAwkward:
+                    if emit_warning:
+                        _warnings.warn(f"Skipping {branch.name} as it cannot be represented as an Awkward array")
+                    return False
+                return True
+            _coffea_util._is_interpretable = _is_interpretable_patched
+            # Also patch the reference inside the nanoevents mapping module
+            try:
+                import coffea.nanoevents.mapping.uproot as _nano_uproot
+                _nano_uproot._is_interpretable = _is_interpretable_patched
+            except Exception:
+                pass
+        except Exception:
+            pass
+except Exception:
+    pass
+# ─────────────────────────────────────────────────────────────────────────────
+
 import awkward as ak
 import numpy as np
 import time

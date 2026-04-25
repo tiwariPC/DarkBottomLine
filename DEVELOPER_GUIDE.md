@@ -46,7 +46,7 @@ This script uses `mamba`/`conda` to create the `darkbottomline` environment from
 
 ```bash
 # 1. Load LCG environment (provides a base Python)
-source /cvmfs/sft.cern.ch/lcg/views/LCG_105/x86_64-el9-gcc11-opt/setup.sh
+source /cvmfs/sft.cern.ch/lcg/views/LCG_109/x86_64-el9-gcc15-opt/setup.sh
 
 # 2. Check and install missing packages into .local/
 python3 check_requirements.py --install --local-dir ./.local

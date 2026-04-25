@@ -52,7 +52,7 @@ DarkBottomLine is designed to process NanoAOD datasets using Coffea, producing f
 1. Source the following file:
 
    ```bash
-   source /cvmfs/sft.cern.ch/lcg/views/LCG_105/x86_64-el9-gcc11-opt/setup.sh
+   source /cvmfs/sft.cern.ch/lcg/views/LCG_109/x86_64-el9-gcc15-opt/setup.sh
    ```
 
    If the above method does not work, try installing and loading the CMSSW release:
@@ -111,7 +111,7 @@ Every time you start a new shell session on lxplus, you need to:
    ```bash
    source-lcg
    # Or if you don't have the function:
-   source /cvmfs/sft.cern.ch/lcg/views/LCG_105/x86_64-el9-gcc11-opt/setup.sh
+   source /cvmfs/sft.cern.ch/lcg/views/LCG_109/x86_64-el9-gcc15-opt/setup.sh
    ```
 
 2. Source the start.sh script to set up DarkBottomLine environment:

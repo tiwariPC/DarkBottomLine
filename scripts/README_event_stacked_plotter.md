@@ -34,7 +34,7 @@
 
 ```bash
 # 1. 获取 LCG 环境（CERN lxplus 或兼容节点）
-source /cvmfs/sft.cern.ch/lcg/views/LCG_105/x86_64-el9-gcc11-opt/setup.sh
+source /cvmfs/sft.cern.ch/lcg/views/LCG_109/x86_64-el9-gcc15-opt/setup.sh
 
 # 2. 配置项目环境变量
 source start.sh

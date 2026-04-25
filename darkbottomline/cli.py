@@ -266,7 +266,7 @@ def run_analyzer(args):
 
             logging.info(f"Using Coffea {args.executor} executor with chunk-size={chunk_size}")
 
-            fileset = {"dataset": input_files}
+            fileset = {"dataset": {"treename": "Events", "files": input_files}}
             chunksize = chunk_size
             maxchunks = None
             if args.max_events is not None and chunksize > 0:
@@ -300,7 +300,7 @@ def run_analyzer(args):
                     maxchunks=maxchunks,
                     schema=BaseSchema,
                 )
-                result = runner(fileset, coffea_analyzer, treename="Events")
+                result = runner(fileset, coffea_analyzer)
             elif args.executor == "dask" and DASK_AVAILABLE:
                 client = None
                 try:
@@ -318,7 +318,7 @@ def run_analyzer(args):
                         maxchunks=maxchunks,
                         schema=BaseSchema,
                     )
-                    result = runner(fileset, coffea_analyzer, treename="Events")
+                    result = runner(fileset, coffea_analyzer)
                 except Exception as e:
                     logging.error(f"Dask execution error: {e}")
                     raise

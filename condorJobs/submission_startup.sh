@@ -42,7 +42,7 @@ create_jobscript() {
 INPUTPATH="$INPUTTXT"
 
 cd /eos/user/x/xdu/DarkBottomLine
-source /cvmfs/sft.cern.ch/lcg/views/LCG_105/x86_64-el9-gcc11-opt/setup.sh
+source /cvmfs/sft.cern.ch/lcg/views/LCG_109/x86_64-el9-gcc15-opt/setup.sh
 export PYTHONPATH="/eos/user/x/xdu/DarkBottomLine/.local/lib/python3.9/site-packages:\$PYTHONPATH"
 
 WORKDIR=\$PWD
