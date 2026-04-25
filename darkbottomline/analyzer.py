@@ -881,9 +881,21 @@ if COFFEA_AVAILABLE:
             self.processed_events += len(events_to_process)
             logging.info(f"Processing {len(events_to_process)} events (total processed: {self.processed_events}/{self.max_events if self.max_events else 'unlimited'})")
 
-            # Accumulate weighted_total_events across chunks
+            # Accumulate weighted_total_events across chunks.
+            # Also persist to a temp file so postprocess() can sum across
+            # workers (futures/dask workers run in separate processes and do
+            # not share self.weighted_total_events with the main process).
             chunk_h = self.analyzer.base_processor.correction_manager.get_weighted_total_events(events_to_process)
             self.weighted_total_events = (self.weighted_total_events or 0.0) + chunk_h
+            if self._temp_dir:
+                import os, pickle, time, uuid
+                _wte_id = f"{int(time.time() * 1000000)}_{uuid.uuid4().hex[:8]}"
+                _wte_file = os.path.join(self._temp_dir, f"wte_chunk_{_wte_id}.pkl")
+                try:
+                    with open(_wte_file, "wb") as _f:
+                        pickle.dump({"weighted_total_events": float(chunk_h)}, _f, protocol=pickle.HIGHEST_PROTOCOL)
+                except Exception as _e:
+                    logging.warning(f"Failed to persist wte chunk: {_e}")
 
             # Call analyzer.process() with appropriate parameters
             # In event_selection_only mode, analyzer will skip region analysis
@@ -913,8 +925,32 @@ if COFFEA_AVAILABLE:
                     )
                     logging.info(f"Chunk: {len(selected_events)}/{len(events_to_process)} events passed selection")
 
+                    # Compute event weights so futures output matches iterative output
+                    chunk_event_weights = {}
+                    n_sel = len(selected_events)
+                    if self.analyzer.base_processor.is_data:
+                        ones = np.ones(n_sel, dtype=np.float64)
+                        chunk_event_weights = {
+                            "generator": ones,
+                            "pileup": ones,
+                            "weight_total_nominal": ones,
+                        }
+                    else:
+                        try:
+                            _wr = self.analyzer.base_processor.correction_manager.compute_event_weights(
+                                selected_events, selected_objects
+                            )
+                            chunk_event_weights = _build_event_weights_for_save(_wr)
+                        except Exception as _we:
+                            logging.warning(f"Chunk weight calculation failed, using unit weights: {_we}")
+                            ones = np.ones(n_sel, dtype=np.float64)
+                            chunk_event_weights = {
+                                "generator": ones,
+                                "pileup": ones,
+                                "weight_total_nominal": ones,
+                            }
+
                     # Save this chunk to a temporary file (for cross-worker compatibility)
-                    # Use unique filename to avoid conflicts across workers
                     import time
                     import uuid
                     chunk_id = f"{int(time.time() * 1000000)}_{uuid.uuid4().hex[:8]}"
@@ -925,16 +961,13 @@ if COFFEA_AVAILABLE:
                                 "events": selected_events,
                                 "objects": selected_objects,
                                 "cutflow": chunk_cutflow,
+                                "event_weights": chunk_event_weights,
                             },
                             f,
                             protocol=pickle.HIGHEST_PROTOCOL,
                         )
 
-                    # Add to accumulator dict (this will be merged across workers)
-                    # Note: Don't store in accumulator because Coffea can't properly merge True values
-                    # Instead, we'll dir-scan for chunk files in postprocess
-                    # self.accumulator["_event_selection_chunk_files"][chunk_file] = True
-                    logging.info(f"Saved chunk to {chunk_file}, accumulator will scan dir in postprocess")
+                    logging.info(f"Saved chunk to {chunk_file} with {len(chunk_event_weights)} weight branches")
                 except Exception as e:
                     logging.warning(f"Failed to collect selected events for event_selection_output: {e}", exc_info=True)
 
@@ -1180,6 +1213,28 @@ if COFFEA_AVAILABLE:
 
             logging.info(f"postprocess called: event_selection_output={self.event_selection_output}, chunk_files={len(chunk_files)}")
 
+            # ── Sum weighted_total_events from per-worker temp files ──────────
+            # Futures/dask workers run in separate processes; self.weighted_total_events
+            # on the main-process instance is None. Summing the wte_chunk files is the
+            # only reliable source of truth across all executors.
+            if self._temp_dir and os.path.exists(self._temp_dir):
+                wte_files = [
+                    os.path.join(self._temp_dir, f)
+                    for f in os.listdir(self._temp_dir)
+                    if f.startswith("wte_chunk_") and f.endswith(".pkl")
+                ]
+                if wte_files:
+                    _wte_total = 0.0
+                    for _wf in wte_files:
+                        try:
+                            with open(_wf, "rb") as _f:
+                                _wte_total += float(pickle.load(_f).get("weighted_total_events", 0.0))
+                            os.remove(_wf)
+                        except Exception as _e:
+                            logging.warning(f"Failed to load wte chunk {_wf}: {_e}")
+                    self.weighted_total_events = _wte_total
+                    logging.info(f"Summed weighted_total_events from {len(wte_files)} worker files: {_wte_total}")
+
             # ── Merge region analysis results from per-chunk temp files ───────
             if self._temp_dir and os.path.exists(self._temp_dir):
                 analysis_files = [
@@ -1194,9 +1249,9 @@ if COFFEA_AVAILABLE:
                     accumulator["region_cutflow"] = merged_analysis["region_cutflow"]
                     accumulator["region_validation"] = merged_analysis["region_validation"]
                     accumulator["metadata"] = merged_analysis["metadata"]
-                    # Propagate summed weighted_total_events back to the processor instance so
-                    # _save_event_selection (called below) receives the correct value.
-                    if merged_analysis.get("weighted_total_events"):
+                    # weighted_total_events is already set from wte_chunk files above;
+                    # only fall back to analysis-chunk value if wte files were absent.
+                    if self.weighted_total_events is None and merged_analysis.get("weighted_total_events"):
                         self.weighted_total_events = merged_analysis["weighted_total_events"]
                     logging.info(f"Merged region analysis from {len(analysis_files)} chunks: "
                                  f"{len(merged_analysis['regions'])} regions, "
@@ -1254,6 +1309,7 @@ if COFFEA_AVAILABLE:
                     all_selected_events_list = []
                     all_selected_objects_list = []
                     merged_cutflow: Dict[str, int] = {}
+                    all_event_weights_list: Dict[str, list] = {}
 
                     for chunk_file in chunk_files:
                         if os.path.exists(chunk_file):
@@ -1263,9 +1319,15 @@ if COFFEA_AVAILABLE:
                                     events = chunk_data.get("events")
                                     objects = chunk_data.get("objects")
                                     cutflow = chunk_data.get("cutflow")
+                                    chunk_weights = chunk_data.get("event_weights", {})
                                     if events is not None and len(events) > 0:
                                         all_selected_events_list.append(events)
                                         all_selected_objects_list.append(objects)
+                                        # Accumulate per-branch weight arrays
+                                        for wk, wv in chunk_weights.items():
+                                            if wk not in all_event_weights_list:
+                                                all_event_weights_list[wk] = []
+                                            all_event_weights_list[wk].append(np.asarray(wv))
                                     if isinstance(cutflow, dict):
                                         for key, value in cutflow.items():
                                             try:
@@ -1292,6 +1354,13 @@ if COFFEA_AVAILABLE:
                                         arrays_to_concat.append(obj_dict[key])
                                 if arrays_to_concat:
                                     all_selected_objects[key] = ak.concatenate(arrays_to_concat)
+
+                        # Concatenate per-branch weight arrays across chunks
+                        merged_event_weights: Dict[str, np.ndarray] = {
+                            wk: np.concatenate(arrs)
+                            for wk, arrs in all_event_weights_list.items()
+                            if arrs
+                        }
                     else:
                         # No events passed selection across all chunks — still write the output
                         # file so Metadata (n_events, weighted_total_events) is present for downstream tools.
@@ -1301,6 +1370,7 @@ if COFFEA_AVAILABLE:
                         )
                         all_selected_events = ak.Array([])
                         all_selected_objects = {}
+                        merged_event_weights = {}
 
                     # Save using base processor helper (handles empty events gracefully)
                     logging.info(f"Saving accumulated event-level selection to {self.event_selection_output}")
@@ -1309,6 +1379,8 @@ if COFFEA_AVAILABLE:
                         max_events=self.config.get("max_events"),
                         total_events=self.total_events,
                         weighted_total_events=self.weighted_total_events,
+                        event_weights=merged_event_weights if merged_event_weights else None,
+                        cutflow=merged_cutflow if merged_cutflow else None,
                         output_format=self.output_format
                     )
                     # Verify file was created

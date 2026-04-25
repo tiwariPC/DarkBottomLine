@@ -72,3 +72,4 @@ condorJobs/submitfiles/
 # Development prompts(Jim Du)
 .prompt
 .claude
+CLAUDE.md
