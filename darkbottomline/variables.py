@@ -306,4 +306,15 @@ def compute_event_variables(
             elif isinstance(val, np.ndarray):
                 out[name] = val
 
+    # Materialise any remaining ak.Array values to plain Python lists so the
+    # returned dict is fully pickle-safe across loky worker process boundaries.
+    # NanoEvents-derived arrays are lazy / tied to the uproot file handle;
+    # they cannot be deserialized in the main process after the file is closed.
+    for _k, _v in list(out.items()):
+        if isinstance(_v, ak.Array):
+            try:
+                out[_k] = ak.to_list(_v)
+            except Exception:
+                out.pop(_k, None)
+
     return out

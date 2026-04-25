@@ -65,6 +65,7 @@ except Exception:
 
 import awkward as ak
 import numpy as np
+import os
 import time
 import logging
 from typing import Dict, Any, Optional, Union
@@ -1011,7 +1012,20 @@ if COFFEA_AVAILABLE:
                                 "weight_total_nominal": ones,
                             }
 
-                    # Save this chunk to a temporary file (for cross-worker compatibility)
+                    # Convert selected_events to flat numpy branch dict before pickling.
+                    # NanoEvents-derived awkward arrays are tied to the uproot file handle
+                    # which is closed in the main process → pickle.load fails with
+                    # "zero-size array to reduction operation" on awkward 2.8.9.
+                    from .variables import compute_event_variables
+                    try:
+                        branches = compute_event_variables(
+                            selected_events, selected_objects,
+                            self.config, chunk_event_weights
+                        )
+                    except Exception as _be:
+                        logging.warning(f"compute_event_variables failed: {_be}; storing raw arrays")
+                        branches = {}
+
                     import time
                     import uuid
                     chunk_id = f"{int(time.time() * 1000000)}_{uuid.uuid4().hex[:8]}"
@@ -1019,8 +1033,8 @@ if COFFEA_AVAILABLE:
                     with open(chunk_file, 'wb') as f:
                         pickle.dump(
                             {
-                                "events": selected_events,
-                                "objects": selected_objects,
+                                "branches": branches,   # flat numpy dict — safe to pickle
+                                "n_events": n_sel,
                                 "cutflow": chunk_cutflow,
                                 "event_weights": chunk_event_weights,
                             },
@@ -1028,7 +1042,7 @@ if COFFEA_AVAILABLE:
                             protocol=pickle.HIGHEST_PROTOCOL,
                         )
 
-                    logging.info(f"Saved chunk to {chunk_file} with {len(chunk_event_weights)} weight branches")
+                    logging.info(f"Saved chunk to {chunk_file}: {n_sel} events, {len(branches)} branches")
                 except Exception as e:
                     logging.warning(f"Failed to collect selected events for event_selection_output: {e}", exc_info=True)
 
@@ -1255,7 +1269,6 @@ if COFFEA_AVAILABLE:
             """Post-process results."""
             import os
             import pickle
-            import awkward as ak
 
             # Get chunk files from accumulator (merged across all workers)
             # File paths are stored as keys in the dict accumulator
@@ -1366,89 +1379,86 @@ if COFFEA_AVAILABLE:
             # Save accumulated event selection if requested
             if self.event_selection_output and chunk_files:
                 try:
-                    # Load all chunks from files
-                    all_selected_events_list = []
-                    all_selected_objects_list = []
+                    # Load all chunks from files.
+                    # Chunks now contain flat numpy branch dicts (key "branches") — NOT
+                    # NanoEvents awkward arrays — so they deserialise safely across processes.
+                    merged_branches: Dict[str, list] = {}   # branch_name → list of np.ndarray
                     merged_cutflow: Dict[str, int] = {}
-                    all_event_weights_list: Dict[str, list] = {}
+                    total_selected = 0
 
-                    for chunk_file in chunk_files:
-                        if os.path.exists(chunk_file):
-                            try:
-                                with open(chunk_file, 'rb') as f:
-                                    chunk_data = pickle.load(f)
-                                    events = chunk_data.get("events")
-                                    objects = chunk_data.get("objects")
-                                    cutflow = chunk_data.get("cutflow")
-                                    chunk_weights = chunk_data.get("event_weights", {})
-                                    if events is not None and len(events) > 0:
-                                        all_selected_events_list.append(events)
-                                        all_selected_objects_list.append(objects)
-                                        # Accumulate per-branch weight arrays
-                                        for wk, wv in chunk_weights.items():
-                                            if wk not in all_event_weights_list:
-                                                all_event_weights_list[wk] = []
-                                            all_event_weights_list[wk].append(np.asarray(wv))
-                                    if isinstance(cutflow, dict):
-                                        for key, value in cutflow.items():
-                                            try:
-                                                merged_cutflow[key] = int(merged_cutflow.get(key, 0)) + int(value)
-                                            except Exception:
-                                                pass
-                            except Exception as e:
-                                logging.warning(f"Failed to load chunk file {chunk_file}: {e}")
+                    for chunk_file in sorted(chunk_files):
+                        if not os.path.exists(chunk_file):
+                            continue
+                        try:
+                            with open(chunk_file, 'rb') as f:
+                                chunk_data = pickle.load(f)
+                        except Exception as e:
+                            logging.warning(f"Failed to unpickle chunk file {chunk_file}: {e}")
+                            continue
+                        try:
+                            branches = chunk_data.get("branches", {})
+                            n_ev = int(chunk_data.get("n_events", 0))
+                            cutflow = chunk_data.get("cutflow")
 
-                    if all_selected_events_list:
-                        # Concatenate all selected events and objects from all chunks
-                        all_selected_events = ak.concatenate(all_selected_events_list)
+                            if n_ev > 0 and branches:
+                                total_selected += n_ev
+                                for bname, barr in branches.items():
+                                    if bname not in merged_branches:
+                                        merged_branches[bname] = []
+                                    merged_branches[bname].append(barr)
 
-                        # Merge selected objects dictionaries
-                        all_selected_objects = {}
-                        if all_selected_objects_list:
-                            all_keys = set()
-                            for obj_dict in all_selected_objects_list:
-                                all_keys.update(obj_dict.keys())
-                            for key in all_keys:
-                                arrays_to_concat = []
-                                for obj_dict in all_selected_objects_list:
-                                    if key in obj_dict and len(obj_dict[key]) > 0:
-                                        arrays_to_concat.append(obj_dict[key])
-                                if arrays_to_concat:
-                                    all_selected_objects[key] = ak.concatenate(arrays_to_concat)
+                            if isinstance(cutflow, dict):
+                                for key, value in cutflow.items():
+                                    try:
+                                        merged_cutflow[key] = int(merged_cutflow.get(key, 0)) + int(value)
+                                    except Exception:
+                                        pass
+                        except Exception as e:
+                            logging.warning(f"Failed to process chunk file {chunk_file}: {e}")
 
-                        # Concatenate per-branch weight arrays across chunks
-                        merged_event_weights: Dict[str, np.ndarray] = {
-                            wk: np.concatenate(arrs)
-                            for wk, arrs in all_event_weights_list.items()
-                            if arrs
-                        }
-                    else:
-                        # No events passed selection across all chunks — still write the output
-                        # file so Metadata (n_events, weighted_total_events) is present for downstream tools.
+                    # Concatenate per-branch arrays across all chunks.
+                    # Branches are np.ndarray (flat) or list-of-lists (jagged).
+                    flat_branches: Dict[str, Any] = {}
+                    for bname, arrs in merged_branches.items():
+                        if not arrs:
+                            continue
+                        if isinstance(arrs[0], np.ndarray):
+                            flat_branches[bname] = np.concatenate(arrs)
+                        else:
+                            # jagged: list-of-lists per chunk → flatten one level
+                            merged_list = []
+                            for a in arrs:
+                                merged_list.extend(a)
+                            flat_branches[bname] = merged_list
+
+                    if not flat_branches:
                         logging.warning(
                             f"No selected events found in {len(chunk_files)} chunk files — "
                             f"writing metadata-only output to {self.event_selection_output}"
                         )
-                        all_selected_events = ak.Array([])
-                        all_selected_objects = {}
-                        merged_event_weights = {}
 
-                    # Save using base processor helper (handles empty events gracefully)
-                    logging.info(f"Saving accumulated event-level selection to {self.event_selection_output}")
-                    self.analyzer.base_processor._save_event_selection(
-                        self.event_selection_output, all_selected_events, all_selected_objects,
-                        max_events=self.config.get("max_events"),
+                    # Write directly to ROOT using flat numpy branch arrays.
+                    # Bypasses _save_event_selection entirely — no awkward arrays needed.
+                    logging.info(
+                        f"Saving {total_selected} selected events "
+                        f"({len(flat_branches)} branches) to {self.event_selection_output}"
+                    )
+                    self._write_event_selection_root(
+                        self.event_selection_output,
+                        flat_branches,
                         total_events=self.total_events,
                         weighted_total_events=self.weighted_total_events,
-                        event_weights=merged_event_weights if merged_event_weights else None,
+                        n_selected=total_selected,
                         cutflow=merged_cutflow if merged_cutflow else None,
-                        output_format=self.output_format
                     )
-                    # Verify file was created
+
                     if os.path.exists(self.event_selection_output):
                         file_size = os.path.getsize(self.event_selection_output)
-                        n_saved = len(all_selected_events)
-                        logging.info(f"✓ Saved accumulated event-level selection from {len(chunk_files)} chunks ({n_saved} events) to {self.event_selection_output} ({file_size} bytes)")
+                        logging.info(
+                            f"✓ Saved accumulated event-level selection from "
+                            f"{len(chunk_files)} chunks ({total_selected} events) "
+                            f"to {self.event_selection_output} ({file_size} bytes)"
+                        )
                     else:
                         logging.error(f"✗ File {self.event_selection_output} was not created!")
 
@@ -1479,3 +1489,74 @@ if COFFEA_AVAILABLE:
                     logging.error(f"Failed to save accumulated event selection to {self.event_selection_output}: {e}", exc_info=True)
 
             return accumulator
+
+        def _write_event_selection_root(
+            self,
+            output_path: str,
+            branches: Dict[str, np.ndarray],
+            total_events: Optional[int],
+            weighted_total_events: Optional[float],
+            n_selected: int,
+            cutflow: Optional[Dict[str, int]],
+        ) -> None:
+            """Write flat numpy branch arrays directly to a ROOT file.
+
+            Replaces the old path that reconstructed awkward arrays from
+            NanoEvents-derived objects (which can't be deserialized across
+            loky worker processes on awkward 2.8.9).
+            """
+            import uproot
+            import os
+
+            outdir = os.path.dirname(output_path)
+            if outdir:
+                os.makedirs(outdir, exist_ok=True)
+
+            edges_1bin = np.array([0.0, 1.0])
+
+            with uproot.recreate(output_path) as f:
+                # Metadata scalars as 1-bin TH1Ds (hadd-summable)
+                f["total_events"] = (
+                    np.array([float(total_events if total_events is not None else 0)]),
+                    edges_1bin,
+                )
+                f["weighted_total_events"] = (
+                    np.array([float(weighted_total_events if weighted_total_events is not None else 0.0)]),
+                    edges_1bin,
+                )
+                # selected_events = sum of full_event_weight (matches iterative path)
+                _ew = branches.get("full_event_weight")
+                if _ew is not None and len(_ew) > 0:
+                    try:
+                        _sel_val = float(np.sum(np.asarray(_ew)))
+                    except Exception:
+                        _sel_val = float(n_selected)
+                else:
+                    _sel_val = float(n_selected)
+                f["selected_events"] = (
+                    np.array([_sel_val]),
+                    edges_1bin,
+                )
+
+                # Cutflow: single labeled TH1 (matches iterative path in processor.py)
+                if cutflow:
+                    try:
+                        import boost_histogram as bh
+                        cut_names  = list(cutflow.keys())
+                        cut_counts = list(cutflow.values())
+                        h_cf = bh.Histogram(bh.axis.StrCategory(cut_names))
+                        for i, name in enumerate(cut_names):
+                            h_cf[bh.loc(name)] = cut_counts[i]
+                        f["cutflow"] = h_cf
+                    except Exception:
+                        cut_counts = np.array(list(cutflow.values()), dtype=float)
+                        cf_edges   = np.arange(len(cut_counts) + 1, dtype=float)
+                        f["cutflow"] = (cut_counts, cf_edges)
+
+                # Events TTree with all output branches
+                if branches:
+                    try:
+                        f["Events"] = branches
+                        logging.info(f"Wrote Events tree with {n_selected} entries, {len(branches)} branches")
+                    except Exception as e:
+                        logging.error(f"Failed to write Events tree: {e}", exc_info=True)

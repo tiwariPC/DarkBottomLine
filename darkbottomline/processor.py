@@ -469,35 +469,23 @@ class DarkBottomLineProcessor:
                 selected_events = float(np.sum(_ew)) if _ew is not None and len(_ew) > 0 else float(0 if no_events else len(events))
                 with uproot.recreate(output_file_root) as f:
                     if not no_events and branches:
-                        scalar_branches = {}
-                        jagged_branches = {}
+                        write_branches = {}
                         for k, v in branches.items():
-                            arr = v if isinstance(v, (np.ndarray, ak.Array)) else np.asarray(v)
-                            if isinstance(arr, ak.Array) and arr.ndim > 1:
-                                jagged_branches[k] = arr
+                            if isinstance(v, list):
+                                # materialised jagged (ak.to_list()) — uproot handles via awkward
+                                write_branches[k] = v
+                            elif isinstance(v, ak.Array):
+                                write_branches[k] = v
                             else:
-                                a = np.asarray(arr)
-                                # uproot TTree supports: int32, int64, float32, float64 — cast others
+                                a = np.asarray(v)
                                 if a.dtype.kind == 'u':
-                                    a = a.astype(np.int64)  # uint → int64
+                                    a = a.astype(np.int64)
                                 elif a.dtype.kind not in ('i', 'f'):
                                     a = a.astype(np.float64)
-                                scalar_branches[k] = a
-
-                        # Map numpy dtype to uproot-accepted string names
-                        _dtype_map = {
-                            'int8': 'int8', 'int16': 'int16', 'int32': 'int32', 'int64': 'int64',
-                            'uint8': 'int32', 'uint16': 'int32', 'uint32': 'int64', 'uint64': 'int64',
-                            'float32': 'float32', 'float64': 'float64', 'bool': 'bool',
-                        }
-                        branch_types = {k: _dtype_map.get(v.dtype.name, 'float64')
-                                        for k, v in scalar_branches.items()}
-                        for k in jagged_branches:
-                            branch_types[k] = "var * float32"
-
-                        f.mktree("Events", branch_types)
-                        all_branches = {**scalar_branches, **jagged_branches}
-                        f["Events"].extend(all_branches)
+                                write_branches[k] = a
+                        # Single assignment: uproot infers TTree schema automatically,
+                        # handling both flat numpy and jagged list-of-lists correctly.
+                        f["Events"] = write_branches
                     else:
                         logging.info("No selected events — writing ROOT file with Metadata only")
 
