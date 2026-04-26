@@ -308,8 +308,8 @@ def _extract_cut_labels_from_tree(tree: Any, n_cuts: int) -> List[str]:
 
 _CUTFLOW_CUT_NAMES = [
     'Total', 'Trigger', 'MET filters', 'Recoil',
-    'Muons', 'Electrons', 'Taus', 'Photons',
-    'Jets', 'Lead jet pT', 'Delta phi', 'Selected',
+    'N_{#mu}', 'N_{e}', '#tau Veto', '#gamma Veto',
+    'N_{j}', 'p_{T}^{Jet1}', '#Delta#phi',
 ]
 
 
@@ -1643,12 +1643,6 @@ def _plot_stacked_cutflow(
                    float(np.max(data_cutflow)) if data_cutflow is not None and data_cutflow.size else 1.0)
         ax1.set_ylim(0.0, ymax * 1.25)
 
-    # Annotate bar tops with event counts (use cumulative stack total)
-    for xi, n in zip(x, cumulative):
-        if n > 0:
-            ax1.text(xi, n * (1.15 if y_scale == "log" else 1.01),
-                     f"{int(round(n))}", ha="center", va="bottom", fontsize=11)
-
     hep.cms.label("Work in progress", data=has_data_overlay,
                   lumi=round(luminosity, 1), com=13.6, loc=0, ax=ax1)
 
@@ -1663,23 +1657,39 @@ def _plot_stacked_cutflow(
             columnspacing=1.0, handletextpad=0.5, fontsize=20,
         )
 
-    # --- ratio panel: % of total (first cut = 100%) ---
-    total0 = float(ref_total[0]) if len(ref_total) > 0 and ref_total[0] > 0 else 1.0
-    eff_abs = 100.0 * ref_total / total0
-
-    half = 0.4  # half-width of each bar in x units
-    for xi, e in zip(x, eff_abs):
-        ax2.fill_between(
-            [xi - half, xi + half], [0, 0], [e, e],
-            hatch="////", facecolor="#bbbbbb", edgecolor="#666666",
-            linewidth=0.0, alpha=0.8,
+    # --- ratio panel: Data / MC ---
+    mc_total = cumulative  # stacked MC total per cut step
+    if data_cutflow is not None and np.any(data_cutflow > 0):
+        ratio = np.divide(data_cutflow, mc_total, out=np.full_like(mc_total, np.nan), where=mc_total > 0)
+        ratio_err = np.where(
+            data_cutflow > 0,
+            np.sqrt(data_cutflow) / np.where(mc_total > 0, mc_total, 1.0),
+            0.0,
         )
-    ax2.set_ylim(0, 115)
-    ax2.set_ylabel("% of total", fontsize=22, labelpad=6)
-    ax2.axhline(100, color="black", linestyle="-", linewidth=1.2)
+        pred_rel_err = np.where(mc_total > 0, np.sqrt(mc_total) / mc_total, 0.0)
+        ratio_lo = np.append(1.0 - pred_rel_err, (1.0 - pred_rel_err)[-1])
+        ratio_hi = np.append(1.0 + pred_rel_err, (1.0 + pred_rel_err)[-1])
+        x_edges = np.append(x - 0.4, x[-1] + 0.4)
+        ax2.fill_between(x_edges, ratio_lo, ratio_hi, step="post",
+                         facecolor="#bbbbbb", edgecolor="none", alpha=0.6, label="MC stat.")
+        ratio_mask = np.isfinite(ratio)
+        if np.any(ratio_mask):
+            ax2.errorbar(
+                x[ratio_mask], ratio[ratio_mask],
+                xerr=np.full(ratio_mask.sum(), 0.4),
+                yerr=ratio_err[ratio_mask],
+                fmt="o", color="black",
+                markerfacecolor="black", markeredgecolor="black",
+                markersize=5.0, elinewidth=1.2, capsize=0, zorder=10,
+            )
+    else:
+        ax2.axhline(1.0, color="#999999", linestyle="--", linewidth=1.0)
+
+    ax2.axhline(1.0, color="black", linestyle="-", linewidth=1.2)
+    ax2.set_ylim(0.0, 2.0)
+    ax2.set_ylabel("Data / MC", fontsize=22, labelpad=6)
+    ax2.yaxis.set_major_locator(matplotlib.ticker.FixedLocator([0, 0.5, 1.0, 1.5, 2.0]))
     ax2.grid(False)
-    for xi, e in zip(x, eff_abs):
-        ax2.text(xi, e + 2, f"{e:.0f}%", ha="center", va="bottom", fontsize=11)
 
     ax2.set_xticks(x)
     ax2.set_xticklabels([_root_to_mpl_label(str(lbl)) for lbl in cut_labels], rotation=35, ha="right", fontsize=16)
