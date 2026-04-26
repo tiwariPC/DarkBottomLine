@@ -10,6 +10,10 @@ VERSION="${DATE}+${HASH}"       # PEP 440: + for local segment
 echo "Version: $VERSION  (tag: $GIT_TAG)"
 
 # Tag current HEAD (last feature commit) BEFORE version bump commit
+if git rev-parse "$GIT_TAG" >/dev/null 2>&1; then
+    echo "Tag $GIT_TAG already exists — deleting and re-tagging"
+    git tag -d "$GIT_TAG"
+fi
 git tag "$GIT_TAG"
 echo "Tagged HEAD as: $GIT_TAG"
 
