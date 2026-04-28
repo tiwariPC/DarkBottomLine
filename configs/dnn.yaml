@@ -12,63 +12,76 @@ model:
 
 # Training parameters
 training:
-  batch_size: 1024
+  batch_size: 8192
   learning_rate: 0.001
-  epochs: 100
+  epochs: 50
   early_stopping:
     patience: 10
     min_delta: 0.001
-  optimizer: "adam"
-  loss_function: "binary_crossentropy"
-  metrics: ["accuracy", "auc"]
+  optimizer: "adamw"
+  loss_function: "binary_crossentropy_with_logits"
+  metrics: ["auc"]
+  # Train/val/test split fractions (must sum to < 1.0; remainder is train)
+  val_size: 0.2
+  test_size: 0.3
+  seed: 7
+  # Class balancing in BCE loss
+  balance_classes: true
+  balance_strength: 1.0  # [0,1]: 0=off, 1=full 50/50 equalization
+  weight_clip: 100.0     # Maximum event weight
+
+# Feature selection
+feature_selection:
+  # Train final model on top-K features by Asimov significance (0 = keep all)
+  top_k_significance: 5
+  # Epochs for per-feature 1D DNN scans
+  single_feature_epochs: 20
+  # Drop near-constant features (useful for LHEF inputs with placeholder btag)
+  drop_constant_features: false
+
+# Topology decorrelation penalty
+topology_decorrelation:
+  weight: 0.0              # Set >0 to suppress score vs topology correlation
+  features: "M_Jet1Jet2,dRJet12"
+  min_signal_events: 16    # Minimum signal events in batch to activate penalty
 
 # Data preprocessing
 preprocessing:
   feature_scaling: "standard"  # standard, minmax, robust
-  train_validation_split: 0.8  # Fraction for training
+  train_validation_split: 0.8  # Fraction for training (legacy DNNTrainer)
   random_seed: 42
   shuffle_data: true
 
-# Input features configuration
+# Input features — canonical branch names used in ppbbchichi-trees.root
+# These match REQUESTED_FEATURES_25 in dnn/feature_engineering.py.
+# Aliases and derived quantities are resolved automatically by build_feature_frame_from_tree.
+# Edit this list to add/remove features without touching Python code.
 features:
-  # Jet features
-  jet_features:
-    - "jet_pt"
-    - "jet_eta"
-    - "jet_phi"
-    - "jet_mass"
-    - "jet_btag_score"
-    - "jet_id"
-
-  # MET features
-  met_features:
-    - "met_pt"
-    - "met_phi"
-    - "met_significance"
-
-  # Event features
-  event_features:
-    - "n_jets"
-    - "n_bjets"
-    - "n_muons"
-    - "n_electrons"
-    - "n_taus"
-    - "ht"
-    - "st"
-
-  # Derived features
-  derived_features:
-    - "delta_phi_met_jet"
-    - "delta_phi_met_jet2"
-    - "delta_phi_met_jet3"
-    - "jet1_pt"
-    - "jet2_pt"
-    - "jet3_pt"
-    - "jet4_pt"
-
-  # Parametric input
-  parametric_input:
-    - "signal_mass"  # Signal mass parameter for parametric training
+  - "costheta_star"
+  - "JetHT"
+  - "Jet1deepCSV"
+  - "dRJet12"
+  - "dPhiJet12"
+  - "Jet1Pt"
+  - "Jet2deepCSV"
+  - "Jet2Eta"
+  - "Jet2Pt"
+  - "eta_Jet1Jet2"
+  - "M_Jet1Jet2"
+  - "dPhi_jetMET"
+  - "dEtaJet12"
+  - "pfMetCorrSig"
+  - "pT_Jet1Jet2"
+  - "rJet1PtMET"
+  - "ratioPtJet21"
+  - "del_plus"
+  - "Jet1Eta"
+  - "del_minus"
+  - "METPhi"
+  - "Jet1Phi"
+  - "MET"
+  - "Jet2Phi"
+  - "phi_Jet1Jet2"
 
 # Training data configuration
 data:

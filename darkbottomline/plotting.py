@@ -2,19 +2,205 @@
 Data/MC plotting module for DarkBottomLine framework.
 """
 
+import copy
+import math
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend for batch mode
 import matplotlib.pyplot as plt
+import matplotlib.ticker
+import matplotlib.patches
 import numpy as np
 import awkward as ak
 import logging
-from typing import Dict, Any, List, Optional, Union, Tuple
+import pickle
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 from pathlib import Path
 import yaml
 import os
 from datetime import datetime
 
-from .utils.plot_utils import CMSPlotStyle, get_process_colors, get_process_labels
+try:
+    import mplhep as hep
+    _HAS_MPLHEP = True
+except ImportError:
+    _HAS_MPLHEP = False
+
+from utils.plot_utils import (
+    CMSPlotStyle, get_process_colors, get_process_labels,
+    get_process_config, get_background_color_map, simplify_sample_label,
+    _PALETTE,
+)
+
+# ---------------------------------------------------------------------------
+# Sentinel & histogram utilities (used by create_stacked_plots)
+# ---------------------------------------------------------------------------
+
+_SENTINEL = -9.0
+
+
+def _is_number(v: Any) -> bool:
+    return isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool)
+
+
+def _flatten_numeric(values: Any) -> np.ndarray:
+    if isinstance(values, np.ndarray) and np.issubdtype(values.dtype, np.number):
+        flat = values.ravel()
+        return flat[np.isfinite(flat)].astype(float)
+    result: List[float] = []
+
+    def walk(item: Any) -> None:
+        if item is None or isinstance(item, dict):
+            return
+        if isinstance(item, np.ndarray):
+            if np.issubdtype(item.dtype, np.number):
+                flat = item.ravel()
+                result.extend(flat[np.isfinite(flat)].tolist())
+            return
+        if isinstance(item, (list, tuple)):
+            for sub in item:
+                walk(sub)
+            return
+        if _is_number(item):
+            val = float(item)
+            if math.isfinite(val):
+                result.append(val)
+
+    walk(values)
+    return np.asarray(result, dtype=float) if result else np.array([], dtype=float)
+
+
+def _extract_branches(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    """Flatten a nested objects dict from PKL/ROOT to {branch_name: flat_array}."""
+    distributions: Dict[str, np.ndarray] = {}
+    for key, value in objects.items():
+        if key.endswith("_mask"):
+            continue
+        if not isinstance(value, list):
+            arr = _flatten_numeric(value)
+            if arr.size > 0:
+                distributions[key] = arr
+            continue
+        first = next((v for v in value if v is not None), None)
+        if first is None:
+            continue
+        if isinstance(first, dict):
+            numeric_fields: set = set()
+            for item in value:
+                if isinstance(item, dict):
+                    for f, fv in item.items():
+                        if _is_number(fv):
+                            numeric_fields.add(f)
+            for field in sorted(numeric_fields):
+                flat = _flatten_numeric([item.get(field) for item in value if isinstance(item, dict)])
+                if flat.size > 0:
+                    distributions[f"{key}_{field}"] = flat
+            continue
+        if isinstance(first, list):
+            inner = next((x for row in value if isinstance(row, list) for x in row if x is not None), None)
+            if isinstance(inner, dict):
+                numeric_fields = set()
+                for row in value:
+                    if not isinstance(row, list):
+                        continue
+                    for item in row:
+                        if isinstance(item, dict):
+                            for f, fv in item.items():
+                                if _is_number(fv):
+                                    numeric_fields.add(f)
+                for field in sorted(numeric_fields):
+                    vals: List[float] = []
+                    for row in value:
+                        if not isinstance(row, list):
+                            continue
+                        for item in row:
+                            if isinstance(item, dict):
+                                fv = item.get(field)
+                                if _is_number(fv):
+                                    v2 = float(fv)
+                                    if math.isfinite(v2):
+                                        vals.append(v2)
+                    if vals:
+                        distributions[f"{key}_{field}"] = np.asarray(vals, dtype=float)
+                continue
+        flat = _flatten_numeric(value)
+        if flat.size > 0:
+            distributions[key] = flat
+    return distributions
+
+
+def _apply_variable_plot_filter(variable: str, values: np.ndarray) -> np.ndarray:
+    if values.size == 0:
+        return values
+    values = values[values != _SENTINEL]
+    if variable.lower().endswith("met_pt"):
+        return values[values >= 100.0]
+    return values
+
+
+def _make_bins(
+    all_values: Sequence[np.ndarray],
+    get_bins_fn,
+    variable: Optional[str],
+    n_bins_default: int = 40,
+) -> Optional[np.ndarray]:
+    ref = get_bins_fn(variable) if variable else None
+    if ref is not None:
+        return ref
+    valid = [arr[np.isfinite(arr) & (arr != _SENTINEL)] for arr in all_values if arr.size > 0]
+    if not valid:
+        return None
+    merged = np.concatenate(valid)
+    if merged.size == 0:
+        return None
+    data_min, data_max = float(np.min(merged)), float(np.max(merged))
+    if not (math.isfinite(data_min) and math.isfinite(data_max)):
+        return None
+    if abs(data_max - data_min) < 1e-12:
+        w = max(1.0, abs(data_max) * 0.05)
+        return np.linspace(data_min - w, data_max + w, n_bins_default + 1)
+    is_int = np.allclose(merged, np.round(merged), atol=1e-8)
+    if is_int and len(np.unique(np.round(merged).astype(int))) <= 20:
+        lo, hi = int(np.min(np.round(merged))), int(np.max(np.round(merged)))
+        return np.arange(lo - 0.5, hi + 1.5, 1.0)
+    return np.linspace(data_min, data_max, n_bins_default + 1)
+
+
+def _clip_overflow(values: np.ndarray, bins: np.ndarray) -> np.ndarray:
+    lo, hi = float(bins[0]), float(bins[-1])
+    return np.clip(values, lo, np.nextafter(hi, -np.inf))
+
+
+def _histogram_and_sumw2(
+    values: np.ndarray,
+    bins: np.ndarray,
+    weighted_total_events: int,
+    luminosity: float = 1.0,
+    cross_section_pb: Optional[float] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    zeros = np.zeros(len(bins) - 1, dtype=float)
+    if weighted_total_events <= 0 or values.size == 0:
+        return zeros, zeros
+    if cross_section_pb is not None:
+        weight = (luminosity * cross_section_pb * 1000.0) / float(weighted_total_events)
+    else:
+        weight = luminosity / float(weighted_total_events)
+    values = _clip_overflow(values, bins)
+    counts, _ = np.histogram(values, bins=bins)
+    counts = counts.astype(float)
+    return counts * weight, counts * (weight ** 2)
+
+
+def _histogram_counts(values: np.ndarray, bins: np.ndarray) -> np.ndarray:
+    if values.size == 0:
+        return np.zeros(len(bins) - 1, dtype=float)
+    values = _clip_overflow(values, bins)
+    hist, _ = np.histogram(values, bins=bins)
+    return hist.astype(float)
+
+
+def _get_legend_label(name: str) -> str:
+    cfg = get_process_config().get(simplify_sample_label(name))
+    return cfg["label"] if cfg else name
 
 
 class PlotManager:
@@ -77,7 +263,62 @@ class PlotManager:
                 # Merge lists, avoiding duplicates
                 self.region_exclusions[key] = list(set(self.region_exclusions[key] + value))
 
+        # Bin config from plotting.yaml
+        self._variable_bins_cfg: Dict[str, Any] = self.config.get("variable_bins", {})
+        self._met_suffix_patterns: List[str] = self.config.get("met_suffix_patterns", ["met_pt", "recoil"])
+        self._n_bins_default: int = int(self.config.get("n_bins_default", 40))
+
+        # Process groups from plotting.yaml.
+        # Each group has: type (background|signal|data), patterns, color, label.
+        # self.process_groups  -> {label: [patterns]}  for background groups
+        # self.signal_groups   -> {label: [patterns]}  for signal groups
+        # self.data_groups     -> {label: [patterns]}  for data groups
+        raw_groups: Dict[str, Any] = self.config.get("process_groups", {})
+        self.process_groups: Dict[str, List[str]] = {}
+        self.signal_groups: Dict[str, List[str]] = {}
+        self.data_groups: Dict[str, List[str]] = {}
+        self._group_colors: Dict[str, str] = {}
+        self._group_labels: Dict[str, str] = {}
+
+        for label, grp in raw_groups.items():
+            if not isinstance(grp, dict):
+                grp = {"patterns": grp}
+            grp_type = grp.get("type", "background")
+            # support both "patterns" (new) and "files" (legacy) keys
+            patterns: List[str] = grp.get("patterns") or grp.get("files") or []
+            if grp.get("color"):
+                self._group_colors[label] = grp["color"]
+            if grp.get("label"):
+                self._group_labels[label] = grp["label"]
+            if grp_type == "signal":
+                self.signal_groups[label] = patterns
+            elif grp_type == "data":
+                self.data_groups[label] = patterns
+            else:
+                self.process_groups[label] = patterns
+
         logging.info("Plot manager initialized")
+
+    def _build_bins_from_config(self, variable: Optional[str]) -> Optional[np.ndarray]:
+        """Resolve bin edges for *variable* from plotting.yaml variable_bins."""
+        if not variable:
+            return None
+        spec = self._variable_bins_cfg.get(variable)
+        if spec is not None:
+            if "edges" in spec:
+                return np.array(spec["edges"], dtype=float)
+            return np.linspace(float(spec["low"]), float(spec["high"]), int(spec["n"]))
+        # suffix fallback for MET-like branches
+        name = variable.lower()
+        if any(name.endswith(p) or p in name for p in self._met_suffix_patterns):
+            met_spec = self._variable_bins_cfg.get("PFMET_pt")
+            if met_spec:
+                return np.array(met_spec["edges"], dtype=float)
+        if "ctsvalue" in name:
+            cts_spec = self._variable_bins_cfg.get("costheta_star")
+            if cts_spec:
+                return np.array(cts_spec["edges"], dtype=float)
+        return None
 
     def create_stacked_plot_from_files(
         self,
@@ -508,6 +749,695 @@ class PlotManager:
         saved_files['txt'] = txt_path
 
         return saved_files
+
+    # -----------------------------------------------------------------------
+    # Stacked-plot infrastructure (event-selection + region modes)
+    # -----------------------------------------------------------------------
+
+    def _load_folder(self, folder: str) -> Dict[str, Any]:
+        """Load a single sample folder (ROOT or PKL files).
+
+        Returns {"weighted_total_events": int, "objects": Dict[str, Any]}.
+        """
+        folder_path = Path(folder)
+        if not folder_path.is_dir():
+            # single file path
+            if folder_path.suffix in (".root",):
+                return self._load_root_files([folder_path])
+            return self._load_pkl_files([folder_path])
+
+        root_files = sorted(folder_path.glob("*.root"))
+        pkl_files = sorted(p for p in folder_path.glob("*.pkl")
+                           if not p.name.endswith((".awk_raw.pkl", "raw.pkl")))
+        if root_files:
+            return self._load_root_files(root_files)
+        if pkl_files:
+            return self._load_pkl_files(pkl_files)
+        raise FileNotFoundError(f"No ROOT or PKL files in {folder}")
+
+    def _load_pkl_files(self, paths: List[Path]) -> Dict[str, Any]:
+        merged: Dict[str, Any] = {"weighted_total_events": 0, "objects": {}}
+        for p in paths:
+            try:
+                with open(p, "rb") as fh:
+                    data = pickle.load(fh)
+                if not isinstance(data, dict):
+                    continue
+                wte = int(data.get("weighted_total_events", 0) or 0)
+                merged["weighted_total_events"] += wte
+                objs = data.get("objects", {})
+                if isinstance(objs, dict):
+                    for k, v in objs.items():
+                        if k in merged["objects"]:
+                            if isinstance(merged["objects"][k], list) and isinstance(v, list):
+                                merged["objects"][k] = merged["objects"][k] + v
+                            elif isinstance(merged["objects"][k], np.ndarray) and isinstance(v, np.ndarray):
+                                merged["objects"][k] = np.concatenate([merged["objects"][k], v])
+                        else:
+                            merged["objects"][k] = v
+            except Exception as exc:
+                logging.warning("Could not load %s: %s", p.name, exc)
+        return merged
+
+    def _load_root_files(self, paths: List[Path]) -> Dict[str, Any]:
+        try:
+            import uproot
+        except ImportError:
+            raise ImportError("uproot required for ROOT file loading")
+        merged: Dict[str, Any] = {"weighted_total_events": 0, "objects": {}}
+        for p in paths:
+            try:
+                with uproot.open(str(p)) as f:
+                    if "Events" not in f:
+                        continue
+                    tree = f["Events"]
+                    objs: Dict[str, Any] = {}
+                    for branch in tree.keys():
+                        try:
+                            arr = tree[branch].array(library="np")
+                            objs[branch] = arr.tolist() if hasattr(arr, "tolist") else list(arr)
+                        except Exception:
+                            pass
+                    wte = 0
+                    for key in ("weighted_total_events", "weighted_total_events;1"):
+                        if key in f:
+                            try:
+                                wte = int(round(float(f[key].values()[0])))
+                                break
+                            except Exception:
+                                pass
+                    if wte == 0 and "Metadata" in f:
+                        meta = f["Metadata"]
+                        if "weighted_total_events" in meta.keys():
+                            arr = meta["weighted_total_events"].array(library="np")
+                            wte = int(np.sum(arr)) if len(arr) > 0 else 0
+                    merged["weighted_total_events"] += wte
+                    for k, v in objs.items():
+                        if k in merged["objects"]:
+                            if isinstance(merged["objects"][k], list) and isinstance(v, list):
+                                merged["objects"][k] = merged["objects"][k] + v
+                        else:
+                            merged["objects"][k] = v
+            except Exception as exc:
+                logging.warning("Could not load ROOT %s: %s", p.name, exc)
+        return merged
+
+    def _write_yield_table(
+        self,
+        stem: Path,
+        variable: str,
+        bins: np.ndarray,
+        background_rows: List[Tuple[str, np.ndarray, np.ndarray]],
+        data_ndarray: Optional[np.ndarray],
+    ) -> None:
+        n_bins = len(bins) - 1
+        bin_labels = [f"[{bins[i]:.4g},{bins[i+1]:.4g})" for i in range(n_bins)]
+        mc_total = np.zeros(n_bins, dtype=float)
+        mc_total_sumw2 = np.zeros(n_bins, dtype=float)
+        for _, hv, hs in background_rows:
+            mc_total += hv
+            mc_total_sumw2 += hs
+
+        rows = list(background_rows)
+        rows.append(("Total_Bkg", mc_total, mc_total_sumw2))
+        if data_ndarray is not None:
+            rows.append(("data_obs", data_ndarray, np.sqrt(data_ndarray)))
+
+        col_w = 20
+        txt_path = stem.with_suffix(".txt")
+        with open(txt_path, "w") as fh:
+            header = f"{'Sample':<24}" + "".join(f"{b:>{col_w}}" for b in bin_labels)
+            fh.write(header + "\n" + "-" * len(header) + "\n")
+            for label, vals, sumw2 in rows:
+                cells = "".join(
+                    f"{f'{vals[i]:.2f}±{np.sqrt(sumw2[i]):.2f}':>{col_w}}" for i in range(n_bins)
+                )
+                fh.write(f"{label:<24}{cells}\n")
+
+        tex_path = stem.with_suffix(".tex")
+        with open(tex_path, "w") as fh:
+            col_spec = "l" + "c" * n_bins
+            bin_hdr = " & ".join(f"\\textbf{{{b}}}" for b in bin_labels)
+            fh.write("\\begin{table}[htbp]\n\\centering\n")
+            fh.write(f"\\caption{{Yield table for {variable}}}\n\\label{{tab:{variable}}}\n")
+            fh.write(f"\\begin{{tabular}}{{{col_spec}}}\n\\toprule\n")
+            fh.write(f"\\textbf{{Sample}} & {bin_hdr} \\\\ \\midrule\n")
+            for label, vals, sumw2 in rows:
+                if label in ("Total_Bkg", "data_obs"):
+                    continue
+                cells = " & ".join(f"${vals[i]:.2f} \\pm {np.sqrt(sumw2[i]):.2f}$" for i in range(n_bins))
+                fh.write(f"{label} & {cells} \\\\\n")
+            for label, vals, sumw2 in rows:
+                if label != "Total_Bkg":
+                    continue
+                cells = " & ".join(f"${vals[i]:.2f} \\pm {np.sqrt(sumw2[i]):.2f}$" for i in range(n_bins))
+                fh.write(f"\\midrule\nTotal Bkg & {cells} \\\\ \\midrule\n")
+            for label, vals, sumw2 in rows:
+                if label != "data_obs":
+                    continue
+                cells = " & ".join(f"${vals[i]:.2f} \\pm {np.sqrt(sumw2[i]):.2f}$" for i in range(n_bins))
+                fh.write(f"Data obs & {cells} \\\\ \\bottomrule\n")
+            fh.write("\\end{tabular}\n\\end{table}\n")
+
+    def _plot_stacked_variable(
+        self,
+        variable: str,
+        bins: np.ndarray,
+        background_rows: List[Tuple[str, np.ndarray, np.ndarray]],
+        data_ndarray: Optional[np.ndarray],
+        output_dir: str,
+        luminosity: float,
+        year: str,
+        region: str = "event_selection",
+        version: str = "",
+        save_root: bool = False,
+    ) -> List[str]:
+        """Draw CMS-style stacked histogram with ratio panel and save in 5 formats."""
+        if not _HAS_MPLHEP:
+            logging.warning("mplhep not available — skipping stacked plot for %s", variable)
+            return []
+
+        # Sort backgrounds ascending by integral (smallest at bottom)
+        rows = sorted(background_rows, key=lambda t: float(np.sum(t[1])))
+        # Fall back to process-config color map for labels not in yaml group overrides
+        color_map = get_background_color_map([r[0] for r in rows])
+
+        show_ratio = data_ndarray is not None
+        if show_ratio:
+            fig, (ax, ax_ratio) = plt.subplots(
+                2, 1, figsize=(12, 12), sharex=True,
+                gridspec_kw={"height_ratios": [3.0, 1.0], "hspace": 0.08},
+            )
+            fig.subplots_adjust(top=0.92, bottom=0.09, left=0.14, right=0.95)
+        else:
+            fig, ax = plt.subplots(figsize=(12, 10))
+            ax_ratio = None
+            fig.subplots_adjust(top=0.92, bottom=0.12, left=0.14, right=0.95)
+
+        cumulative = np.zeros(len(bins) - 1, dtype=float)
+        cumulative_sq = np.zeros(len(bins) - 1, dtype=float)
+        for label, hist_values, hist_sumw2 in rows:
+            next_cum = cumulative + hist_values
+            cumulative_sq += hist_sumw2
+            # yaml group color override → process config fallback → palette fallback
+            color = (self._group_colors.get(label)
+                     or color_map.get(simplify_sample_label(label), "#3f90da"))
+            disp_label = (self._group_labels.get(label)
+                          or _get_legend_label(label))
+            ax.stairs(
+                next_cum, bins, baseline=cumulative,
+                fill=True, alpha=1.0, linewidth=0, color=color,
+                label=disp_label,
+            )
+            cumulative = next_cum
+
+        mc_stat_err = np.sqrt(cumulative_sq)
+        centers = 0.5 * (bins[:-1] + bins[1:])
+        unc_x = np.append(bins[:-1], bins[-1])
+        unc_lo = np.append(cumulative - mc_stat_err, (cumulative - mc_stat_err)[-1])
+        unc_hi = np.append(cumulative + mc_stat_err, (cumulative + mc_stat_err)[-1])
+        ax.fill_between(
+            unc_x, unc_lo, unc_hi, step="post",
+            hatch="////", facecolor="#bbbbbb", edgecolor="#666666",
+            linewidth=0.0, alpha=0.8, zorder=5,
+        )
+
+        if data_ndarray is not None:
+            half_width = 0.5 * (bins[1:] - bins[:-1])
+            mask = data_ndarray > 0
+            if np.any(mask):
+                ax.errorbar(
+                    centers[mask], data_ndarray[mask],
+                    xerr=half_width[mask], yerr=np.sqrt(data_ndarray[mask]),
+                    fmt="o", color="black", markerfacecolor="black",
+                    markeredgecolor="black", markersize=5.5,
+                    elinewidth=1.2, capsize=0, label="Data", zorder=10,
+                )
+
+        use_log = variable not in self.no_log_scale_vars
+        if use_log:
+            ax.set_yscale("log")
+            stacked_max = float(np.max(cumulative)) if cumulative.size else 0.0
+            data_max = float(np.max(data_ndarray)) if data_ndarray is not None and data_ndarray.size else 0.0
+            ax.set_ylim(0.1, max(stacked_max, data_max, 1e-3) * 1000.0)
+
+        nonzero_mc = np.where(cumulative > 0)[0]
+        x_lo = float(bins[nonzero_mc[0]]) if nonzero_mc.size else float(bins[0])
+        x_hi = float(bins[nonzero_mc[-1] + 1]) if nonzero_mc.size else float(bins[-1])
+        if data_ndarray is not None:
+            nz_d = np.where(data_ndarray > 0)[0]
+            if nz_d.size:
+                x_lo = min(x_lo, float(bins[nz_d[0]]))
+                x_hi = max(x_hi, float(bins[nz_d[-1] + 1]))
+        ax.set_xlim(x_lo, x_hi)
+        ax.set_ylabel("Events / bin", fontsize=22, labelpad=6)
+        if not show_ratio:
+            ax.set_xlabel(variable, fontsize=22)
+        ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]))
+        ax.grid(False)
+
+        if show_ratio and ax_ratio is not None and data_ndarray is not None:
+            pred = cumulative
+            data_ratio = np.divide(
+                data_ndarray, pred,
+                out=np.full_like(data_ndarray, np.nan, dtype=float), where=pred > 0,
+            )
+            data_ratio_err = np.divide(
+                np.sqrt(data_ndarray), pred,
+                out=np.zeros_like(data_ndarray, dtype=float), where=pred > 0,
+            )
+            pred_rel_err = np.divide(
+                mc_stat_err, pred,
+                out=np.zeros_like(pred, dtype=float), where=pred > 0,
+            )
+            ratio_mask = np.isfinite(data_ratio)
+            ax_ratio.axhline(1.0, color="black", linestyle="-", linewidth=1.2)
+            ratio_lo = np.append(1.0 - pred_rel_err, (1.0 - pred_rel_err)[-1])
+            ratio_hi = np.append(1.0 + pred_rel_err, (1.0 + pred_rel_err)[-1])
+            ax_ratio.fill_between(
+                unc_x, ratio_lo, ratio_hi, step="post",
+                hatch="////", facecolor="#bbbbbb", edgecolor="#3d3d3d",
+                linewidth=0.0, alpha=0.8, label="Stat. unc.", zorder=5,
+            )
+            if np.any(ratio_mask):
+                half_width = 0.5 * (bins[1:] - bins[:-1])
+                ax_ratio.errorbar(
+                    centers[ratio_mask], data_ratio[ratio_mask],
+                    xerr=half_width[ratio_mask], yerr=data_ratio_err[ratio_mask],
+                    fmt="o", color="black", markerfacecolor="black",
+                    markeredgecolor="black", markersize=5.5,
+                    elinewidth=1.0, capsize=0, zorder=10,
+                )
+            ax_ratio.legend(loc="upper right", fontsize=20, frameon=False)
+            ax_ratio.set_ylabel("Data / MC", fontsize=22, labelpad=6)
+            ax_ratio.set_xlabel(variable, fontsize=22, labelpad=8)
+            ax_ratio.set_ylim(0, 2.0)
+            ax_ratio.set_xlim(x_lo, x_hi)
+            ax_ratio.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]))
+            ax_ratio.yaxis.set_major_locator(matplotlib.ticker.FixedLocator([0, 0.5, 1.0, 1.5, 2.0]))
+            ax_ratio.grid(False)
+
+        hep.cms.label(
+            "Work in progress",
+            data=data_ndarray is not None,
+            lumi=round(luminosity, 2),
+            com=13.6,
+            loc=0,
+            ax=ax,
+        )
+
+        handles, labels_leg = ax.get_legend_handles_labels()
+        if handles:
+            data_idx = next((i for i, l in enumerate(labels_leg) if l == "Data"), None)
+            unc_idx = next((i for i, l in enumerate(labels_leg) if "Uncertainty" in l or "unc" in l.lower()), None)
+            ordered = (
+                ([data_idx] if data_idx is not None else [])
+                + [i for i in range(len(labels_leg)) if i not in (data_idx, unc_idx)]
+                + ([unc_idx] if unc_idx is not None else [])
+            )
+            handles = [handles[i] for i in ordered]
+            labels_leg = [labels_leg[i] for i in ordered]
+            if unc_idx is not None:
+                handles[-1] = matplotlib.patches.Patch(
+                    hatch="////", facecolor="#bbbbbb", edgecolor="#3d3d3d",
+                    linewidth=0.0, label="Uncertainty",
+                )
+            ax.legend(
+                handles, labels_leg,
+                loc="upper right", bbox_to_anchor=(0.97, 0.97),
+                ncol=2, frameon=False, borderaxespad=0.0,
+                handlelength=1.5, columnspacing=1.0,
+                handletextpad=0.5, fontsize=20,
+            )
+
+        saved = self.save_plot_multi_format(
+            fig, variable, region, version, output_dir,
+            is_log=use_log,
+        )
+        plt.close(fig)
+
+        # Write yield tables alongside the PNG
+        region_info = self._parse_region_name(region)
+        category = region_info["category"]
+        region_dir = region_info["region_dir"]
+        text_dir = Path(output_dir) / "plots" / version / "text" / category / region_dir
+        text_dir.mkdir(parents=True, exist_ok=True)
+        self._write_yield_table(text_dir / variable, variable, bins, rows, data_ndarray)
+
+        return [v for v in saved.values() if v]
+
+    def create_stacked_plots(
+        self,
+        mode: str,
+        input_folder: str,
+        process_groups: Dict[str, List[str]],
+        output_dir: str,
+        luminosity: float,
+        year: str,
+        version: str,
+        signal_groups: Optional[Dict[str, List[str]]] = None,
+        data_groups: Optional[Dict[str, List[str]]] = None,
+        cross_sections: Optional[Dict[str, float]] = None,
+        variables: Optional[List[str]] = None,
+        regions: Optional[List[str]] = None,
+        save_root: bool = False,
+    ) -> List[str]:
+        """Create stacked MC+data plots.
+
+        input_folder:   single directory containing all ROOT/PKL files.
+        process_groups: {label: [patterns]} for background stacks.
+        signal_groups:  {label: [patterns]} for signal overlays (drawn as lines).
+        data_groups:    {label: [patterns]} for data points (no xsec normalization).
+        All groups resolved by substring pattern match against filenames in input_folder.
+        mode: "event-selection" | "region"
+        """
+        if mode not in ("event-selection", "region"):
+            raise ValueError(f"Unknown mode '{mode}'. Use 'event-selection' or 'region'.")
+
+        cross_sections = cross_sections or {}
+        signal_groups = signal_groups or {}
+        data_groups = data_groups or {}
+        created: List[str] = []
+
+        if mode == "event-selection":
+            created.extend(self._create_event_selection_plots(
+                input_folder=input_folder,
+                process_groups=process_groups,
+                signal_groups=signal_groups,
+                data_groups=data_groups,
+                output_dir=output_dir,
+                luminosity=luminosity,
+                year=year,
+                version=version,
+                cross_sections=cross_sections,
+                variables=variables,
+                save_root=save_root,
+            ))
+        else:
+            created.extend(self._create_region_stacked_plots(
+                input_folder=input_folder,
+                process_groups=process_groups,
+                signal_groups=signal_groups,
+                data_groups=data_groups,
+                output_dir=output_dir,
+                luminosity=luminosity,
+                year=year,
+                version=version,
+                cross_sections=cross_sections,
+                variables=variables,
+                regions=regions,
+                save_root=save_root,
+            ))
+        return created
+
+    def _load_one_file(self, path: Path) -> Dict[str, Any]:
+        """Load a single ROOT or PKL file. Returns {"weighted_total_events": int, "objects": dict}."""
+        if path.suffix == ".root":
+            return self._load_root_files([path])
+        return self._load_pkl_files([path])
+
+    def _resolve_group_files(self, input_folder: str, patterns: List[str]) -> List[Path]:
+        """Find all ROOT/PKL files in input_folder whose name contains any of the patterns.
+
+        Each pattern is a substring match against the filename stem (without extension).
+        One file can only match one pattern; first pattern that matches wins.
+        Files are returned in deterministic (sorted) order.
+        """
+        base = Path(input_folder)
+        all_files = sorted(
+            p for p in base.iterdir()
+            if p.is_file() and p.suffix in (".root", ".pkl")
+        )
+        resolved: List[Path] = []
+        matched_paths: set = set()
+        for pattern in patterns:
+            for p in all_files:
+                if p in matched_paths:
+                    continue
+                if pattern in p.name:
+                    resolved.append(p)
+                    matched_paths.add(p)
+        if not resolved:
+            logging.warning("No files matched patterns %s in %s", patterns, input_folder)
+        return resolved
+
+    def _load_group_entries(
+        self,
+        input_folder: str,
+        groups: Dict[str, List[str]],
+        cross_sections: Dict[str, float],
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Load files for each process group. Returns {label: [{"weighted_total_events", "branches", "xsec"}]}."""
+        result: Dict[str, List[Dict[str, Any]]] = {}
+        for label, patterns in groups.items():
+            paths = self._resolve_group_files(input_folder, patterns)
+            entries = []
+            for p in paths:
+                xsec = cross_sections.get(p.stem) or cross_sections.get(p.name)
+                try:
+                    loaded = self._load_one_file(p)
+                    entries.append({
+                        "weighted_total_events": loaded["weighted_total_events"],
+                        "branches": _extract_branches(loaded["objects"]),
+                        "xsec": xsec,
+                    })
+                except Exception as exc:
+                    logging.warning("Skipping %s: %s", p, exc)
+            if entries:
+                result[label] = entries
+        return result
+
+    def _create_event_selection_plots(
+        self,
+        input_folder: str,
+        process_groups: Dict[str, List[str]],
+        signal_groups: Dict[str, List[str]],
+        data_groups: Dict[str, List[str]],
+        output_dir: str,
+        luminosity: float,
+        year: str,
+        version: str,
+        cross_sections: Dict[str, float],
+        variables: Optional[List[str]],
+        save_root: bool,
+    ) -> List[str]:
+        bkg_groups  = self._load_group_entries(input_folder, process_groups, cross_sections)
+        sig_groups  = self._load_group_entries(input_folder, signal_groups,  cross_sections)
+        dat_groups  = self._load_group_entries(input_folder, data_groups,    {})  # no xsec for data
+
+        # Merge all data entries into one flat branch dict (raw counts, no normalisation)
+        data_branches: Optional[Dict[str, np.ndarray]] = None
+        if dat_groups:
+            merged: Dict[str, np.ndarray] = {}
+            for entries in dat_groups.values():
+                for e in entries:
+                    for k, v in e["branches"].items():
+                        merged[k] = np.concatenate([merged[k], v]) if k in merged else v
+            data_branches = merged
+
+        all_vars: List[str] = variables or sorted(
+            {k for entries in bkg_groups.values() for e in entries for k in e["branches"]}
+        )
+        created: List[str] = []
+        for var in all_vars:
+            all_vals = [
+                _apply_variable_plot_filter(var, e["branches"].get(var, np.array([])))
+                for entries in bkg_groups.values() for e in entries
+            ]
+            if data_branches is not None:
+                all_vals.append(_apply_variable_plot_filter(var, data_branches.get(var, np.array([]))))
+
+            bins = _make_bins(all_vals, self._build_bins_from_config, var, self._n_bins_default)
+            if bins is None or len(bins) < 2:
+                continue
+
+            bkg_rows: List[Tuple[str, np.ndarray, np.ndarray]] = []
+            for proc_label, entries in bkg_groups.items():
+                group_hv = np.zeros(len(bins) - 1, dtype=float)
+                group_hs = np.zeros(len(bins) - 1, dtype=float)
+                for e in entries:
+                    vals = _apply_variable_plot_filter(var, e["branches"].get(var, np.array([])))
+                    hv, hs = _histogram_and_sumw2(vals, bins, e["weighted_total_events"], luminosity, e["xsec"])
+                    group_hv += hv
+                    group_hs += hs
+                bkg_rows.append((proc_label, group_hv, group_hs))
+
+            if np.allclose(sum(h for _, h, _ in bkg_rows), 0.0):
+                continue
+
+            data_hist: Optional[np.ndarray] = None
+            if data_branches is not None:
+                dv = _apply_variable_plot_filter(var, data_branches.get(var, np.array([])))
+                data_hist = _histogram_counts(dv, bins)
+
+            files = self._plot_stacked_variable(
+                variable=var, bins=bins,
+                background_rows=bkg_rows, data_ndarray=data_hist,
+                output_dir=output_dir, luminosity=luminosity, year=year,
+                region="event_selection", version=version, save_root=save_root,
+            )
+            created.extend(files)
+            logging.info("Created event-selection plot: %s (%d files)", var, len(files))
+
+        return created
+
+    def _create_region_stacked_plots(
+        self,
+        input_folder: str,
+        process_groups: Dict[str, List[str]],
+        signal_groups: Dict[str, List[str]],
+        data_groups: Dict[str, List[str]],
+        output_dir: str,
+        luminosity: float,
+        year: str,
+        version: str,
+        cross_sections: Dict[str, float],
+        variables: Optional[List[str]],
+        regions: Optional[List[str]],
+        save_root: bool,
+    ) -> List[str]:
+        try:
+            import hist as hist_lib
+            _HAS_HIST = True
+        except ImportError:
+            _HAS_HIST = False
+
+        def _load_region_pkl(path: Path) -> Dict[str, Any]:
+            with open(path, "rb") as fh:
+                return pickle.load(fh)
+
+        def _load_pkl_group(grp_patterns: List[str]) -> List[Dict[str, Any]]:
+            entries = []
+            for p in self._resolve_group_files(input_folder, grp_patterns):
+                try:
+                    entries.append(_load_region_pkl(p))
+                except Exception as exc:
+                    logging.warning("Skipping %s: %s", p, exc)
+            return entries
+
+        # Background PKLs: {proc_label: [{"data": pkl_dict, "xsec": float|None}]}
+        bkg_groups: Dict[str, List[Dict[str, Any]]] = {}
+        for proc_label, patterns in process_groups.items():
+            paths = self._resolve_group_files(input_folder, patterns)
+            entries = []
+            for p in paths:
+                xsec = cross_sections.get(p.stem) or cross_sections.get(p.name)
+                try:
+                    entries.append({"data": _load_region_pkl(p), "xsec": xsec})
+                except Exception as exc:
+                    logging.warning("Skipping %s: %s", p, exc)
+            if entries:
+                bkg_groups[proc_label] = entries
+
+        # Data PKLs: {data_label: {"pkls": [dict], "region_patterns": [str]}}
+        # region_patterns from yaml data group "regions" key — if absent, matches all regions.
+        raw_data_cfg: Dict[str, Any] = self.config.get("process_groups", {})
+        data_loaded: Dict[str, Dict[str, Any]] = {}
+        for label, patterns in data_groups.items():
+            grp_cfg = raw_data_cfg.get(label, {})
+            region_patterns: List[str] = grp_cfg.get("regions", []) if isinstance(grp_cfg, dict) else []
+            pkls = _load_pkl_group(patterns)
+            if pkls:
+                data_loaded[label] = {"pkls": pkls, "region_patterns": region_patterns}
+
+        def _data_hist_for_region(region: str, var: str) -> Optional[np.ndarray]:
+            """Sum histogram values from whichever data group(s) apply to this region."""
+            total: Optional[np.ndarray] = None
+            for label, info in data_loaded.items():
+                rp = info["region_patterns"]
+                # If no region_patterns → applies to all regions
+                if rp and not any(pat in region for pat in rp):
+                    continue
+                for pkl in info["pkls"]:
+                    rh = pkl.get("region_histograms", {}).get(region, {})
+                    h = rh.get(var)
+                    if h is None:
+                        continue
+                    if _HAS_HIST and isinstance(h, hist_lib.Hist):
+                        hv = h.values().astype(float)
+                    elif isinstance(h, dict):
+                        hv = np.array(h.get("values", []), dtype=float)
+                    else:
+                        continue
+                    total = hv if total is None else total + hv
+            return total
+
+        all_regions: List[str] = regions or sorted({
+            r
+            for entries in bkg_groups.values()
+            for e in entries
+            for r in e["data"].get("region_histograms", {}).keys()
+        })
+
+        def _h_to_numpy(h: Any) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+            """Convert hist.Hist or dict → (edges, values, sumw2). Returns (None,None,None) on failure."""
+            if _HAS_HIST and isinstance(h, hist_lib.Hist):
+                edges = np.array(h.axes[0].edges)
+                hv = h.values().astype(float)
+                hvar = h.variances()
+                hs = hvar.astype(float) if hvar is not None else np.zeros_like(hv)
+                return edges, hv, hs
+            if isinstance(h, dict):
+                edges = np.array(h.get("bins", []))
+                hv = np.array(h.get("values", []), dtype=float)
+                hs = np.array(h.get("errors", np.zeros_like(hv)), dtype=float) ** 2
+                return (edges if edges.size > 1 else None), hv, hs
+            return None, None, None
+
+        created: List[str] = []
+        for region in all_regions:
+            excl = self._get_excluded_variables_for_region(region)
+            all_vars_set: set = set()
+            for entries in bkg_groups.values():
+                for e in entries:
+                    all_vars_set.update(e["data"].get("region_histograms", {}).get(region, {}).keys())
+            all_vars_for_region = [v for v in (variables or sorted(all_vars_set)) if v not in excl]
+
+            for var in all_vars_for_region:
+                bins_ref: Optional[np.ndarray] = self._build_bins_from_config(var)
+                bkg_rows: List[Tuple[str, np.ndarray, np.ndarray]] = []
+
+                for proc_label, entries in bkg_groups.items():
+                    group_hv: Optional[np.ndarray] = None
+                    group_hs: Optional[np.ndarray] = None
+                    for e in entries:
+                        rh = e["data"].get("region_histograms", {}).get(region, {})
+                        h = rh.get(var)
+                        if h is None:
+                            continue
+                        wte = int(e["data"].get("metadata", {}).get("weighted_total_events", 0)
+                                   or e["data"].get("weighted_total_events", 0) or 0)
+                        edges, hv, hs = _h_to_numpy(h)
+                        if hv is None or hv.size == 0:
+                            continue
+                        if bins_ref is None and edges is not None:
+                            bins_ref = edges
+                        scale = ((luminosity * e["xsec"] * 1000.0) / wte
+                                 if e["xsec"] is not None and wte > 0
+                                 else (luminosity / wte if wte > 0 else 1.0))
+                        group_hv = hv * scale if group_hv is None else group_hv + hv * scale
+                        group_hs = hs * scale**2 if group_hs is None else group_hs + hs * scale**2
+
+                    if group_hv is not None and group_hv.size > 0:
+                        bkg_rows.append((proc_label, group_hv, group_hs))
+
+                if not bkg_rows or bins_ref is None:
+                    continue
+                if np.allclose(sum(h for _, h, _ in bkg_rows), 0.0):
+                    continue
+
+                data_hist = _data_hist_for_region(region, var)
+
+                files = self._plot_stacked_variable(
+                    variable=var, bins=bins_ref,
+                    background_rows=bkg_rows, data_ndarray=data_hist,
+                    output_dir=output_dir, luminosity=luminosity, year=year,
+                    region=region, version=version, save_root=save_root,
+                )
+                created.extend(files)
+                logging.info("Created region plot: %s / %s (%d files)", region, var, len(files))
+
+        return created
 
     def _create_th1f_from_hist(self, hist_data: Any, name: str, title: str) -> Any:
         """

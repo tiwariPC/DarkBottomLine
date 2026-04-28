@@ -2,7 +2,7 @@
 # Tag current HEAD (last feature commit), update _version.py, push tag + GitHub release.
 set -e
 
-DATE=$(date +%Y.%m.%d)
+DATE=$(date +%Y%m%d)
 HASH=$(git rev-parse --short HEAD)
 GIT_TAG="${DATE}-${HASH}"       # git tag: dash (+ invalid in tags)
 VERSION="${DATE}+${HASH}"       # PEP 440: + for local segment

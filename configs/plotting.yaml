@@ -73,5 +73,195 @@ plot_settings:
   dpi: 300
   format: "pdf"
 
+# Default number of auto-bins when no variable_bins entry matches
+n_bins_default: 40
+
+# Suffix patterns that map to MET-style variable bins (case-insensitive)
+met_suffix_patterns:
+  - met_pt
+  - recoil
+
+# Per-variable bin edges.
+# Format A (linspace): {low: float, high: float, n: int}
+# Format B (explicit): {edges: [e0, e1, ..., eN]}
+variable_bins:
+  # angular / delta variables
+  METPhi:             {low: -3.14159, high: 3.14159, n: 21}
+  PFMET_phi:          {low: -3.14159, high: 3.14159, n: 21}
+  RecoilPhi:          {low: -3.14159, high: 3.14159, n: 21}
+  dPhi_jetMET:        {low: 0.0,      high: 3.2,     n: 17}
+  dPhiJet12:          {low: -7.5,     high: 7.5,     n: 31}
+  dPhiJet13:          {low: -7.5,     high: 7.5,     n: 31}
+  DetaJet12:          {low: -7.5,     high: 7.5,     n: 31}
+  dRJet12:            {low: 0.0,      high: 7.0,     n: 29}
+  Jet1Eta:            {low: -2.5,     high: 2.5,     n: 21}
+  Jet1Phi:            {low: -3.14159, high: 3.14159, n: 21}
+  Jet2Eta:            {low: -2.5,     high: 2.5,     n: 21}
+  Jet2Phi:            {low: -3.14159, high: 3.14159, n: 21}
+  bjet_eta:           {low: -2.5,     high: 2.5,     n: 21}
+  bjet_phi:           {low: -3.14159, high: 3.14159, n: 21}
+  jet_eta:            {low: -2.5,     high: 2.5,     n: 21}
+  jet_phi:            {low: -3.14159, high: 3.14159, n: 21}
+  electron_eta:       {low: -2.5,     high: 2.5,     n: 21}
+  electron_phi:       {low: -3.14159, high: 3.14159, n: 21}
+  muon_eta:           {low: -2.5,     high: 2.5,     n: 21}
+  muon_phi:           {low: -3.14159, high: 3.14159, n: 21}
+  # pT / energy (variable-width where physics motivated)
+  MET:                {edges: [250, 300, 400, 550, 1000]}
+  PFMET_pt:           {edges: [250, 300, 400, 550, 1000]}
+  Recoil:             {edges: [250, 300, 400, 550, 1000]}
+  recoil:             {edges: [250, 300, 400, 550, 1000]}
+  Jet1Pt:             {low: 30.,  high: 800.,  n: 32}
+  Jet2Pt:             {low: 30.,  high: 800.,  n: 32}
+  bjet_pt:            {low: 30.,  high: 800.,  n: 32}
+  jet_pt:             {low: 30.,  high: 800.,  n: 32}
+  electron_pt:        {low: 20.,  high: 500.,  n: 25}
+  muon_pt:            {low: 20.,  high: 500.,  n: 25}
+  JetHT:              {low: 0.,   high: 2000., n: 41}
+  M_Jet1Jet2:         {low: 0.,   high: 2000., n: 41}
+  pT_Jet1Jet2:        {low: 0.,   high: 800.,  n: 32}
+  ratioPtJet21:       {low: 0.,   high: 2.,    n: 41}
+  ratioJet1PtMET:     {low: 0.,   high: 5.,    n: 26}
+  # b-tagging discriminants
+  Jet1DeepJet:        {low: 0.,   high: 1.2,   n: 25}
+  Jet2DeepJet:        {low: 0.,   high: 1.2,   n: 25}
+  jet_btag:           {low: 0.,   high: 1.2,   n: 25}
+  # multiplicities (half-integer edges for clean integer display)
+  n_jets:             {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  n_bjets:            {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  n_electrons:        {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  n_muons:            {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  n_taus:             {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  Njets_PassID:       {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  b_flavor_count:     {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5]}
+  # scores
+  costheta_star:      {edges: [0.0, 0.25, 0.50, 0.75, 1.0]}
+  dnn_score:          {low: 0.,   high: 1.,    n: 25}
+  ml_score:           {low: 0.,   high: 1.,    n: 25}
+  PFMET_significance: {low: 0.,   high: 100.,  n: 26}
 
 
+# Process grouping
+#
+# type:     "background" (default) | "signal" | "data"
+# color:    hex color (optional; falls back to _PROCESS_CONFIG in plot_utils.py)
+# label:    LaTeX display label (optional; falls back to _PROCESS_CONFIG)
+# patterns: list of substring patterns — any ROOT/PKL file in --input-folder whose
+#           name contains the pattern is matched to this group.
+#           Use the shortest unambiguous prefix, e.g. "WtoLNu-2Jets_PTLNu-100to250_2J"
+#           (everything up to and including _2J is enough to uniquely identify the slice).
+#
+# Resolution order per file in the folder:
+#   1. Try each pattern in order; first match wins.
+#   2. Files matching no pattern in any group are skipped with a warning.
+
+process_groups:
+  WtoLNuJets:
+    type: background
+    color: "#bd1f01"
+    label: "$W(\\ell\\nu)+$jets"
+    patterns:
+      - "WtoLNu-2Jets_PTLNu-100to250_2J"
+      - "WtoLNu-2Jets_PTLNu-250to400_2J"
+      - "WtoLNu-2Jets_PTLNu-400to600_2J"
+      - "WtoLNu-2Jets_PTLNu-600toInf_2J"
+
+  Zto2NuJets:
+    type: background
+    color: "#a96b59"
+    label: "$Z(\\nu\\bar{\\nu})+$jets"
+    patterns:
+      - "Zto2Nu-2Jets_PTNuNu-100to250_2J"
+      - "Zto2Nu-2Jets_PTNuNu-250to400_2J"
+      - "Zto2Nu-2Jets_PTNuNu-400to600_2J"
+      - "Zto2Nu-2Jets_PTNuNu-600toInf_2J"
+
+  DYto2LJets:
+    type: background
+    color: "#3f90da"
+    label: "$Z(\\ell\\ell)+$jets"
+    patterns:
+      - "DYto2L-2Jets_MLL-50_PTLL-100to250_2J"
+      - "DYto2L-2Jets_MLL-50_PTLL-250to400_2J"
+      - "DYto2L-2Jets_MLL-50_PTLL-400to600_2J"
+      - "DYto2L-2Jets_MLL-50_PTLL-600toInf_2J"
+
+  ttbar:
+    type: background
+    color: "#e76300"
+    label: "$t\\bar{t}$"
+    patterns:
+      - "TTto2L2Nu_TuneCP5"
+      - "TTtoLNu2Q_TuneCP5"
+      - "TTto4Q_TuneCP5"
+
+  singletop:
+    type: background
+    color: "#ffa90e"
+    label: "Single $t$"
+    patterns:
+      - "TBbarQ_t-channel"
+      - "TbarBQ_t-channel"
+      - "TBbartoLplusNuBbar-s-channel"
+      - "TbarBtoLminusNuB-s-channel"
+      - "TbarWplustoLNu2Q"
+      - "TWminustoLNu2Q"
+
+  Diboson:
+    type: background
+    color: "#832db6"
+    label: "WW/WZ/ZZ"
+    patterns:
+      - "WZ_TuneCP5"
+      - "WW_TuneCP5"
+      - "ZZ_TuneCP5"
+
+  SMHiggs:
+    type: background
+    color: "#b9ac70"
+    label: "SM Higgs"
+    patterns:
+      - "GluGluHto2B_M-125"
+      - "VBFHto2B_M-125_TuneCP5"
+      - "VBFHto2B_M-125_dipoleRecoilOn"
+      - "WminusH_Hto2B"
+      - "WplusH_Hto2B"
+      - "ZH_Hto2B_Zto2L"
+      - "ZH_Hto2B_Zto2Nu"
+      - "ggZH_Hto2B_Zto2L"
+      - "ggZH_Hto2B_Zto2Nu"
+      - "tHto2B_M-125"
+
+  # --- Signal process (drawn as a line, not a filled band) ---
+  # Uncomment and fill in for your signal sample(s).
+  # Signal_bbMET:
+  #   type: signal
+  #   color: "#000000"
+  #   label: "DM ($m_{med}=1$ TeV)"
+  #   patterns:
+  #     - "SVJ_mMed-1000"
+  #     - "SVJ_mMed-2000"
+
+  # --- Data (drawn as black points, no xsec normalization) ---
+  # Two separate data groups: one for MET/JetMET (SR + muon CRs) and one for EGamma (electron CRs).
+  # The "regions" list contains substring patterns: a data group is used for a region if any
+  # pattern appears in the region name. Omit "regions" (or leave empty) to apply to all regions.
+  #
+  # MET_Data:
+  #   type: data
+  #   label: "Data (MET)"
+  #   regions:
+  #     - "SR"
+  #     - "_mu"        # matches CR_Wlnu_mu, CR_Zll_mu, CR_Top_mu
+  #   patterns:
+  #     - "JetMET_Run2024C"
+  #     - "JetMET_Run2024D"
+  #
+  # EGamma_Data:
+  #   type: data
+  #   label: "Data (EGamma)"
+  #   regions:
+  #     - "_el"        # matches CR_Wlnu_el, CR_Zll_el, CR_Top_el
+  #   patterns:
+  #     - "EGamma_Run2024C"
+  #     - "EGamma_Run2024D"

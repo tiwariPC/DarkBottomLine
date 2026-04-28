@@ -2,6 +2,7 @@
 Plotting utilities for DarkBottomLine framework.
 """
 
+import re
 import matplotlib.pyplot as plt
 try:
     import mplhep as hep
@@ -12,6 +13,162 @@ import matplotlib.patches as mpatches
 import numpy as np
 from typing import Dict, Any, List, Optional, Tuple
 import logging
+
+
+# CMS-approved accessible palette (M. Petroff, arXiv:2107.02270v2)
+_PROCESS_CONFIG: Dict[str, Dict[str, str]] = {
+    "DYto2L-2Jets": {"color": "#3f90da", "label": r"$Z(\ell\ell)+$jets"},
+    "Zto2Nu-2Jets": {"color": "#a96b59", "label": r"$Z(\nu\bar{\nu})+$jets"},
+    "WtoLNu-2Jets": {"color": "#bd1f01", "label": r"W($\ell\nu$)+jets"},
+    "Top":          {"color": "#e76300", "label": r"$t\bar{t}$"},
+    "DIBOSON":      {"color": "#832db6", "label": r"WW/WZ/ZZ"},
+    "SingleTop":    {"color": "#ffa90e", "label": r"Single $t$"},
+    "SMHiggs":      {"color": "#b9ac70", "label": r"SMH"},
+    "GJets":        {"color": "#94a4a2", "label": r"$\gamma$+jets"},
+    "QCD":          {"color": "#717581", "label": r"QCD"},
+}
+
+# 10-color fallback palette for unknown processes (same source)
+_PALETTE: List[str] = [
+    "#3f90da", "#ffa90e", "#bd1f01", "#94a4a2", "#832db6",
+    "#a96b59", "#e76300", "#b9ac70", "#717581", "#92dadd",
+]
+
+_LABEL_ALIASES: Dict[str, str] = {
+    # --- folder-name aliases (what user passes as --background-folders) ---
+    "wtolnujets":    "WtoLNu-2Jets",
+    "wtonulnujets":  "WtoLNu-2Jets",
+    "ztonunujets":   "Zto2Nu-2Jets",
+    "ztonunu":       "Zto2Nu-2Jets",
+    "dynujets":      "DYto2L-2Jets",
+    "dylljets":      "DYto2L-2Jets",
+    "dyjets":        "DYto2L-2Jets",
+    "ttbarjets":     "Top",
+    "ttjets":        "Top",
+    "singletopjets": "SingleTop",
+    "dibosons":      "DIBOSON",
+    "vv":            "DIBOSON",
+    "smhiggsjets":   "SMHiggs",
+    "higgs":         "SMHiggs",
+    # --- canonical dataset-prefix aliases ---
+    "wtolnu-2jets":  "WtoLNu-2Jets",
+    "wtolnu-4jets":  "WtoLNu-2Jets",
+    "wtolnu":        "WtoLNu-2Jets",
+    "wjets":         "WtoLNu-2Jets",
+    "zto2nu-2jets":  "Zto2Nu-2Jets",
+    "zto2nu":        "Zto2Nu-2Jets",
+    "zjets":         "Zto2Nu-2Jets",
+    "dyto2l-2jets":  "DYto2L-2Jets",
+    "dyto2l":        "DYto2L-2Jets",
+    "top":           "Top",
+    "ttbar":         "Top",
+    "ttto2l2nu":     "Top",
+    "tttolnu2q":     "Top",
+    "ttto4q":        "Top",
+    "singletop":     "SingleTop",
+    "tbbarq":        "SingleTop",
+    "tbarbq":        "SingleTop",
+    "twminustolnu2q": "SingleTop",
+    "tbarwplusto":   "SingleTop",
+    "diboson":       "DIBOSON",
+    "wz":            "DIBOSON",
+    "ww":            "DIBOSON",
+    "zz":            "DIBOSON",
+    "smhiggs":       "SMHiggs",
+    "glugluhto2b":   "SMHiggs",
+    "vbfhto2b":      "SMHiggs",
+    "wminush":       "SMHiggs",
+    "wplush":        "SMHiggs",
+    "zh_hto2b":      "SMHiggs",
+    "ggzh_hto2b":    "SMHiggs",
+    "tthto2b":       "SMHiggs",
+    "gjets":         "GJets",
+    "qcd":           "QCD",
+    # yaml process-group folder-name aliases
+    "zto2nujets":    "Zto2Nu-2Jets",
+    "dyto2ljets":    "DYto2L-2Jets",
+}
+
+# Prefix patterns: if sample name starts with one of these prefixes (case-insensitive),
+# map to canonical process. Checked after alias table, longest match wins.
+_PREFIX_MAP: List[tuple] = sorted([
+    ("WtoLNu-2Jets",  "WtoLNu-2Jets"),
+    ("Zto2Nu-2Jets",  "Zto2Nu-2Jets"),
+    ("DYto2L-2Jets",  "DYto2L-2Jets"),
+    ("TTto",          "Top"),
+    ("TBbar",         "SingleTop"),
+    ("TbarB",         "SingleTop"),
+    ("TbarW",         "SingleTop"),
+    ("TWminus",       "SingleTop"),
+    ("WZ_",           "DIBOSON"),
+    ("WW_",           "DIBOSON"),
+    ("ZZ_",           "DIBOSON"),
+    ("GluGluH",       "SMHiggs"),
+    ("VBFH",          "SMHiggs"),
+    ("WminusH_",      "SMHiggs"),
+    ("WplusH_",       "SMHiggs"),
+    ("ZH_Hto",        "SMHiggs"),
+    ("ggZH_",         "SMHiggs"),
+    ("ttH",           "SMHiggs"),
+    ("tHto2B",        "SMHiggs"),
+    ("GJets",         "GJets"),
+    ("QCD",           "QCD"),
+], key=lambda x: -len(x[0]))  # longest prefix first
+
+
+def simplify_sample_label(sample_name: str) -> str:
+    """Normalise a folder/file name or ROOT dataset stem to a canonical _PROCESS_CONFIG key."""
+    label = sample_name
+    # Strip .root extension
+    if label.endswith(".root"):
+        label = label[:-5]
+    # Strip leading "new"
+    if label.startswith("new"):
+        label = label[3:]
+    # Strip year/era suffixes: _2022EE_... or _2022_...
+    label = re.sub(r"_20\d{2}(EE)?_.*$", "", label)
+    # Strip EVENTSELECTION suffix
+    label = re.sub(r"_EVENTSELECTION$", "", label, flags=re.IGNORECASE)
+    # Strip NanoAOD dataset specifics: everything from _PT*, _MLL*, _M-*, _Tune*, _t-channel, _s-channel
+    label = re.sub(
+        r"_(PT[A-Za-z]*-?\d|MLL-|M-\d|Tune|t-channel|s-channel|dipole).*$",
+        "", label
+    )
+
+    # 1. Exact alias lookup (lowercased)
+    hit = _LABEL_ALIASES.get(label.lower())
+    if hit:
+        return hit
+
+    # 2. Prefix match (case-sensitive, longest first)
+    for prefix, canonical in _PREFIX_MAP:
+        if label.startswith(prefix):
+            return canonical
+
+    # 3. Already a canonical key?
+    if label in _PROCESS_CONFIG:
+        return label
+
+    return label
+
+
+def get_process_config() -> Dict[str, Dict[str, str]]:
+    """Return the full process config dict (color + label per canonical process)."""
+    return _PROCESS_CONFIG
+
+
+def get_background_color_map(sample_names: List[str]) -> Dict[str, str]:
+    """Assign CMS palette colors to known processes; cycle _PALETTE for unknowns."""
+    color_map: Dict[str, str] = {}
+    palette_idx = len(_PROCESS_CONFIG)
+    for name in sorted({simplify_sample_label(n) for n in sample_names}):
+        cfg = _PROCESS_CONFIG.get(name)
+        if cfg:
+            color_map[name] = cfg["color"]
+        else:
+            color_map[name] = _PALETTE[palette_idx % len(_PALETTE)]
+            palette_idx += 1
+    return color_map
 
 
 class CMSPlotStyle:
@@ -58,48 +215,14 @@ class CMSPlotStyle:
         }
 
     def set_style(self):
-        """Set matplotlib style to CMS-like appearance."""
+        """Apply CMS plot style via mplhep (or plain default as fallback)."""
         if _HAS_MPLHEP:
             plt.style.use(hep.style.CMS)
         else:
             plt.style.use('default')
-
-        # Set font
-        plt.rcParams['font.family'] = 'serif'
-        plt.rcParams['font.serif'] = ['Times New Roman', 'DejaVu Serif']
-        plt.rcParams['font.size'] = self.font_sizes['tick_label']
-
-        # Set figure properties
-        plt.rcParams['figure.figsize'] = (10, 8)
-        plt.rcParams['figure.dpi'] = 100
-        plt.rcParams['savefig.dpi'] = 300
-        plt.rcParams['savefig.bbox'] = 'tight'
-
-        # Set axis properties
-        plt.rcParams['axes.linewidth'] = 1.2
-        plt.rcParams['axes.grid'] = True
-        plt.rcParams['grid.alpha'] = 0.3
-        plt.rcParams['grid.linewidth'] = 0.8
-
-        # Set legend properties
-        plt.rcParams['legend.frameon'] = True
-        plt.rcParams['legend.fancybox'] = False
-        plt.rcParams['legend.shadow'] = False
-        plt.rcParams['legend.numpoints'] = 1
-        plt.rcParams['legend.scatterpoints'] = 1
-
-        # Set line properties
-        plt.rcParams['lines.linewidth'] = 2.0
-        plt.rcParams['lines.markersize'] = 6
-
-        # Set tick properties
+        # CMS requires inward ticks — the only override needed on top of hep.style.CMS
         plt.rcParams['xtick.direction'] = 'in'
         plt.rcParams['ytick.direction'] = 'in'
-        plt.rcParams['xtick.major.size'] = 6
-        plt.rcParams['ytick.major.size'] = 6
-        plt.rcParams['xtick.minor.size'] = 3
-        plt.rcParams['ytick.minor.size'] = 3
-
         logging.info("CMS plot style applied" + (" (mplhep)" if _HAS_MPLHEP else " (matplotlib)"))
 
     def get_color(self, name: str) -> str:
@@ -120,53 +243,13 @@ class CMSPlotStyle:
 
 
 def get_process_colors() -> Dict[str, str]:
-    """
-    Get color scheme for different physics processes.
-
-    Returns:
-        Dictionary of process colors
-    """
-    return {
-        'data': '#000000',
-        'signal': '#ff0000',
-        'ttbar': '#1f77b4',
-        'wjets': '#ff7f0e',
-        'zjets': '#2ca02c',
-        'qcd': '#d62728',
-        'st': '#9467bd',
-        'diboson': '#8c564b',
-        'triboson': '#e377c2',
-        'other': '#7f7f7f',
-        'dyto2l': '#2ca02c',      # Z-jets color
-        'ttto2l2nu': '#1f77b4',   # ttbar color
-        'wtolnu': '#ff7f0e',      # W-jets color
-        'zto2nu': '#98df8a',      # A distinct lighter green for Z to 2Nu
-    }
+    """CMS-approved colors keyed by canonical process name."""
+    return {k: v["color"] for k, v in _PROCESS_CONFIG.items()}
 
 
 def get_process_labels() -> Dict[str, str]:
-    """
-    Get labels for different physics processes.
-
-    Returns:
-        Dictionary of process labels
-    """
-    return {
-        'data': 'Data',
-        'signal': 'Signal',
-        'ttbar': 't#bar{t}',
-        'wjets': 'W+jets',
-        'zjets': 'Z+jets',
-        'qcd': 'QCD',
-        'st': 'Single top',
-        'diboson': 'Diboson',
-        'triboson': 'Triboson',
-        'other': 'Other',
-        'dyto2l': 'DY to 2L',
-        'ttto2l2nu': 'tt to 2L2Nu',
-        'wtolnu': 'W to LNu',
-        'zto2nu': 'Z to 2Nu',
-    }
+    """LaTeX labels keyed by canonical process name."""
+    return {k: v["label"] for k, v in _PROCESS_CONFIG.items()}
 
 
 def get_region_colors() -> Dict[str, str]:

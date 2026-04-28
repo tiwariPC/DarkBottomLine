@@ -759,7 +759,7 @@ def _make_bins(all_values: Sequence[np.ndarray], n_bins: int, variable: Optional
     if reference_bins is not None:
         return reference_bins
 
-    valid_arrays = [arr[np.isfinite(arr)] for arr in all_values if arr.size > 0]
+    valid_arrays = [arr[np.isfinite(arr) & (arr != _SENTINEL)] for arr in all_values if arr.size > 0]
     if not valid_arrays:
         return None
 
@@ -950,9 +950,13 @@ def _variable_unit(variable: str) -> str:
     return "arb. unit"
 
 
+_SENTINEL = -9.0
+
+
 def _apply_variable_plot_filter(variable: str, values: np.ndarray) -> np.ndarray:
     if values.size == 0:
         return values
+    values = values[values != _SENTINEL]
     if variable.lower().endswith("met_pt"):
         return values[values >= 100.0]
     return values

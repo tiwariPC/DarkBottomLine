@@ -561,18 +561,9 @@ class DarkBottomLineAnalyzer:
         events: ak.Array,
         objects: Dict[str, Any]
     ) -> Optional[ak.Array]:
-        """
-        Apply DNN to events (placeholder implementation).
-
-        Args:
-            events: Awkward Array of events
-            objects: Dictionary containing selected objects
-
-        Returns:
-            DNN scores or None if DNN not available
-        """
-        # Placeholder for DNN application
-        # In real implementation, this would load and apply the trained DNN model
+        """Return per-event DNN scores from ml_score field if present, else None."""
+        if "ml_score" in events.fields:
+            return events["ml_score"]
         return None
 
     def _fill_region_histograms(
@@ -649,9 +640,13 @@ class DarkBottomLineAnalyzer:
                         w = w_full[mask_np].astype(np.float64)
                     except (Exception, BaseException):
                         w = np.ones(n_r, dtype=np.float64)
-                    filled_histograms[region_name] = self.histogram_manager.fill_histograms(
+                    filled = self.histogram_manager.fill_histograms(
                         region_events, region_objects, w
                     )
+                    if "ml_score" in region_events.fields and "dnn_score" in filled:
+                        scores = np.clip(ak.to_numpy(region_events["ml_score"]).astype("f8"), 0., 1.)
+                        filled["dnn_score"].fill(dnn_score=scores, weight=w)
+                    filled_histograms[region_name] = filled
                 else:
                     filled_histograms[region_name] = self.histogram_manager.define_histograms()
 

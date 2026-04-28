@@ -79,13 +79,34 @@ def _resolve_group_key(file_path: Path, marker: str) -> str:
     return no_suffix if no_suffix != stem else "ALL_FILES"
 
 
-def _collect_tasks(input_dirs: Sequence[Path], output_dir: Path, marker: str) -> List[MergeTask]:
+def _output_stem(group_key: str, marker: str, strip_marker: bool) -> str:
+    """Return the output file stem for a group key.
+
+    strip_marker=True: 'WtoLNu-2Jets_PTLNu-100to250_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8_NANOAODSIM'
+                     → 'WtoLNu-2Jets_PTLNu-100to250_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8'
+    """
+    if strip_marker and marker in group_key:
+        idx = group_key.find(marker)
+        stem = group_key[:idx].rstrip("_-")
+        return stem if stem else group_key
+    return group_key
+
+
+def _collect_tasks(
+    input_dirs: Sequence[Path],
+    output_dir: Path,
+    marker: str,
+    file_filter: "set[Path] | None" = None,
+    strip_marker: bool = True,
+) -> List[MergeTask]:
     tasks: List[MergeTask] = []
     for in_dir in input_dirs:
         if not in_dir.is_dir():
             raise FileNotFoundError(f"Input directory does not exist: {in_dir}")
 
         root_files = sorted(p for p in in_dir.iterdir() if p.is_file() and p.suffix == ".root")
+        if file_filter is not None:
+            root_files = [p for p in root_files if p in file_filter]
         if not root_files:
             continue
 
@@ -94,12 +115,12 @@ def _collect_tasks(input_dirs: Sequence[Path], output_dir: Path, marker: str) ->
             key = _resolve_group_key(f, marker)
             groups.setdefault(key, []).append(f)
 
-        sub_out = output_dir / in_dir.name
-        sub_out.mkdir(parents=True, exist_ok=True)
+        output_dir.mkdir(parents=True, exist_ok=True)
         for key, files in sorted(groups.items()):
             input_bytes = sum((f.stat().st_size for f in files), 0)
-            out_root = sub_out / f"{key}.root"
-            out_json = sub_out / f"{key}.metadata_sum.json"
+            stem = _output_stem(key, marker, strip_marker)
+            out_root = output_dir / f"{stem}.root"
+            out_json = output_dir / f"{stem}.metadata_sum.json"
             tasks.append(
                 MergeTask(
                     folder=in_dir,
@@ -113,18 +134,67 @@ def _collect_tasks(input_dirs: Sequence[Path], output_dir: Path, marker: str) ->
     return tasks
 
 
-def _hadd_merge(task: MergeTask, dry_run: bool = False) -> None:
-    cmd = ["hadd", "-f", "-k", str(task.output_root)] + [str(p) for p in task.files]
+_HADD_CHUNK_SIZE = 500  # max files per hadd invocation to stay well under ARG_MAX
+
+
+def _hadd_one_shot(output: Path, inputs: List[Path]) -> None:
+    """Single hadd call — caller must ensure len(inputs) is safe."""
+    cmd = ["hadd", "-f", "-k", "-O", str(output)] + [str(p) for p in inputs]
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"hadd failed for {output.name}:\n{proc.stdout}")
+
+
+def _hadd_merge(task: MergeTask, dry_run: bool = False, chunk_size: int = _HADD_CHUNK_SIZE) -> None:
+    """Merge task.files into task.output_root using chunked tree-merge if needed.
+
+    When len(files) > chunk_size, files are merged in batches into temporary
+    intermediates, then those intermediates are merged into the final output.
+    This avoids ARG_MAX overflows on EOS paths with >~500 files.
+    """
+    files = list(task.files)
     if dry_run:
-        print("[DRY-RUN]", " ".join(cmd))
+        n_chunks = max(1, (len(files) + chunk_size - 1) // chunk_size)
+        if n_chunks > 1:
+            print(f"[DRY-RUN] chunked merge: {len(files)} files → {n_chunks} chunks → {task.output_root}")
+        else:
+            cmd = ["hadd", "-f", "-k", "-O", str(task.output_root)] + [str(p) for p in files]
+            print("[DRY-RUN]", " ".join(cmd))
         return
 
     task.output_root.parent.mkdir(parents=True, exist_ok=True)
-    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"hadd failed for {task.output_root.name} (folder={task.folder.name}):\n{proc.stdout}"
-        )
+
+    if len(files) <= chunk_size:
+        _hadd_one_shot(task.output_root, files)
+        return
+
+    # Tree merge: batch → intermediates → final
+    chunks = [files[i : i + chunk_size] for i in range(0, len(files), chunk_size)]
+    tmp_dir = task.output_root.parent / f"_chunks_{task.group_key}"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    intermediates: List[Path] = []
+    try:
+        for idx, chunk in enumerate(chunks):
+            inter = tmp_dir / f"chunk_{idx:04d}.root"
+            _hadd_one_shot(inter, chunk)
+            intermediates.append(inter)
+        # Final merge of intermediates (always ≤ chunk_size since each original chunk
+        # is one file now; if somehow intermediates > chunk_size, recurse once more)
+        if len(intermediates) <= chunk_size:
+            _hadd_one_shot(task.output_root, intermediates)
+        else:
+            # Second level (handles up to chunk_size² ≈ 250 000 files)
+            second_chunks = [intermediates[i : i + chunk_size] for i in range(0, len(intermediates), chunk_size)]
+            level2: List[Path] = []
+            for idx2, schunk in enumerate(second_chunks):
+                inter2 = tmp_dir / f"level2_{idx2:04d}.root"
+                _hadd_one_shot(inter2, schunk)
+                level2.append(inter2)
+            _hadd_one_shot(task.output_root, level2)
+    finally:
+        import shutil as _shutil
+        if tmp_dir.exists():
+            _shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 def _probe_hadd_merge(files: Sequence[Path], workdir: Path, label: str) -> bool:
@@ -382,6 +452,95 @@ def _run_one_task(
     return f"{task.folder.name}/{task.group_key} -> {task.output_root} ({len(working_task.files)} files{skip_note}{filter_note})"
 
 
+def _load_process_groups(path: str) -> Dict[str, List[str]]:
+    """Load process group pattern mapping from a YAML or JSON file.
+
+    Returns {group_name: [pattern, ...]} for all groups that have a 'patterns' key.
+    Supports plotting.yaml format (process_groups section) and plain JSON dicts.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Process groups file not found: {path}")
+
+    raw: dict
+    if p.suffix in (".yaml", ".yml"):
+        try:
+            import yaml  # type: ignore
+        except ImportError as exc:
+            raise RuntimeError("PyYAML required for --process-groups yaml: pip install pyyaml") from exc
+        with p.open() as f:
+            raw = yaml.safe_load(f)
+        # Support plotting.yaml with top-level 'process_groups' section
+        if "process_groups" in raw:
+            raw = raw["process_groups"]
+    else:
+        with p.open() as f:
+            raw = json.load(f)
+
+    groups: Dict[str, List[str]] = {}
+    for name, cfg in raw.items():
+        if isinstance(cfg, dict):
+            patterns = cfg.get("patterns") or cfg.get("files") or []
+        elif isinstance(cfg, list):
+            patterns = cfg
+        else:
+            continue
+        if patterns:
+            groups[name] = [str(pt) for pt in patterns]
+    return groups
+
+
+def _collect_process_group_tasks(
+    merged_dir: Path,
+    output_dir: Path,
+    process_groups: Dict[str, List[str]],
+) -> List[MergeTask]:
+    """Scan merged_dir for .root files and group them by process_groups patterns.
+
+    Each group produces one MergeTask whose output is output_dir/{group_name}.root.
+    Files not matched by any group are reported as warnings.
+    """
+    all_roots = sorted(p for p in merged_dir.rglob("*.root") if p.is_file())
+    if not all_roots:
+        return []
+
+    assigned: set[Path] = set()
+    tasks: List[MergeTask] = []
+
+    for group_name, patterns in process_groups.items():
+        matched: List[Path] = []
+        for p in all_roots:
+            if p in assigned:
+                continue
+            if any(pat in p.name for pat in patterns):
+                matched.append(p)
+                assigned.add(p)
+        if not matched:
+            print(f"[WARN] process group '{group_name}': no files matched patterns {patterns}")
+            continue
+        input_bytes = sum(f.stat().st_size for f in matched)
+        out_root = output_dir / f"{group_name}.root"
+        out_json = output_dir / f"{group_name}.metadata_sum.json"
+        tasks.append(MergeTask(
+            folder=merged_dir,
+            group_key=group_name,
+            files=sorted(matched),
+            input_bytes=input_bytes,
+            output_root=out_root,
+            output_meta_json=out_json,
+        ))
+
+    unmatched = [p for p in all_roots if p not in assigned]
+    if unmatched:
+        print(f"[WARN] {len(unmatched)} file(s) not assigned to any process group:")
+        for u in unmatched[:10]:
+            print(f"  {u.name}")
+        if len(unmatched) > 10:
+            print(f"  ... and {len(unmatched) - 10} more")
+
+    return tasks
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -450,77 +609,146 @@ def _parse_args() -> argparse.Namespace:
             "Set <=0 to disable this limiter."
         ),
     )
+    parser.add_argument(
+        "--process-groups",
+        default=None,
+        metavar="FILE",
+        help=(
+            "YAML or JSON file mapping process group names to filename patterns "
+            "(e.g. configs/plotting.yaml). When provided, a second merge pass "
+            "combines per-sample merged files into one file per process group. "
+            "Accepts plotting.yaml directly (reads process_groups section)."
+        ),
+    )
+    parser.add_argument(
+        "--strip-marker",
+        action="store_true",
+        default=True,
+        help=(
+            "Strip the marker token (and everything after it) from the output filename, "
+            "e.g. WtoLNu-2Jets_PTLNu-100to250_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8_NANOAODSIM-abc.root "
+            "→ WtoLNu-2Jets_PTLNu-100to250_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8.root (default: true)."
+        ),
+    )
+    parser.add_argument(
+        "--no-strip-marker",
+        dest="strip_marker",
+        action="store_false",
+        help="Keep the marker token in output filenames.",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Only print planned hadd commands.")
     return parser.parse_args()
 
 
-def _resolve_input_dirs(input_dirs: Sequence[str], input_root: str | None) -> List[Path]:
+def _resolve_input_dirs(
+    input_dirs: Sequence[str], input_root: str | None
+) -> "tuple[List[Path], set[Path] | None]":
+    """Return (dirs, file_filter).
+
+    file_filter is None when all files in the dirs should be included.
+    When --input-root is a glob of .root files, file_filter contains only
+    the matched files so that _collect_tasks ignores siblings.
+    """
     if input_dirs:
-        return [Path(p).expanduser().resolve() for p in input_dirs]
+        return [Path(p).expanduser().resolve() for p in input_dirs], None
 
     if input_root is None:
         raise ValueError("Provide either --input-dir (one or more) or --input-root.")
+
+    raw = str(input_root)
+    if "*" in raw or "?" in raw:
+        from glob import glob as _glob
+        matches = sorted(_glob(os.path.expanduser(raw)))
+        if not matches:
+            raise FileNotFoundError(f"--input-root glob matched nothing: {raw}")
+        files = [Path(m).resolve() for m in matches if Path(m).is_file() and Path(m).suffix == ".root"]
+        dirs = sorted(set(Path(m).resolve() for m in matches if Path(m).is_dir()))
+        if files:
+            parent_dirs: List[Path] = list(dict.fromkeys(f.parent for f in files))
+            return parent_dirs, set(files)
+        return dirs, None
 
     root = Path(input_root).expanduser().resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"input-root does not exist: {root}")
 
-    return sorted(p for p in root.iterdir() if p.is_dir())
+    return sorted(p for p in root.iterdir() if p.is_dir()), None
 
 
 def main() -> int:
     args = _parse_args()
     _check_hadd_exists()
 
-    input_dirs = _resolve_input_dirs(args.input_dir, args.input_root)
+    input_dirs, file_filter = _resolve_input_dirs(args.input_dir, args.input_root)
     output_dir = Path(args.output_dir).expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    work_dir = Path(args.work_dir).expanduser().resolve() if args.work_dir else Path("/eos/home-x/xdu/dbl_praveen/DarkBottomLine/.merge_root_hadd")
+    if args.work_dir:
+        work_dir = Path(args.work_dir).expanduser().resolve()
+    else:
+        work_dir = Path.cwd() / ".merge_root_hadd"
     work_dir.mkdir(parents=True, exist_ok=True)
     staging_budget = None
     if args.max_staging_gb > 0:
         staging_budget = _ByteBudget(int(args.max_staging_gb * 1024**3))
 
-    tasks = _collect_tasks(input_dirs, output_dir, args.marker)
+    tasks = _collect_tasks(
+        input_dirs, output_dir, args.marker,
+        file_filter=file_filter, strip_marker=args.strip_marker,
+    )
     if not tasks:
         print("No ROOT files found to merge.")
         return 0
 
     print(f"Planned merge tasks: {len(tasks)}")
     for t in tasks:
-        print(f"  - {t.folder.name}/{t.group_key}: {len(t.files)} files")
+        print(f"  - {t.folder.name}/{t.group_key}: {len(t.files)} files → {t.output_root.name}")
     if args.recoil_min is not None:
-        print(
-            f"Post-merge recoil filter enabled: {args.recoil_branch} >= {args.recoil_min:g}"
-        )
+        print(f"Post-merge recoil filter enabled: {args.recoil_branch} >= {args.recoil_min:g}")
 
     failures: List[str] = []
-    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
-        future_map = {
-            pool.submit(
-                _run_one_task,
-                task,
-                args.dry_run,
-                args.recoil_min,
-                args.recoil_branch,
-                work_dir,
-                staging_budget,
-            ): task
-            for task in tasks
-        }
-        for fut in as_completed(future_map):
-            task = future_map[fut]
-            try:
-                msg = fut.result()
-                print(f"[OK] {msg}")
-            except Exception as exc:
-                failure = f"[FAIL] {task.folder.name}/{task.group_key}: {exc}"
-                print(failure)
-                failures.append(failure)
 
+    def _run_tasks(task_list: List[MergeTask]) -> List[str]:
+        errs: List[str] = []
+        with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+            future_map = {
+                pool.submit(
+                    _run_one_task, task, args.dry_run,
+                    args.recoil_min, args.recoil_branch, work_dir, staging_budget,
+                ): task
+                for task in task_list
+            }
+            for fut in as_completed(future_map):
+                task = future_map[fut]
+                try:
+                    print(f"[OK] {fut.result()}")
+                except Exception as exc:
+                    msg = f"[FAIL] {task.folder.name}/{task.group_key}: {exc}"
+                    print(msg)
+                    errs.append(msg)
+        return errs
+
+    failures = _run_tasks(tasks)
     if failures:
-        print(f"\nCompleted with {len(failures)} failure(s).")
+        print(f"\nPass 1 completed with {len(failures)} failure(s).")
         return 2
+
+    # --- Pass 2: group merged per-sample files into process groups ---
+    if args.process_groups:
+        process_groups = _load_process_groups(args.process_groups)
+        # Scan all output subdirs produced by pass 1
+        pg_output_dir = output_dir / "process_groups"
+        pg_output_dir.mkdir(parents=True, exist_ok=True)
+        pg_tasks = _collect_process_group_tasks(output_dir, pg_output_dir, process_groups)
+        if pg_tasks:
+            print(f"\nProcess group merge tasks: {len(pg_tasks)}")
+            for t in pg_tasks:
+                print(f"  - {t.group_key}: {len(t.files)} files → {t.output_root.name}")
+            failures = _run_tasks(pg_tasks)
+            if failures:
+                print(f"\nPass 2 completed with {len(failures)} failure(s).")
+                return 2
+        else:
+            print("\n[WARN] --process-groups provided but no tasks created.")
 
     print("\nAll merge tasks completed successfully.")
     if not args.dry_run:
