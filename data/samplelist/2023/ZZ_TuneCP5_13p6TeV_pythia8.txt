@@ -1,0 +1,11 @@
+root://cms-xrd-global.cern.ch//store/mc/Run3Summer23NanoAODv12/ZZ_TuneCP5_13p6TeV_pythia8/NANOAODSIM/130X_mcRun3_2023_realistic_v14-v2/2530000/db849b8f-8c94-44c8-a5c4-7b640f9b5af8.root
+root://cms-xrd-global.cern.ch//store/mc/Run3Summer23NanoAODv12/ZZ_TuneCP5_13p6TeV_pythia8/NANOAODSIM/130X_mcRun3_2023_realistic_v14-v2/2530000/84c61542-37e3-4877-81fa-e60b93904f4a.root
+root://cms-xrd-global.cern.ch//store/mc/Run3Summer23NanoAODv12/ZZ_TuneCP5_13p6TeV_pythia8/NANOAODSIM/130X_mcRun3_2023_realistic_v14-v2/2530000/919cd783-56e4-497a-9075-bb8e522563b7.root
+root://cms-xrd-global.cern.ch//store/mc/Run3Summer23NanoAODv12/ZZ_TuneCP5_13p6TeV_pythia8/NANOAODSIM/130X_mcRun3_2023_realistic_v14-v2/2530000/8987a560-b82a-45a4-88ff-8a632c94b12b.root
+root://cms-xrd-global.cern.ch//store/mc/Run3Summer23NanoAODv12/ZZ_TuneCP5_13p6TeV_pythia8/NANOAODSIM/130X_mcRun3_2023_realistic_v14-v2/2530000/03883aea-25fc-40b4-8264-72164e863c0f.root
+root://cms-xrd-global.cern.ch//store/mc/Run3Summer23NanoAODv12/ZZ_TuneCP5_13p6TeV_pythia8/NANOAODSIM/130X_mcRun3_2023_realistic_v14-v2/2530000/1d47510b-0ddf-4b4f-83ea-66cb00e59594.root
+root://cms-xrd-global.cern.ch//store/mc/Run3Summer23NanoAODv12/ZZ_TuneCP5_13p6TeV_pythia8/NANOAODSIM/130X_mcRun3_2023_realistic_v14-v2/2530000/51a5217c-61c4-4deb-a719-b902b0d94508.root
+root://cms-xrd-global.cern.ch//store/mc/Run3Summer23NanoAODv12/ZZ_TuneCP5_13p6TeV_pythia8/NANOAODSIM/130X_mcRun3_2023_realistic_v14-v2/2530000/436397f6-fcc1-4b2e-9bd0-9aea8cf51080.root
+root://cms-xrd-global.cern.ch//store/mc/Run3Summer23NanoAODv12/ZZ_TuneCP5_13p6TeV_pythia8/NANOAODSIM/130X_mcRun3_2023_realistic_v14-v2/2530000/ea9c24fc-2973-4f04-8fbc-cd5e2750f125.root
+root://cms-xrd-global.cern.ch//store/mc/Run3Summer23NanoAODv12/ZZ_TuneCP5_13p6TeV_pythia8/NANOAODSIM/130X_mcRun3_2023_realistic_v14-v2/2530000/be3575bb-6a05-4808-9467-4b91f9892218.root
+root://cms-xrd-global.cern.ch//store/mc/Run3Summer23NanoAODv12/ZZ_TuneCP5_13p6TeV_pythia8/NANOAODSIM/130X_mcRun3_2023_realistic_v14-v2/2530000/18cd2c07-3b38-47ac-b144-65da63159752.root
