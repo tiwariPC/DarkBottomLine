@@ -193,32 +193,82 @@ When using a `.txt` file for input, list one file path per line. Empty lines and
 
 #### Step 2: Generate Plots
 
-Generate data/MC plots from the analysis results:
+Four plot commands are available depending on input type:
+
+**`make-plots`** — region histograms from `analyze` pkl output:
 
 ```bash
-# Generate plots from analysis results
-darkbottomline make-plots \
-    --input outputs/hists/regions_data.pkl \
-    --save-dir outputs \
-    --show-data
-
-# With custom plotting configuration
 darkbottomline make-plots \
     --input outputs/hists/regions_data.pkl \
     --save-dir outputs \
     --show-data \
-    --plot-config configs/plotting.yaml \
-    --version 20251105_1100
+    [--plot-config configs/plotting.yaml] \
+    [--version 20251105_1100]
 ```
 
-**Plotting Options:**
+**`make-event-plots`** — stacked MC+data from a folder of per-sample ROOT/PKL files:
 
-- `--input`: Input results pickle file
-- `--save-dir`: Base output directory (default: `outputs`)
-- `--show-data`: Include data points on plots
-- `--plot-config`: Plotting configuration file (default: `configs/plotting.yaml`)
-- `--version`: Version string for output directory (default: auto-generate timestamp)
-- `--regions`: Specific regions to plot (optional, default: all regions)
+```bash
+# event-selection mode (flat per-sample files)
+darkbottomline make-event-plots \
+    --mode event-selection \
+    --config configs/2024.yaml \
+    --input-folder outputs/event_selection/ \
+    --output-dir outputs/plots/ \
+    [--xsection-json scripts/xsection_background.json] \
+    [--process-groups configs/process_groups.json] \
+    [--variables met recoil] \
+    [--plot-config configs/plotting.yaml] \
+    [--save-root] \
+    [--version 20251105_1100]
+
+# region mode (region histogram PKL files)
+darkbottomline make-event-plots \
+    --mode region \
+    --config configs/2024.yaml \
+    --input-folder outputs/hists/ \
+    --output-dir outputs/plots/ \
+    [--xsection-json scripts/xsection_background.json] \
+    [--regions 1b:SR 2b:SR] \
+    [--variables met recoil] \
+    [--plot-config configs/plotting.yaml] \
+    [--version 20251105_1100]
+```
+
+**`make-stacked-plots`** — single-variable stacked plot from explicit pkl paths:
+
+```bash
+darkbottomline make-stacked-plots \
+    --data outputs/data.pkl \
+    --backgrounds outputs/wjets.pkl outputs/ttbar.pkl \
+    --signal outputs/signal.pkl \
+    --output outputs/plots/stacked_met.pdf \
+    --variable met \
+    --region 1b:SR \
+    [--xlabel "MET [GeV]"] \
+    [--title "CMS Preliminary  (13.6 TeV, 2024)"] \
+    [--plot-config configs/plotting.yaml]
+```
+
+**`make-single-plots`** — plots from a single pre-region analysis file (from `run` command):
+
+```bash
+darkbottomline make-single-plots \
+    --input outputs/hists/out.pkl \
+    --save-dir outputs \
+    --show-data \
+    [--plot-config configs/plotting.yaml] \
+    [--version 20251105_1100]
+```
+
+**Common plotting options:**
+
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--plot-config` | `configs/plotting.yaml` | Colors, exclusions, log scale |
+| `--version` | timestamp | Output subdirectory tag |
+| `--xsection-json` | — | JSON `{stem: xsec_pb}` for normalization |
+| `--save-root` | off | Also write ROOT TH1 files |
 
 #### Complete Workflow Example
 
@@ -778,6 +828,7 @@ git tag -a v2.0.1 -m "Release v2.0.1"
 git push forkssh development
 git push forkssh v2.0.1
 ```
+
 - **Developer Guide**: See `DEVELOPER_GUIDE.md` for a comprehensive guide on where to make changes (plotting, variables, histograms, regions, etc.)
 
 ## Contributing
