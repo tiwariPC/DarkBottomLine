@@ -380,23 +380,46 @@ def _load_histogram(path: Path, hist_key: str) -> Optional[Tuple[np.ndarray, np.
 
 def _get_weighted_total_events_from_root(path: Path) -> int:
     with uproot.open(path) as f:
-        # flat TH1 at root level
-        for _key in ("weighted_total_events", "weighted_total_events;1", "h_n_events_processed", "h_n_events_processed;1"):
+        # Flat TH1 at root level: prefer 'h_n_events_input' first, then processed/weighted keys
+        for _key in (
+            "h_n_events_input",
+            "h_n_events_input;1",
+            "h_n_events_processed",
+            "h_n_events_processed;1",
+            "weighted_total_events",
+            "weighted_total_events;1",
+        ):
             if _key in f:
                 try:
                     return int(round(float(f[_key].values()[0])))
                 except Exception:
                     pass
-        # Metadata tree fallback
+
+        # Metadata tree fallback: prefer Metadata.h_n_events_input, then
+        # Metadata.h_n_events_processed, then Metadata.weighted_total_events.
         if "Metadata" in f:
             meta = f["Metadata"]
             if hasattr(meta, "keys"):
-                # Prefer Metadata.h_n_events_processed if present (per user request),
-                # otherwise fall back to Metadata.weighted_total_events.
                 meta_keys = [str(k).split(";", 1)[0] for k in meta.keys()]
+
+                if "h_n_events_input" in meta_keys:
+                    try:
+                        node = meta["h_n_events_input"]
+                        try:
+                            arr = node.array(library="np")
+                            return int(np.sum(arr)) if len(arr) > 0 else 0
+                        except Exception:
+                            try:
+                                vals = node.values()
+                                if vals is not None:
+                                    return int(np.sum(vals))
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+
                 if "h_n_events_processed" in meta_keys:
                     try:
-                        # Metadata.h_n_events_processed may be a TTree branch or a TH1
                         node = meta["h_n_events_processed"]
                         try:
                             arr = node.array(library="np")
@@ -410,6 +433,7 @@ def _get_weighted_total_events_from_root(path: Path) -> int:
                                 pass
                     except Exception:
                         pass
+
                 if "weighted_total_events" in meta_keys:
                     try:
                         arr = meta["weighted_total_events"].array(library="np")

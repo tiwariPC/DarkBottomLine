@@ -246,10 +246,13 @@ def _load_single_root(path: Path, target_variables: Optional[Sequence[str]] = No
             except Exception as e:
                 print(f"Warning: Could not read branch {branch_name}: {e}")
 
-        # Get weighted_total_events — new format: flat TH1 at root level; legacy: Metadata TTree
+        # Get normalization events count. Prefer 'h_n_events_input' if present
+        # (new per-user request). Fall back to 'weighted_total_events' if not found.
         weighted_total_events = 0
         metadata_weighted_total_events_available = False
-        for _key in ('weighted_total_events', 'weighted_total_events;1'):
+
+        # Prefer flat TH1 'h_n_events_input' (root-level), then 'weighted_total_events'.
+        for _key in ('h_n_events_input', 'h_n_events_input;1', 'weighted_total_events', 'weighted_total_events;1'):
             if _key in f:
                 try:
                     weighted_total_events = int(round(float(f[_key].values()[0])))
@@ -257,12 +260,25 @@ def _load_single_root(path: Path, target_variables: Optional[Sequence[str]] = No
                     break
                 except Exception:
                     pass
+
+        # Metadata tree fallback: prefer Metadata.h_n_events_input, otherwise Metadata.weighted_total_events
         if not metadata_weighted_total_events_available and "Metadata" in f:
             meta_tree = f["Metadata"]
-            if "weighted_total_events" in meta_tree.keys():
-                weighted_total_events_arr = meta_tree["weighted_total_events"].array(library="np")
-                weighted_total_events = int(np.sum(weighted_total_events_arr)) if len(weighted_total_events_arr) > 0 else 0
-                metadata_weighted_total_events_available = weighted_total_events > 0
+            # try h_n_events_input first
+            if "h_n_events_input" in meta_tree.keys():
+                try:
+                    arr = meta_tree["h_n_events_input"].array(library="np")
+                    weighted_total_events = int(np.sum(arr)) if len(arr) > 0 else 0
+                    metadata_weighted_total_events_available = weighted_total_events > 0
+                except Exception:
+                    pass
+            if not metadata_weighted_total_events_available and "weighted_total_events" in meta_tree.keys():
+                try:
+                    weighted_total_events_arr = meta_tree["weighted_total_events"].array(library="np")
+                    weighted_total_events = int(np.sum(weighted_total_events_arr)) if len(weighted_total_events_arr) > 0 else 0
+                    metadata_weighted_total_events_available = weighted_total_events > 0
+                except Exception:
+                    pass
 
         # Do not fallback to selected entries for MC normalization.
         # If metadata is missing, keep weighted_total_events=0 and let caller decide whether to fail.
