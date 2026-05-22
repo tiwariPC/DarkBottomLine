@@ -202,6 +202,17 @@ def run_analyzer(args):
         is_txt_input = len(args.input) == 1 and args.input[0].endswith(".txt")
         input_files = _get_input_files(args.input)
 
+        input_total_events = None
+        try:
+            input_total_events = 0
+            for file_path in input_files:
+                tree = uproot.open(f"{file_path}:Events")
+                input_total_events += int(tree.num_entries)
+            logging.info(f"Computed input_total_events={input_total_events} from input files")
+        except Exception as e:
+            logging.warning(f"Could not compute input_total_events from input files: {e}")
+            input_total_events = None
+
         # -1 (or any negative) means "no limit" — treat as None throughout
         if args.max_events is not None and args.max_events < 0:
             args.max_events = None
@@ -290,7 +301,8 @@ def run_analyzer(args):
             coffea_analyzer = DarkBottomLineAnalyzerCoffeaProcessor(
                 config, regions_config_for_coffea, event_selection_output=args.event_selection_output,
                 event_selection_only=event_selection_only, output_format=output_format_to_use,
-                max_events=args.max_events, total_events=total_events
+                max_events=args.max_events, total_events=total_events,
+                input_total_events=input_total_events
             )
 
             if args.executor == "futures":
@@ -405,12 +417,12 @@ def run_analyzer(args):
                     analyzer = DarkBottomLineAnalyzer(config, None)  # No regions config needed for event selection only
                     results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                               event_selection_only=True, output_format=output_format_to_use,
-                                              total_events=total_events)
+                                              total_events=total_events, input_total_events=input_total_events)
                     logging.info(f"Event selection completed, saved to {args.event_selection_output}")
                 else:
                     results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                               event_selection_only=False, output_format=output_format_to_use,
-                                              total_events=total_events)
+                                              total_events=total_events, input_total_events=input_total_events)
                     outdir = os.path.dirname(args.output)
                     if outdir:
                         os.makedirs(outdir, exist_ok=True)
