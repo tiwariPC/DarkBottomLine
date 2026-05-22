@@ -404,6 +404,7 @@ class DarkBottomLineAnalyzer:
         self.accumulator["event_weights"] = event_weights_save
         self.accumulator["metadata"] = {
             "n_events_processed": len(events),
+            "weighted_total_events": weighted_total_events,
             "n_regions": len(self.region_manager.regions),
             "processing_time": processing_time
         }
@@ -1488,6 +1489,12 @@ if COFFEA_AVAILABLE:
                 except Exception as e:
                     logging.error(f"Failed to save accumulated event selection to {self.event_selection_output}: {e}", exc_info=True)
 
+            # Ensure weighted_total_events is in metadata before returning
+            if "metadata" not in accumulator:
+                accumulator["metadata"] = {}
+            if self.weighted_total_events is not None:
+                accumulator["metadata"]["weighted_total_events"] = self.weighted_total_events
+            
             return accumulator
 
         def _write_event_selection_root(
@@ -1560,3 +1567,5 @@ if COFFEA_AVAILABLE:
                         logging.info(f"Wrote Events tree with {n_selected} entries, {len(branches)} branches")
                     except Exception as e:
                         logging.error(f"Failed to write Events tree: {e}", exc_info=True)
+
+            return accumulator
