@@ -209,31 +209,41 @@ darkbottomline make-plots \
 **`make-event-plots`** — stacked MC+data from a folder of per-sample ROOT/PKL files:
 
 ```bash
-# event-selection mode (flat per-sample files)
+# event-selection mode (flat per-sample files, background only)
 darkbottomline make-event-plots \
     --mode event-selection \
     --config configs/2024.yaml \
     --input-folder outputs/event_selection/ \
     --output-dir outputs/plots/ \
-    [--xsection-json scripts/xsection_background.json] \
+    --xsection-json scripts/xsection_background.json \
     [--process-groups configs/process_groups.json] \
     [--variables met recoil] \
     [--plot-config configs/plotting.yaml] \
     [--save-root] \
     [--version 20251105_1100]
 
-# region mode (region histogram PKL files)
+# region mode — background + data + signal overlay with xsec normalization
+# Note: signal files must be split per masspoint (MH3_600_MH4_250_Mchi_1.root etc.)
+# Use --xsection-json pointing to xsection_background.json for backgrounds;
+# signal xsec is looked up from xsection_signal.json by filename stem = GenModel key.
 darkbottomline make-event-plots \
     --mode region \
     --config configs/2024.yaml \
-    --input-folder outputs/hists/ \
+    --input-folder outputs/event_selection/ \
     --output-dir outputs/plots/ \
-    [--xsection-json scripts/xsection_background.json] \
+    --xsection-json scripts/xsection_background.json \
     [--regions 1b:SR 2b:SR] \
     [--variables met recoil] \
     [--plot-config configs/plotting.yaml] \
     [--version 20251105_1100]
 ```
+
+> **Cross-section files:**
+>
+> - `scripts/xsection_background.json` — backgrounds, keyed by filename stem
+> - `scripts/xsection_signal.json` — 2HDMa Type-II signal, keyed by GenModel branch name (`MH3_600_MH4_250_Mchi_1` etc.)
+>
+> Signal cross-section lookup works only when signal files are split per mass point. GenModel splitting (`--split-by-genmodel`) is not yet implemented.
 
 **`make-stacked-plots`** — single-variable stacked plot from explicit pkl paths:
 
@@ -267,7 +277,7 @@ darkbottomline make-single-plots \
 |------|---------|-------|
 | `--plot-config` | `configs/plotting.yaml` | Colors, exclusions, log scale |
 | `--version` | timestamp | Output subdirectory tag |
-| `--xsection-json` | — | JSON `{stem: xsec_pb}` for normalization |
+| `--xsection-json` | — | JSON `{stem: xsec_pb}` — backgrounds use `xsection_background.json` |
 | `--save-root` | off | Also write ROOT TH1 files |
 
 #### Complete Workflow Example
