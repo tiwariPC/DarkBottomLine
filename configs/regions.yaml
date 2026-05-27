@@ -23,7 +23,6 @@ regions:
       Nbjets: "==1"
       Nmuons: "==1"
       Nelectrons: "==0"
-      Recoil: ">250"
       MET: ">100"
       MT: "<160"
       NAdditionalJets: "==0"
@@ -33,7 +32,6 @@ regions:
       Nbjets: "==1"
       Nelectrons: "==1"
       Nmuons: "==0"
-      Recoil: ">250"
       MET: ">100"
       MT: "<160"
       NAdditionalJets: "==0"
@@ -43,7 +41,6 @@ regions:
       Nbjets: "==2"
       Nmuons: "==1"
       Nelectrons: "==0"
-      Recoil: ">250"
       MT: "<160"
       NAdditionalJets: ">=1"
       Njets: ">=3"
@@ -53,7 +50,6 @@ regions:
       Nbjets: "==2"
       Nelectrons: "==1"
       Nmuons: "==0"
-      Recoil: ">250"
       MT: "<160"
       NAdditionalJets: ">=1"
       Njets: ">=3"
@@ -63,7 +59,6 @@ regions:
     cuts:
       NmuonsZ: "==2"
       NelectronsZ: "==0"
-      Recoil: ">250"
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=2"
@@ -72,7 +67,6 @@ regions:
     cuts:
       NelectronsZ: "==2"
       NmuonsZ: "==0"
-      Recoil: ">250"
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=2"
@@ -82,21 +76,19 @@ regions:
     cuts:
       NmuonsZ: "==2"
       NelectronsZ: "==0"
-      Recoil: ">250"
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=3"
-      NjetsMin: ">1"
+      NjetsMin: ">=2"
   "2b:CR_Zll_el":
     description: "Z+jets CR (2b) electron: 2 OS electrons, leading tight pt>30, subleading loose pt>10"
     cuts:
       NelectronsZ: "==2"
       NmuonsZ: "==0"
-      Recoil: ">250"
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=3"
-      NjetsMin: ">1"
+      NjetsMin: ">=2"
 
 # Global region settings
 settings:

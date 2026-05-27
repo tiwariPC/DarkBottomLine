@@ -193,39 +193,41 @@ When using a `.txt` file for input, list one file path per line. Empty lines and
 
 #### Step 2: Generate Plots
 
-Four plot commands are available depending on input type:
+Three plot commands are available depending on input type:
 
-**`make-plots`** — region histograms from `analyze` pkl output:
+**`make-plots`** — per-variable region plots from a single `analyze` pkl output (one process):
 
 ```bash
 darkbottomline make-plots \
-    --input outputs/hists/regions_data.pkl \
+    --input outputs/hists/regions_dy.pkl \
     --save-dir outputs \
     --show-data \
+    --config configs/2024.yaml \
+    [--xsection-json scripts/xsection_background.json] \
     [--plot-config configs/plotting.yaml] \
     [--version 20251105_1100]
 ```
 
-**`make-event-plots`** — stacked MC+data from a folder of per-sample ROOT/PKL files:
+> `--config` provides luminosity for `lumi × xsec / weighted_total_events` normalisation.
+> `--xsection-json` maps process name (from pkl metadata) to cross section in pb.
+> All four formats (PNG, PDF, ROOT, TXT/TEX yield tables) are written automatically.
+
+**`make-event-plots`** — stacked MC+data plots from a folder of per-sample ROOT/PKL files:
 
 ```bash
-# event-selection mode (flat per-sample files, background only)
+# event-selection mode — flat per-sample files, process_groups from plotting.yaml
 darkbottomline make-event-plots \
     --mode event-selection \
     --config configs/2024.yaml \
     --input-folder outputs/event_selection/ \
     --output-dir outputs/plots/ \
     --xsection-json scripts/xsection_background.json \
-    [--process-groups configs/process_groups.json] \
     [--variables met recoil] \
     [--plot-config configs/plotting.yaml] \
     [--save-root] \
     [--version 20251105_1100]
 
-# region mode — background + data + signal overlay with xsec normalization
-# Note: signal files must be split per masspoint (MH3_600_MH4_250_Mchi_1.root etc.)
-# Use --xsection-json pointing to xsection_background.json for backgrounds;
-# signal xsec is looked up from xsection_signal.json by filename stem = GenModel key.
+# region mode — region histogram PKLs, per-region stacked plots
 darkbottomline make-event-plots \
     --mode region \
     --config configs/2024.yaml \
@@ -238,12 +240,16 @@ darkbottomline make-event-plots \
     [--version 20251105_1100]
 ```
 
+> **Process grouping** is configured in `configs/plotting.yaml` under `process_groups`.
+> Each group has a `type` (`background`, `signal`, `data`), `color`, `label`, and `patterns` (substring match against filename).
+> Data groups have an optional `regions` list for routing MET/JetMET vs EGamma data to the correct regions.
+>
 > **Cross-section files:**
 >
 > - `scripts/xsection_background.json` — backgrounds, keyed by filename stem
-> - `scripts/xsection_signal.json` — 2HDMa Type-II signal, keyed by GenModel branch name (`MH3_600_MH4_250_Mchi_1` etc.)
+> - `scripts/xsection_signal.json` — 2HDMa Type-II signal, keyed by GenModel masspoint label (e.g. `MH3_600_MH4_250_Mchi_1`)
 >
-> Signal cross-section lookup works only when signal files are split per mass point. GenModel splitting (`--split-by-genmodel`) is not yet implemented.
+> Signal xsec lookup requires one ROOT file per masspoint. GenModel splitting (`--split-by-genmodel`) is not yet implemented.
 
 **`make-stacked-plots`** — single-variable stacked plot from explicit pkl paths:
 
@@ -260,25 +266,15 @@ darkbottomline make-stacked-plots \
     [--plot-config configs/plotting.yaml]
 ```
 
-**`make-single-plots`** — plots from a single pre-region analysis file (from `run` command):
-
-```bash
-darkbottomline make-single-plots \
-    --input outputs/hists/out.pkl \
-    --save-dir outputs \
-    --show-data \
-    [--plot-config configs/plotting.yaml] \
-    [--version 20251105_1100]
-```
-
 **Common plotting options:**
 
 | Flag | Default | Notes |
-|------|---------|-------|
-| `--plot-config` | `configs/plotting.yaml` | Colors, exclusions, log scale |
+| --- | --- | --- |
+| `--plot-config` | `configs/plotting.yaml` | Colors, exclusions, log scale, process groups |
+| `--config` | — | Year YAML — provides luminosity for normalisation |
+| `--xsection-json` | — | JSON `{stem: xsec_pb}` for lumi×xsec/wte scaling |
 | `--version` | timestamp | Output subdirectory tag |
-| `--xsection-json` | — | JSON `{stem: xsec_pb}` — backgrounds use `xsection_background.json` |
-| `--save-root` | off | Also write ROOT TH1 files |
+| `--save-root` | off | Also write ROOT TH1 files (`make-event-plots` only) |
 
 #### Complete Workflow Example
 
@@ -295,18 +291,19 @@ darkbottomline analyze \
     --input dy_inputs.txt \
     --output outputs/hists/regions_dy.pkl
 
-# 3. Generate plots
+# 3. Generate plots (lumi-normalised, all 4 formats)
 darkbottomline make-plots \
-    --input outputs/hists/regions_data.pkl \
+    --input outputs/hists/regions_dy.pkl \
     --save-dir outputs \
-    --show-data
+    --show-data \
+    --config configs/2024.yaml \
+    --xsection-json scripts/xsection_background.json
 
-# 4. Plots are saved in: outputs/plots/{version}/
-#    - PNG: outputs/plots/{version}/png/{category}/{region}/
-#    - PDF: outputs/plots/{version}/pdf/{category}/{region}/
-#    - ROOT: outputs/plots/{version}/root/
-#    - Text: outputs/plots/{version}/text/{category}/{region}/
-#    - Summary: outputs/plots/{version}/region_summary.{png,pdf}
+# 4. Plots saved in outputs/plots/{version}/
+#    - PNG:  outputs/plots/{version}/png/{category}/{region}/
+#    - PDF:  outputs/plots/{version}/pdf/{category}/{region}/
+#    - ROOT: outputs/plots/{version}/root/{category}_{region}_{var}.root
+#    - TXT/TEX yield tables: outputs/plots/{version}/text/{category}/{region}/
 ```
 
 ### Basic Usage (Simple Analysis)
@@ -342,10 +339,13 @@ darkbottomline run \
 
 **Plotting Commands:**
 
-- `make-plots`: Generate individual variable plots and grouped plots
-- `make-stacked-plots`: Generate stacked Data/MC plots with ratio
+- `make-plots`: Per-variable region plots from a single `analyze` pkl; all 4 formats (PNG/PDF/ROOT/TXT)
+- `make-event-plots`: Stacked MC+data from a folder of per-sample files; modes `event-selection` and `region`
+- `make-stacked-plots`: Single-variable stacked plot from explicit pkl paths
 - `--show-data`: Show data points on plots
-- `--plot-config`: Plotting configuration file
+- `--plot-config`: Plotting config (exclusions, log scale, process groups, bin edges)
+- `--config`: Year YAML for luminosity
+- `--xsection-json`: Cross-section JSON for lumi×xsec/wte normalisation
 - `--version`: Version string for output directory
 
 ### Example with Different Executors
@@ -625,7 +625,8 @@ outputs/plots/{version}/
 ├── pdf/ (same structure as png/)
 ├── text/ (same structure as png/)
 ├── root/
-│   ├── met.root (one file per variable)
+│   ├── 1b_SR_met.root
+│   ├── 2b_SR_recoil.root
 │   └── ...
 └── region_summary.{png,pdf}
 ```
@@ -638,14 +639,19 @@ outputs/plots/{version}/
   - `2b_Top_mu_lep1_pt.png`
   - `1b_Zll_mu_z_mass.png`
 
-**Plot Exclusions:**
+**Plot Exclusions (two layers):**
 
-- **1b SR**: Excludes jet3 plots and all lepton plots
-- **2b SR**: Excludes lepton plots (includes jet3)
-- **Top/W CRs**: Exclude `z_mass` and `z_pt` plots
-- **Z CRs**: Include `z_mass` and `z_pt` plots
+Hardcoded in `_get_excluded_variables_for_region` (`plotting.py`):
 
-See `configs/plotting.yaml` for configurable exclusions.
+- **All SRs**: all lepton variables excluded (`muon_pt/eta`, `electron_pt/eta`, `lep1/lep2 pt/phi`, `dphi_lep1_met`, `w_mass/pt`, `z_mass/pt`, `mll`, `mt`, `n_muons`, `n_electrons`, `dr_muon_jet`, `dr_electron_jet`)
+- **1b regions** (SR and CR): `jet3_pt/eta/phi`, `m_jet1jet3`, `isjet2_eta_match` excluded
+
+Configurable in `configs/plotting.yaml` under `region_exclusions` (per-channel CR entries):
+
+- `CR_Wlnu_mu` / `CR_Wlnu_el`: exclude wrong-flavour lepton and Z variables
+- `CR_Top_mu` / `CR_Top_el`: exclude Z variables, W-boson mass
+- `CR_Zll_mu` / `CR_Zll_el`: exclude W variables, `mt`, `dphi_lep1_met`
+- `"1b:SR"` / `"2b:SR"`: exclude `lep1/lep2 pt/phi`, `dphi_lep1_met` (not in hardcoded list)
 
 ## Validation
 
@@ -802,15 +808,26 @@ darkbottomline analyze \
     --input ${INPUT_DIR}/nano_signal.root \
     --output ${OUTPUT_DIR}/regions_signal.pkl
 
-# 2. Generate plots
+# 2. Generate per-variable region plots (single-process pkl, lumi-normalised)
 echo "Generating plots..."
 darkbottomline make-plots \
-    --input ${OUTPUT_DIR}/regions_data.pkl \
+    --input ${OUTPUT_DIR}/regions_dy.pkl \
     --save-dir outputs \
     --show-data \
+    --config $CONFIG \
+    --xsection-json scripts/xsection_background.json \
     --plot-config configs/plotting.yaml
 
+# 3. (Alternative) stacked MC+data plots from a folder of per-sample files
+# darkbottomline make-event-plots \
+#     --mode event-selection \
+#     --config $CONFIG \
+#     --input-folder outputs/event_selection/ \
+#     --output-dir outputs/plots/ \
+#     --xsection-json scripts/xsection_background.json
+
 echo "Analysis complete! Plots saved to outputs/plots/{version}/"
+echo "Formats: PNG, PDF, ROOT (TH1D), TXT/TEX yield tables"
 ```
 
 ## Documentation

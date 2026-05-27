@@ -850,6 +850,25 @@ def make_plots(args):
             plot_config = load_config(str(default_plot_config_path))
             logging.info(f"Loaded default plotting configuration from {default_plot_config_path}")
 
+    # Determine luminosity: prefer --config arg, fall back to metadata stored in pkl
+    luminosity = None
+    if getattr(args, "config", None):
+        year_cfg = load_config(args.config)
+        luminosity = float(year_cfg.get("lumi", 1.0))
+        logging.info(f"Luminosity from --config: {luminosity} fb-1")
+    if luminosity is None:
+        luminosity = float(results.get("metadata", {}).get("luminosity", 1.0))
+        if luminosity != 1.0:
+            logging.info(f"Luminosity from pkl metadata: {luminosity} fb-1")
+
+    # Load cross sections if provided
+    cross_sections = {}
+    if getattr(args, "xsection_json", None):
+        import json
+        with open(args.xsection_json) as _f:
+            cross_sections = json.load(_f)
+        logging.info(f"Loaded {len(cross_sections)} cross sections from {args.xsection_json}")
+
     # Initialize plot manager with config
     plot_manager = PlotManager(config=plot_config)
 
@@ -866,7 +885,8 @@ def make_plots(args):
 
     # Create plots with all formats automatically (PNG, PDF, ROOT, TXT)
     plot_files = plot_manager.create_all_plots(
-        results, args.save_dir, args.show_data, args.regions, version, formats=None
+        results, args.save_dir, args.show_data, args.regions, version,
+        formats=None, luminosity=luminosity, cross_sections=cross_sections,
     )
 
     logging.info(f"Plots saved to {args.save_dir}")
@@ -1372,6 +1392,8 @@ Examples:
     plots_parser.add_argument("--regions", nargs="+", help="List of regions to plot")
     plots_parser.add_argument("--version", help="Version string (default: auto-generate timestamp)")
     plots_parser.add_argument("--plot-config", help="Path to plotting configuration YAML file (default: configs/plotting.yaml)")
+    plots_parser.add_argument("--config", help="Year config YAML (e.g. configs/2024.yaml) — provides luminosity for histogram normalisation")
+    plots_parser.add_argument("--xsection-json", help="JSON file mapping process names to cross sections in pb — applies lumi×xsec/wte normalisation to region histograms")
     # All formats (PNG, PDF, ROOT, TXT) are generated automatically in batch mode
     plots_parser.set_defaults(func=make_plots)
 

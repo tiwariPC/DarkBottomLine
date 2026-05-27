@@ -246,22 +246,8 @@ class PlotManager:
             'n_pv', 'pu_npv'
         ])
 
-        # Region-specific exclusions from config
-        # Default exclusions: z_mass and z_pt from Top and W CRs
-        default_exclusions = {
-            "Top": ["z_mass", "z_pt"],
-            "Wlnu": ["z_mass", "z_pt"],
-            "Wenu": ["z_mass", "z_pt"],
-            "Wmunu": ["z_mass", "z_pt"],
-        }
+        # Region-specific exclusions — loaded entirely from plotting.yaml (no hardcoded defaults here)
         self.region_exclusions = self.config.get("region_exclusions", {})
-        # Merge with defaults (user config overrides defaults)
-        for key, value in default_exclusions.items():
-            if key not in self.region_exclusions:
-                self.region_exclusions[key] = value
-            else:
-                # Merge lists, avoiding duplicates
-                self.region_exclusions[key] = list(set(self.region_exclusions[key] + value))
 
         # Bin config from plotting.yaml
         self._variable_bins_cfg: Dict[str, Any] = self.config.get("variable_bins", {})
@@ -1544,7 +1530,9 @@ class PlotManager:
 
     def create_region_plots(self, results: Dict[str, Any], output_dir: str,
                           show_data: bool = True, regions: Optional[List[str]] = None,
-                          version: Optional[str] = None, formats: Optional[List[str]] = None) -> Dict[str, str]:
+                          version: Optional[str] = None, formats: Optional[List[str]] = None,
+                          luminosity: float = 1.0,
+                          cross_sections: Optional[Dict[str, float]] = None) -> Dict[str, str]:
         """
         Create plots for all regions.
 
@@ -1555,6 +1543,8 @@ class PlotManager:
             regions: List of regions to plot (None for all)
             version: Version string for multi-format output
             formats: List of output formats
+            luminosity: Integrated luminosity in fb-1
+            cross_sections: Dict mapping process name to xsec in pb (optional)
 
         Returns:
             Dictionary of plot file paths
@@ -1572,12 +1562,31 @@ class PlotManager:
         if regions is None:
             regions = list(results.get("region_histograms", {}).keys())
 
+        # Compute per-histogram scale: lumi * xsec * 1000 / weighted_total_events
+        # xsec is None for single-process pkls without --xsection-json
+        weighted_total_events = float(results.get("metadata", {}).get("weighted_total_events", 0.0))
+        process_name = str(results.get("metadata", {}).get("process", ""))
+        xsec = (cross_sections or {}).get(process_name)
+        if weighted_total_events > 0:
+            if xsec is not None:
+                hist_scale = (luminosity * xsec * 1000.0) / weighted_total_events
+            else:
+                hist_scale = luminosity / weighted_total_events
+            logging.info(
+                f"Region histogram scale: {hist_scale:.4g} "
+                f"(lumi={luminosity}, xsec={xsec}, wte={weighted_total_events:.0f})"
+            )
+        else:
+            hist_scale = 1.0
+            logging.warning("weighted_total_events=0 in metadata — histograms shown unnormalised")
+
         for region in regions:
             logging.info(f"Creating plots for region {region}")
 
             # Create individual variable plots - one plot per variable
             individual_plots = self._create_individual_variable_plots(
-                results, region, output_dir, show_data, version, formats
+                results, region, output_dir, show_data, version, formats,
+                hist_scale=hist_scale,
             )
 
             # Also create grouped plots (kinematic, multiplicity, dnn, region_comparison)
@@ -1617,22 +1626,22 @@ class PlotManager:
 
         excluded = []
 
-        # Jet3 variables to exclude
+        # Jet3 variables to exclude (names must match keys in histograms.py define_histograms)
         jet3_vars = [
-            'jet3_pt', 'jet3_eta', 'jet3_phi', 'jet3_btag',
-            'm_jet1jet3', 'deta_jet13', 'dphi_jet13', 'isjet2EtaMatch'
+            'jet3_pt', 'jet3_eta', 'jet3_phi',
+            'm_jet1jet3', 'isjet2_eta_match',
         ]
 
-        # Lepton variables to exclude (z_mass and z_pt excluded from SRs, and separately from Top/W CRs)
+        # Lepton variables excluded from SRs (must match histogram keys in histograms.py)
         lepton_vars = [
-            'muon_pt', 'muon_eta', 'muon_phi', 'muon_iso',
-            'electron_pt', 'electron_eta', 'electron_phi', 'electron_iso',
-            'lep1_pt', 'lep1_eta', 'lep1_phi', 'lep1_iso',
-            'lep2_pt', 'lep2_eta', 'lep2_phi', 'lep2_iso',
-            'dphi_lep1_met', 'dphi_lep2_met',
-            'w_mass', 'w_pt', 'z_mass', 'z_pt', 'mll', 'mt',  # Include z_mass and z_pt for SR exclusion
-            'n_muons', 'n_electrons', 'n_leptons',  # Multiplicity for SR
-            'dr_muon_jet', 'dr_electron_jet'
+            'muon_pt', 'muon_eta',
+            'electron_pt', 'electron_eta',
+            'lep1_pt', 'lep1_phi',
+            'lep2_pt', 'lep2_phi',
+            'dphi_lep1_met',
+            'w_mass', 'w_pt', 'z_mass', 'z_pt', 'mll', 'mt',
+            'n_muons', 'n_electrons',
+            'dr_muon_jet', 'dr_electron_jet',
         ]
 
         if is_sr:
@@ -1684,7 +1693,8 @@ class PlotManager:
 
     def _create_individual_variable_plots(self, results: Dict[str, Any], region: str,
                                           output_dir: str, show_data: bool,
-                                          version: str, formats: Optional[List[str]] = None) -> Dict[str, str]:
+                                          version: str, formats: Optional[List[str]] = None,
+                                          hist_scale: float = 1.0) -> Dict[str, str]:
         """
         Create individual plots for each variable in a region.
 
@@ -1728,6 +1738,11 @@ class PlotManager:
             if not should_exclude:
                 variables_to_plot.append(var_name)
 
+        # Parse region once — used for all variables
+        region_info = self._parse_region_name(region)
+        category = region_info["category"]
+        region_dir = region_info["region_dir"]
+
         # Create one plot per variable
         for var_name in variables_to_plot:
             try:
@@ -1735,14 +1750,37 @@ class PlotManager:
                 if hist_data is None:
                     continue
 
+                # --- Extract arrays from histogram object ---
+                if hasattr(hist_data, 'values') and hasattr(hist_data, 'axes'):
+                    _hv = np.asarray(hist_data.values(), dtype=float)
+                    _edges = np.asarray(hist_data.axes[0].edges, dtype=float)
+                    _hvar = hist_data.variances()
+                    _hs = np.asarray(_hvar, dtype=float) if _hvar is not None else np.zeros_like(_hv)
+                elif isinstance(hist_data, dict):
+                    _hv = np.asarray(hist_data.get('values', []), dtype=float)
+                    _edges = np.asarray(hist_data.get('bins', []), dtype=float)
+                    _errs = hist_data.get('errors', None)
+                    _hs = (np.asarray(_errs, dtype=float) ** 2
+                           if _errs is not None else np.zeros_like(_hv))
+                else:
+                    logging.warning("Unknown histogram format for %s in %s", var_name, region)
+                    continue
+
+                if _hv.size == 0 or _edges.size < 2:
+                    continue
+
+                # Apply lumi×xsec/wte scale
+                _hv_scaled = _hv * hist_scale
+                _hs_scaled = _hs * (hist_scale ** 2)
+
                 # Create figure with ratio panel
                 fig, (ax_main, ax_ratio) = plt.subplots(
                     2, 1, figsize=(10, 10),
                     gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.05}
                 )
 
-                # Plot histogram on main axis
-                self._plot_single_histogram(ax_main, hist_data, var_name, show_data)
+                # Plot histogram on main axis (apply lumi×xsec/wte scale)
+                self._plot_single_histogram(ax_main, hist_data, var_name, show_data, scale=hist_scale)
 
                 # Ratio panel (placeholder for now)
                 ax_ratio.set_xlabel(self._get_variable_label(var_name))
@@ -1751,11 +1789,6 @@ class PlotManager:
 
                 # Determine if this variable should use log scale
                 use_log_scale = var_name not in self.no_log_scale_vars
-
-                # Parse region to get category and region_dir for filename
-                region_info = self._parse_region_name(region)
-                category = region_info["category"]
-                region_dir = region_info["region_dir"]
 
                 # Create filename: {category}_{region}_{variable_name}
                 plot_filename = f"{category}_{region_dir}_{var_name}"
@@ -1785,6 +1818,29 @@ class PlotManager:
 
                 plt.close(fig)
 
+                # --- TXT + TEX yield tables ---
+                text_dir = (Path(output_dir) / "plots" / version / "text"
+                            / category / region_dir)
+                text_dir.mkdir(parents=True, exist_ok=True)
+                self._write_yield_table(
+                    text_dir / plot_filename,
+                    var_name,
+                    _edges,
+                    [("MC", _hv_scaled, _hs_scaled)],
+                    data_ndarray=None,
+                )
+
+                # --- ROOT output (uproot flat TH1D, one per variable) ---
+                root_dir = Path(output_dir) / "plots" / version / "root"
+                root_dir.mkdir(parents=True, exist_ok=True)
+                root_path = root_dir / f"{plot_filename}.root"
+                try:
+                    import uproot
+                    with uproot.recreate(str(root_path)) as rf:
+                        rf["mc"] = (_hv_scaled, _edges)
+                except Exception as _root_exc:
+                    logging.warning("ROOT write failed for %s: %s", plot_filename, _root_exc)
+
                 plot_files[var_name] = saved_files.get('png', '')
 
             except Exception as e:
@@ -1792,8 +1848,13 @@ class PlotManager:
 
         return plot_files
 
-    def _plot_single_histogram(self, ax, hist_data: Any, var_name: str, show_data: bool):
-        """Plot a single histogram on the given axis."""
+    def _plot_single_histogram(self, ax, hist_data: Any, var_name: str, show_data: bool,
+                               scale: float = 1.0):
+        """Plot a single histogram on the given axis.
+
+        scale = lumi * xsec * 1000 / weighted_total_events — applied after MC-SF weights
+        already baked into the histogram at fill time.
+        """
         # Extract values and edges from histogram
         if hasattr(hist_data, 'values') and hasattr(hist_data, 'axes'):
             values = hist_data.values()
@@ -1806,6 +1867,11 @@ class PlotManager:
         else:
             logging.warning(f"Unknown histogram format for {var_name}")
             return
+
+        # Apply lumi×xsec/wte normalisation (scale=1.0 → no change)
+        values = values * scale
+        if errors is not None:
+            errors = errors * scale
 
         # Plot histogram
         centers = (edges[:-1] + edges[1:]) / 2
@@ -2398,7 +2464,9 @@ class PlotManager:
 
     def create_all_plots(self, results: Dict[str, Any], output_dir: str,
                         show_data: bool = True, regions: Optional[List[str]] = None,
-                        version: Optional[str] = None, formats: Optional[List[str]] = None) -> Dict[str, str]:
+                        version: Optional[str] = None, formats: Optional[List[str]] = None,
+                        luminosity: float = 1.0,
+                        cross_sections: Optional[Dict[str, float]] = None) -> Dict[str, str]:
         """
         Create all types of plots.
 
@@ -2409,6 +2477,8 @@ class PlotManager:
             regions: List of regions to plot
             version: Version string for multi-format output
             formats: List of output formats
+            luminosity: Integrated luminosity in fb-1 for histogram normalisation
+            cross_sections: Dict mapping process name to xsec in pb (optional)
 
         Returns:
             Dictionary of all plot file paths
@@ -2423,11 +2493,24 @@ class PlotManager:
             version = datetime.now().strftime("%Y%m%d_%H%M")
 
         # Create region plots
-        region_plots = self.create_region_plots(results, output_dir, show_data, regions, version, formats)
+        region_plots = self.create_region_plots(
+            results, output_dir, show_data, regions, version, formats,
+            luminosity=luminosity, cross_sections=cross_sections,
+        )
         all_plots.update(region_plots)
 
-        # Create cutflow plot
-        if "cutflow" in results:
+        # Create cutflow plot — combine event-selection preselection steps with region counts
+        combined_cutflow = {}
+        if "event_selection_cutflow" in results and results["event_selection_cutflow"]:
+            combined_cutflow.update(results["event_selection_cutflow"])
+        if "region_cutflow" in results:
+            rc = results["region_cutflow"]
+            for region_name, rc_data in rc.get("regions", {}).items():
+                combined_cutflow[region_name] = int(rc_data.get("n_events", 0))
+        if combined_cutflow:
+            cutflow_plot = self.create_cutflow_plot(combined_cutflow, output_path)
+            all_plots["cutflow"] = cutflow_plot
+        elif "cutflow" in results:
             cutflow_plot = self.create_cutflow_plot(results["cutflow"], output_path)
             all_plots["cutflow"] = cutflow_plot
 

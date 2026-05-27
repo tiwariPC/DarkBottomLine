@@ -1,7 +1,8 @@
 # Plotting configuration for DarkBottomLine framework
 # This file allows you to customize which plots are generated for different regions and categories
 
-# Variables that should NOT use log scale (multiplicity plots, etc.)
+# Variables that should NOT use log scale
+# Includes: multiplicities (integer-valued), categorical discriminants, PU counts
 no_log_scale_vars:
   - n_jets
   - n_bjets
@@ -11,61 +12,115 @@ no_log_scale_vars:
   - n_leptons
   - n_pv
   - pu_npv
+  - prod_cat          # categorical integer
+  - isjet1_eta_match  # boolean flag (0/1)
+  - isjet2_eta_match  # boolean flag (0/1)
 
 # Region-specific variable exclusions
-# Format:
-#   "region_pattern": [list of variable names to exclude]
-#
 # Matching rules:
-#   1. Exact region match: "1b:SR" matches only the exact region "1b:SR"
-#   2. Pattern match: "Top" matches any region containing "Top" (e.g., "2b:CR_Top_mu")
-#   3. Category pattern: "1b:" matches all regions in 1b category
+#   1. Exact region match:   "1b:SR"  → only that region
+#   2. Substring match:      "Top"    → any region name containing "Top"
+#   3. Category pattern:     "1b:"    → all regions in the 1b category
 #
-# Default exclusions (already applied):
-#   - z_mass and z_pt are excluded from Top and W CRs
-#   - Lepton variables are excluded from SRs
-#   - Jet3 variables are excluded from 1b SR and 1b CRs
+# Hard-coded logic in _get_excluded_variables_for_region (not duplicated here):
+#   - SR:   all lepton vars (muon_pt/eta, electron_pt/eta, lep1/lep2, w_mass/pt,
+#           z_mass/pt, mll, mt, dphi_lep1_met, dr_muon_jet, dr_electron_jet,
+#           n_muons, n_electrons) are excluded automatically
+#   - 1b regions: jet3_pt/eta/phi excluded automatically
+#
+# Add here only what the hard-coded logic does NOT cover.
 
 region_exclusions:
-  # Exclude z_mass and z_pt from Top CRs (default - can be overridden)
-  SR:
+
+  # --- Signal regions ---
+  # lep1/lep2 and dphi_lep1_met not in hard-coded lepton_vars list → exclude explicitly
+  "1b:SR":
+    - lep1_pt
+    - lep1_phi
+    - lep2_pt
+    - lep2_phi
+    - dphi_lep1_met
+
+  "2b:SR":
+    - lep1_pt
+    - lep1_phi
+    - lep2_pt
+    - lep2_phi
+    - dphi_lep1_met
+
+  # --- W+jets CR (muon channel) ---
+  # Show: mt, w_mass, w_pt, muon kinematics
+  # Exclude: Z vars, electron vars, lep2 (single lepton required)
+  CR_Wlnu_mu:
     - z_mass
     - z_pt
+    - mll
+    - lep2_pt
+    - lep2_phi
+    - electron_pt
+    - electron_eta
 
-  Top:
+  # --- W+jets CR (electron channel) ---
+  # Show: mt, w_mass, w_pt, electron kinematics
+  # Exclude: Z vars, muon vars, lep2
+  CR_Wlnu_el:
     - z_mass
     - z_pt
+    - mll
+    - lep2_pt
+    - lep2_phi
+    - muon_pt
+    - muon_eta
 
-  # Exclude z_mass and z_pt from W CRs (default - can be overridden)
-  Wlnu:
+  # --- Top CR (muon channel) ---
+  # Show: mt, muon kinematics, jet multiplicity
+  # Exclude: Z vars, W-boson mass (use mt), electron vars, lep2
+  CR_Top_mu:
     - z_mass
     - z_pt
-  Wenu:
+    - mll
+    - w_mass
+    - w_pt
+    - lep2_pt
+    - lep2_phi
+    - electron_pt
+    - electron_eta
+
+  # --- Top CR (electron channel) ---
+  # Show: mt, electron kinematics, jet multiplicity
+  # Exclude: Z vars, W-boson mass, muon vars, lep2
+  CR_Top_el:
     - z_mass
     - z_pt
-  Wmunu:
-    - z_mass
-    - z_pt
+    - mll
+    - w_mass
+    - w_pt
+    - lep2_pt
+    - lep2_phi
+    - muon_pt
+    - muon_eta
 
-  # Example: Exclude additional variables from specific regions
-  # Uncomment and modify as needed:
-  # "1b:SR":
-  #   - jet3_pt
-  #   - jet3_eta
-  #   - m_jet1jet3
+  # --- Z+jets CR (muon channel) ---
+  # Show: mll, z_mass, z_pt, muon kinematics (lep1+lep2)
+  # Exclude: W vars, mt, dphi_lep1_met, electron vars
+  CR_Zll_mu:
+    - w_mass
+    - w_pt
+    - mt
+    - dphi_lep1_met
+    - electron_pt
+    - electron_eta
 
-  # "2b:SR":
-  #   - lep1_pt
-  #   - lep2_pt
-
-  # Example: Exclude variables from all regions in a category
-  # "1b:":
-  #   - some_variable
-
-  # Example: Exclude variables from all Z CRs
-  # Zll:
-  #   - w_mass
-  #   - w_pt
+  # --- Z+jets CR (electron channel) ---
+  # Show: mll, z_mass, z_pt, electron kinematics (lep1+lep2)
+  # Exclude: W vars, mt, dphi_lep1_met, muon vars
+  CR_Zll_el:
+    - w_mass
+    - w_pt
+    - mt
+    - dphi_lep1_met
+    - muon_pt
+    - muon_eta
 
 # Plot settings
 plot_settings:

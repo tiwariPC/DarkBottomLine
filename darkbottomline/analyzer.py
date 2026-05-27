@@ -152,6 +152,7 @@ class DarkBottomLineAnalyzer:
             "regions": {},
             "region_histograms": self.region_histograms,
             "region_cutflow": {},
+            "event_selection_cutflow": {},
             "region_validation": {},
             "metadata": {},
             "event_weights": {},
@@ -284,6 +285,8 @@ class DarkBottomLineAnalyzer:
         except Exception as e:
             logging.error(f"Preselection failed: {e}", exc_info=True)
             raise
+        # Store event-selection cutflow in accumulator so region plots can prepend it
+        self.accumulator["event_selection_cutflow"] = dict(cutflow)
 
         # Step 2: Compute corrections and nominal total weight (for histograms + saving)
         # NOTE: This must happen BEFORE saving event_selection_output to ensure event weights are corrected
@@ -400,12 +403,15 @@ class DarkBottomLineAnalyzer:
             events, objects, region_masks, event_weights_nominal
         )
         self.accumulator["region_cutflow"] = self._calculate_region_cutflow(region_masks)
+        # event_selection_cutflow already set after apply_selection above
         self.accumulator["region_validation"] = validation_results
         self.accumulator["event_weights"] = event_weights_save
         self.accumulator["metadata"] = {
             "n_events_processed": len(events),
             "n_regions": len(self.region_manager.regions),
-            "processing_time": processing_time
+            "processing_time": processing_time,
+            "weighted_total_events": float(weighted_total_events),
+            "luminosity": float(self.base_processor.config.get("lumi", 1.0)),
         }
 
         logging.info(f"Analysis completed in {processing_time:.2f} seconds")
@@ -882,6 +888,7 @@ if COFFEA_AVAILABLE:
                 "regions": processor.dict_accumulator({}),
                 "region_histograms": processor.dict_accumulator({}),
                 "region_cutflow": processor.dict_accumulator({}),
+                "event_selection_cutflow": processor.dict_accumulator({}),
                 "region_validation": processor.dict_accumulator({}),
                 "metadata": processor.dict_accumulator({}),
                 "event_weights": processor.dict_accumulator({}),
@@ -1144,8 +1151,8 @@ if COFFEA_AVAILABLE:
             chunk_id = f"{int(time.time() * 1000000)}_{uuid.uuid4().hex[:8]}"
             result_file = os.path.join(self._temp_dir, f"analysis_chunk_{chunk_id}.pkl")
             payload = {k: result[k] for k in ("regions", "region_histograms",
-                                               "region_cutflow", "region_validation",
-                                               "metadata") if k in result}
+                                               "region_cutflow", "event_selection_cutflow",
+                                               "region_validation", "metadata") if k in result}
             payload["weighted_total_events"] = float(chunk_h)
             try:
                 with open(result_file, "wb") as f:
@@ -1161,10 +1168,12 @@ if COFFEA_AVAILABLE:
                 "regions": {},
                 "region_histograms": {},
                 "region_cutflow": {"total_events": 0, "regions": {}},
+                "event_selection_cutflow": {},
                 "region_validation": {"status": "completed", "regions": {},
                                       "overlaps": {}, "warnings": []},
                 "metadata": {"n_events_processed": 0, "n_regions": 0,
-                             "processing_time": 0.0},
+                             "processing_time": 0.0, "weighted_total_events": 0.0,
+                             "luminosity": 0.0},
                 "weighted_total_events": 0.0,
             }
             for rf in sorted(result_files):
@@ -1211,6 +1220,12 @@ if COFFEA_AVAILABLE:
                             except Exception as e:
                                 logging.warning(f"Failed to merge histogram {hname}/{region}: {e}")
 
+                # event_selection_cutflow: sum per-step counts across chunks
+                for step, count in chunk.get("event_selection_cutflow", {}).items():
+                    merged["event_selection_cutflow"][step] = (
+                        int(merged["event_selection_cutflow"].get(step, 0)) + int(count)
+                    )
+
                 # region_cutflow: sum total_events and per-region n_events
                 cutflow = chunk.get("region_cutflow", {})
                 merged["region_cutflow"]["total_events"] += int(cutflow.get("total_events", 0))
@@ -1235,12 +1250,14 @@ if COFFEA_AVAILABLE:
                         )
                 merged["region_validation"]["warnings"].extend(validation.get("warnings", []))
 
-                # metadata: sum n_events_processed and processing_time
+                # metadata: sum n_events_processed and processing_time; take lumi from first chunk
                 meta = chunk.get("metadata", {})
                 merged["metadata"]["n_events_processed"] += int(meta.get("n_events_processed", 0))
                 merged["metadata"]["processing_time"] += float(meta.get("processing_time", 0.0))
                 if "n_regions" in meta:
                     merged["metadata"]["n_regions"] = meta["n_regions"]
+                if merged["metadata"]["luminosity"] == 0.0 and meta.get("luminosity", 0.0) > 0:
+                    merged["metadata"]["luminosity"] = float(meta["luminosity"])
 
                 # weighted_total_events: sum across all chunks
                 merged["weighted_total_events"] += float(chunk.get("weighted_total_events", 0.0))
@@ -1316,12 +1333,18 @@ if COFFEA_AVAILABLE:
                     accumulator["regions"] = merged_analysis["regions"]
                     accumulator["region_histograms"] = merged_analysis["region_histograms"]
                     accumulator["region_cutflow"] = merged_analysis["region_cutflow"]
+                    accumulator["event_selection_cutflow"] = merged_analysis["event_selection_cutflow"]
                     accumulator["region_validation"] = merged_analysis["region_validation"]
-                    accumulator["metadata"] = merged_analysis["metadata"]
                     # weighted_total_events is already set from wte_chunk files above;
                     # only fall back to analysis-chunk value if wte files were absent.
                     if self.weighted_total_events is None and merged_analysis.get("weighted_total_events"):
                         self.weighted_total_events = merged_analysis["weighted_total_events"]
+                    # Inject wte into metadata so region plots can normalise histograms
+                    merged_analysis["metadata"]["weighted_total_events"] = float(
+                        self.weighted_total_events or merged_analysis.get("weighted_total_events", 0.0)
+                    )
+                    # luminosity already in metadata from chunk merge (taken from first chunk)
+                    accumulator["metadata"] = merged_analysis["metadata"]
                     logging.info(f"Merged region analysis from {len(analysis_files)} chunks: "
                                  f"{len(merged_analysis['regions'])} regions, "
                                  f"{merged_analysis['metadata']['n_events_processed']} events processed")

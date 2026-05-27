@@ -140,7 +140,10 @@ class Region:
             return ak.fill_none(objects.get("recoil", ak.zeros_like(events.event, dtype=float)), 0.0)
         if var == "Nbjets":
             return self._safe_num_axis1(objects.get("bjets", ak.Array([])), n_ev)
-        if var == "Njets" or var == "NjetsMin":
+        if var == "Njets":
+            return self._safe_num_axis1(objects.get("jets", ak.Array([])), n_ev)
+        if var == "NjetsMin":
+            # Lower bound on jet multiplicity — same variable as Njets, distinct key for clarity
             return self._safe_num_axis1(objects.get("jets", ak.Array([])), n_ev)
         if var == "Jet1Pt":
             jets = objects.get("jets", ak.Array([]))
