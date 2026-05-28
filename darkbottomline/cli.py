@@ -1095,6 +1095,8 @@ def make_event_plots(args):
         variables=args.variables or None,
         regions=args.regions or None,
         save_root=args.save_root,
+        regions_config=getattr(args, "regions_config", None),
+        weight_systematic=getattr(args, "weight_systematic", None),
     )
     logging.info(f"make-event-plots: {len(out_files)} plot(s) written to {args.output_dir}")
 
@@ -1427,8 +1429,14 @@ Examples:
         help="Create stacked MC+data plots (event-selection or region mode)",
     )
     event_plots_parser.add_argument(
-        "--mode", required=True, choices=["event-selection", "region"],
-        help="Plot mode: event-selection (raw folder PKL/ROOT) or region (region histogram PKL)",
+        "--mode", required=True,
+        choices=["event-selection", "region", "region-from-events"],
+        help=(
+            "Plot mode: "
+            "event-selection (flat per-sample files → stacked variable plots), "
+            "region (region histogram PKLs from 'analyze'), "
+            "region-from-events (event-selected files → apply region cuts in-memory → stacked region plots)"
+        ),
     )
     event_plots_parser.add_argument("--config", required=True,
                                     help="Year config YAML (provides year + luminosity)")
@@ -1454,6 +1462,18 @@ Examples:
                                     help="Plotting YAML (default: configs/plotting.yaml)")
     event_plots_parser.add_argument("--version", default=None,
                                     help="Version tag for output subdirectory (default: timestamp)")
+    event_plots_parser.add_argument(
+        "--regions-config", default=None, metavar="YAML",
+        help="Path to regions.yaml — required for region-from-events mode",
+    )
+    event_plots_parser.add_argument(
+        "--weight-systematic", default=None, metavar="BRANCH",
+        help=(
+            "Weight branch to use instead of 'full_event_weight' (nominal). "
+            "E.g. 'weight_pileupUP', 'weight_btagDOWN'. "
+            "Only applies to region-from-events mode."
+        ),
+    )
     event_plots_parser.set_defaults(func=make_event_plots)
 
     # Make datacard command

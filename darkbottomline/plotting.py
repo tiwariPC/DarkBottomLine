@@ -1087,6 +1087,8 @@ class PlotManager:
         variables: Optional[List[str]] = None,
         regions: Optional[List[str]] = None,
         save_root: bool = False,
+        regions_config: Optional[str] = None,
+        weight_systematic: Optional[str] = None,
     ) -> List[str]:
         """Create stacked MC+data plots.
 
@@ -1095,11 +1097,18 @@ class PlotManager:
         signal_groups:  {label: [patterns]} for signal overlays (drawn as lines).
         data_groups:    {label: [patterns]} for data points (no xsec normalization).
         All groups resolved by substring pattern match against filenames in input_folder.
-        mode: "event-selection" | "region"
+        mode: "event-selection" | "region" | "region-from-events"
+        regions_config: path to regions.yaml (required for region-from-events mode)
+        weight_systematic: weight branch suffix for syst variation, e.g. "weight_pileupUP"
+                           (None = use full_event_weight nominal)
         """
-        if mode not in ("event-selection", "region"):
-            raise ValueError(f"Unknown mode '{mode}'. Use 'event-selection' or 'region'.")
+        if mode not in ("event-selection", "region", "region-from-events"):
+            raise ValueError(
+                f"Unknown mode '{mode}'. Use 'event-selection', 'region', or 'region-from-events'."
+            )
 
+        self._regions_config_path = regions_config
+        self._weight_systematic = weight_systematic
         cross_sections = cross_sections or {}
         signal_groups = signal_groups or {}
         data_groups = data_groups or {}
@@ -1119,7 +1128,7 @@ class PlotManager:
                 variables=variables,
                 save_root=save_root,
             ))
-        else:
+        elif mode == "region":
             created.extend(self._create_region_stacked_plots(
                 input_folder=input_folder,
                 process_groups=process_groups,
@@ -1133,6 +1142,22 @@ class PlotManager:
                 variables=variables,
                 regions=regions,
                 save_root=save_root,
+            ))
+        else:  # region-from-events
+            regions_config = getattr(self, "_regions_config_path", None)
+            created.extend(self._create_region_from_events_plots(
+                input_folder=input_folder,
+                process_groups=process_groups,
+                data_groups=data_groups,
+                output_dir=output_dir,
+                luminosity=luminosity,
+                year=year,
+                version=version,
+                cross_sections=cross_sections,
+                variables=variables,
+                regions=regions,
+                regions_config=regions_config,
+                weight_systematic=getattr(self, "_weight_systematic", None),
             ))
         return created
 
@@ -1422,6 +1447,251 @@ class PlotManager:
                 )
                 created.extend(files)
                 logging.info("Created region plot: %s / %s (%d files)", region, var, len(files))
+
+        return created
+
+    def _create_region_from_events_plots(
+        self,
+        input_folder: str,
+        process_groups: Dict[str, List[str]],
+        data_groups: Dict[str, List[str]],
+        output_dir: str,
+        luminosity: float,
+        year: str,
+        version: str,
+        cross_sections: Dict[str, float],
+        variables: Optional[List[str]],
+        regions: Optional[List[str]],
+        regions_config: Optional[str],
+        weight_systematic: Optional[str],
+    ) -> List[str]:
+        """Load event-selected ROOT/PKL files, apply region cuts in-memory, produce stacked region plots.
+
+        For each process group:
+          1. Load Events TTree + weighted_total_events from each matched file.
+          2. Apply region masks via RegionManager.
+          3. Fill per-variable histograms with full_event_weight (nominal) or weight_systematic.
+          4. Scale by lumi * xsec * 1000 / wte and stack across groups.
+        """
+        import uproot as _uproot
+        from .regions import RegionManager
+
+        if not regions_config:
+            raise ValueError(
+                "--regions-config is required for region-from-events mode"
+            )
+
+        # Build RegionManager from yaml
+        region_manager = RegionManager(regions_config)
+        all_region_names: List[str] = list(region_manager.regions.keys())
+        target_regions: List[str] = regions or all_region_names
+
+        weight_branch = weight_systematic or "full_event_weight"
+
+        # ---- helpers ----
+
+        def _load_events_root(path: Path) -> Optional[Dict[str, Any]]:
+            """Return {"branches": {name: np.ndarray}, "wte": float} or None on failure."""
+            try:
+                with _uproot.open(str(path)) as f:
+                    # weighted_total_events stored as 1-bin TH1
+                    wte = 0.0
+                    for key in ("weighted_total_events", "weighted_total_events;1"):
+                        if key in f:
+                            try:
+                                wte = float(f[key].values()[0])
+                                break
+                            except Exception:
+                                pass
+                    if "Events" not in f:
+                        logging.warning("No Events tree in %s", path.name)
+                        return None
+                    branches = f["Events"].arrays(library="np")
+                    return {"branches": dict(branches), "wte": wte}
+            except Exception as exc:
+                logging.warning("Could not load %s: %s", path.name, exc)
+                return None
+
+        def _load_events_pkl(path: Path) -> Optional[Dict[str, Any]]:
+            try:
+                with open(path, "rb") as fh:
+                    d = pickle.load(fh)
+                branches = {k: np.asarray(v) for k, v in d.get("branches", {}).items()
+                            if isinstance(v, (np.ndarray, list))}
+                wte = float(d.get("weighted_total_events", 0.0))
+                return {"branches": branches, "wte": wte}
+            except Exception as exc:
+                logging.warning("Could not load %s: %s", path.name, exc)
+                return None
+
+        def _load_file(path: Path) -> Optional[Dict[str, Any]]:
+            if path.suffix == ".root":
+                return _load_events_root(path)
+            return _load_events_pkl(path)
+
+        # ---- load per-group ----
+        # {proc_label: [{"branches": dict, "wte": float, "xsec": float|None}]}
+        bkg_entries: Dict[str, List[Dict[str, Any]]] = {}
+        for proc_label, patterns in process_groups.items():
+            paths = self._resolve_group_files(input_folder, patterns)
+            entries = []
+            for p in paths:
+                loaded = _load_file(p)
+                if loaded is None:
+                    continue
+                xsec = cross_sections.get(p.stem) or cross_sections.get(p.name)
+                entries.append({
+                    "branches": loaded["branches"],
+                    "wte": loaded["wte"],
+                    "xsec": xsec,
+                })
+            if entries:
+                bkg_entries[proc_label] = entries
+
+        # Data groups (no xsec)
+        raw_data_cfg = self.config.get("process_groups", {})
+        data_entries: Dict[str, Dict[str, Any]] = {}
+        for label, patterns in data_groups.items():
+            grp_cfg = raw_data_cfg.get(label, {})
+            region_patterns: List[str] = grp_cfg.get("regions", []) if isinstance(grp_cfg, dict) else []
+            paths = self._resolve_group_files(input_folder, patterns)
+            loaded_list = [e for p in paths for e in [_load_file(p)] if e is not None]
+            if loaded_list:
+                data_entries[label] = {"entries": loaded_list, "region_patterns": region_patterns}
+
+        if not bkg_entries:
+            logging.warning("region-from-events: no background files loaded — nothing to plot")
+            return []
+
+        # ---- per-region processing ----
+        created: List[str] = []
+
+        for region_name in target_regions:
+            region_obj = region_manager.regions.get(region_name)
+            if region_obj is None:
+                logging.warning("Region %s not found in %s", region_name, regions_config)
+                continue
+
+            excl = self._get_excluded_variables_for_region(region_name)
+
+            # Determine variable list from first available group
+            if variables:
+                var_list = [v for v in variables if v not in excl]
+            else:
+                all_branches: set = set()
+                for entries in bkg_entries.values():
+                    for e in entries:
+                        all_branches.update(e["branches"].keys())
+                # Exclude weight branches and internal branches from plot list
+                _weight_prefixes = ("weight_", "full_event_weight", "genWeight")
+                var_list = sorted(
+                    b for b in all_branches
+                    if not any(b.startswith(p) for p in _weight_prefixes)
+                    and b not in excl
+                )
+
+            for var in var_list:
+                bins_ref: Optional[np.ndarray] = self._build_bins_from_config(var)
+                bkg_rows: List[Tuple[str, np.ndarray, np.ndarray]] = []
+
+                for proc_label, entries in bkg_entries.items():
+                    group_hv: Optional[np.ndarray] = None
+                    group_hs: Optional[np.ndarray] = None
+
+                    for e in entries:
+                        br = e["branches"]
+                        wte = e["wte"]
+                        xsec = e["xsec"]
+
+                        # Apply region mask using RegionManager
+                        try:
+                            import awkward as _ak
+                            # Build minimal ak.Array from flat branches for region cuts
+                            events_ak = _ak.Array({k: v for k, v in br.items()
+                                                   if isinstance(v, np.ndarray) and v.ndim == 1})
+                            mask = region_obj.apply_cuts(events_ak, objects={})
+                        except Exception as _mask_exc:
+                            logging.warning(
+                                "Region mask failed for %s / %s: %s", region_name, proc_label, _mask_exc
+                            )
+                            continue
+
+                        mask_np = np.asarray(mask, dtype=bool)
+                        vals_raw = br.get(var)
+                        if vals_raw is None:
+                            continue
+                        vals = _apply_variable_plot_filter(var, vals_raw[mask_np])
+                        if vals.size == 0:
+                            continue
+
+                        w_arr = br.get(weight_branch)
+                        if w_arr is not None:
+                            w = np.asarray(w_arr, dtype=float)[mask_np]
+                        else:
+                            w = np.ones(mask_np.sum(), dtype=float)
+
+                        scale = ((luminosity * xsec * 1000.0) / wte
+                                 if xsec is not None and wte > 0
+                                 else (luminosity / wte if wte > 0 else 1.0))
+
+                        if bins_ref is None:
+                            all_vals_for_bins = [
+                                _apply_variable_plot_filter(var, e2["branches"].get(var, np.array([])))
+                                for ee in bkg_entries.values() for e2 in ee
+                            ]
+                            bins_ref = _make_bins(all_vals_for_bins, self._build_bins_from_config,
+                                                  var, self._n_bins_default)
+                            if bins_ref is None or len(bins_ref) < 2:
+                                break
+
+                        hv, _ = np.histogram(vals, bins=bins_ref, weights=w * scale)
+                        hs, _ = np.histogram(vals, bins=bins_ref, weights=(w * scale) ** 2)
+
+                        group_hv = hv if group_hv is None else group_hv + hv
+                        group_hs = hs if group_hs is None else group_hs + hs
+
+                    if group_hv is not None and group_hv.size > 0:
+                        bkg_rows.append((proc_label, group_hv, group_hs))
+
+                if not bkg_rows or bins_ref is None:
+                    continue
+                if np.allclose(sum(h for _, h, _ in bkg_rows), 0.0):
+                    continue
+
+                # Data histogram (no xsec, no region mask applied — data already region-selected)
+                data_hist: Optional[np.ndarray] = None
+                for label, info in data_entries.items():
+                    rp = info["region_patterns"]
+                    if rp and not any(pat in region_name for pat in rp):
+                        continue
+                    for e in info["entries"]:
+                        import awkward as _ak
+                        br = e["branches"]
+                        try:
+                            events_ak = _ak.Array({k: v for k, v in br.items()
+                                                   if isinstance(v, np.ndarray) and v.ndim == 1})
+                            mask_d = region_obj.apply_cuts(events_ak, objects={})
+                            mask_d_np = np.asarray(mask_d, dtype=bool)
+                        except Exception:
+                            mask_d_np = np.ones(len(next(iter(br.values()))), dtype=bool)
+                        dv = _apply_variable_plot_filter(var, br.get(var, np.array([]))[mask_d_np])
+                        if dv.size == 0:
+                            continue
+                        dh, _ = np.histogram(dv, bins=bins_ref)
+                        data_hist = dh if data_hist is None else data_hist + dh
+
+                syst_label = f" [{weight_systematic}]" if weight_systematic else ""
+                files = self._plot_stacked_variable(
+                    variable=var, bins=bins_ref,
+                    background_rows=bkg_rows, data_ndarray=data_hist,
+                    output_dir=output_dir, luminosity=luminosity, year=year,
+                    region=region_name, version=version, save_root=False,
+                )
+                created.extend(files)
+                logging.info(
+                    "region-from-events: %s / %s%s (%d files)",
+                    region_name, var, syst_label, len(files),
+                )
 
         return created
 
