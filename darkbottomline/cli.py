@@ -1037,8 +1037,8 @@ def make_event_plots(args):
     import json
 
     config = load_config(args.config)
-    luminosity = float(config["luminosity"])
-    year = str(config["year"])
+    luminosity = float(config.get("lumi", config.get("luminosity", 1.0)))
+    year = str(config.get("year", ""))
 
     plot_config = None
     if args.plot_config:
