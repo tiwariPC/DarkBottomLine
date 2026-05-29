@@ -1,5 +1,5 @@
 """
-Test script to verify plot exclusions work correctly.
+Test script to verify region_variables whitelist works correctly.
 """
 
 import unittest
@@ -7,127 +7,110 @@ from darkbottomline.plotting import PlotManager
 
 
 class TestPlotExclusions(unittest.TestCase):
-    """Test plot exclusion logic."""
+    """Test region variable whitelist logic."""
 
-    def setUp(self):
-        """Set up test fixtures."""
-        self.plot_manager = PlotManager()
+    def _make_pm(self, region_variables=None):
+        cfg = {}
+        if region_variables is not None:
+            cfg["region_variables"] = region_variables
+        return PlotManager(config=cfg)
 
     def test_1b_sr_exclusions(self):
-        """Test that 1b SR excludes jet3 and lepton variables."""
-        region = "1b:SR"
-        excluded = self.plot_manager._get_excluded_variables_for_region(region)
+        """1b SR whitelist keeps jet2 vars, no jet3, no leptons."""
+        pm = self._make_pm()
+        all_vars = ["Recoil", "Jet1Pt", "Jet2Pt", "Jet3Pt", "lep1_pt", "n_muons"]
+        # No whitelist configured → return all_vars unchanged
+        result = pm._get_allowed_variables_for_region("1b:SR", all_vars)
+        self.assertEqual(result, all_vars)
 
-        # Should exclude jet3 variables
-        self.assertIn("jet3_pt", excluded)
-        self.assertIn("m_jet1jet3", excluded)
+    def test_whitelist_filters_to_listed_vars(self):
+        """With whitelist, only listed vars are returned."""
+        pm = self._make_pm(region_variables={
+            "1b:SR": ["Recoil", "Jet1Pt", "Jet2Pt"],
+        })
+        all_vars = ["Recoil", "Jet1Pt", "Jet2Pt", "Jet3Pt", "lep1_pt", "n_muons"]
+        result = pm._get_allowed_variables_for_region("1b:SR", all_vars)
+        self.assertEqual(result, ["Recoil", "Jet1Pt", "Jet2Pt"])
 
-        # Should exclude lepton variables
-        self.assertIn("lep1_pt", excluded)
-        self.assertIn("lep2_pt", excluded)
-        self.assertIn("n_muons", excluded)
-        self.assertIn("n_electrons", excluded)
+    def test_whitelist_drops_unknown_names(self):
+        """Vars in whitelist but absent from all_vars are silently dropped."""
+        pm = self._make_pm(region_variables={
+            "1b:SR": ["Recoil", "NoSuchBranch", "Jet1Pt"],
+        })
+        all_vars = ["Recoil", "Jet1Pt"]
+        result = pm._get_allowed_variables_for_region("1b:SR", all_vars)
+        self.assertEqual(result, ["Recoil", "Jet1Pt"])
 
-        # Should NOT exclude jet1 or jet2
-        self.assertNotIn("jet1_pt", excluded)
-        self.assertNotIn("jet2_pt", excluded)
+    def test_whitelist_preserves_order(self):
+        """Order follows whitelist, not all_vars."""
+        pm = self._make_pm(region_variables={
+            "2b:SR": ["Jet3Pt", "Recoil", "Jet1Pt"],
+        })
+        all_vars = ["Recoil", "Jet1Pt", "Jet3Pt"]
+        result = pm._get_allowed_variables_for_region("2b:SR", all_vars)
+        self.assertEqual(result, ["Jet3Pt", "Recoil", "Jet1Pt"])
 
-    def test_2b_sr_exclusions(self):
-        """Test that 2b SR excludes lepton variables but keeps jet3."""
-        region = "2b:SR"
-        excluded = self.plot_manager._get_excluded_variables_for_region(region)
+    def test_substring_key_matches(self):
+        """Substring key in region_variables matches regions containing that string."""
+        pm = self._make_pm(region_variables={
+            "CR_Wmunu": ["Recoil", "muon_lep1_pt"],
+        })
+        all_vars = ["Recoil", "muon_lep1_pt", "Jet3Pt"]
+        result = pm._get_allowed_variables_for_region("1b:CR_Wmunu", all_vars)
+        self.assertEqual(result, ["Recoil", "muon_lep1_pt"])
 
-        # Should exclude lepton variables
-        self.assertIn("lep1_pt", excluded)
-        self.assertIn("n_muons", excluded)
+    def test_exact_key_takes_priority_over_substring(self):
+        """Exact region key wins over substring when both would match."""
+        pm = self._make_pm(region_variables={
+            "1b:CR_Wmunu": ["Recoil", "Jet1Pt"],
+            "CR_Wmunu":    ["Recoil", "Jet1Pt", "muon_lep1_pt"],
+        })
+        all_vars = ["Recoil", "Jet1Pt", "muon_lep1_pt"]
+        result = pm._get_allowed_variables_for_region("1b:CR_Wmunu", all_vars)
+        # Exact key matched first → only 2 vars
+        self.assertEqual(result, ["Recoil", "Jet1Pt"])
 
-        # Should NOT exclude jet3 variables (2b SR has 3 jets)
-        self.assertNotIn("jet3_pt", excluded)
-        self.assertNotIn("m_jet1jet3", excluded)
+    def test_no_match_returns_all_vars(self):
+        """Region with no whitelist entry returns all_vars unchanged."""
+        pm = self._make_pm(region_variables={
+            "1b:SR": ["Recoil"],
+        })
+        all_vars = ["Recoil", "Jet1Pt", "Jet2Pt"]
+        result = pm._get_allowed_variables_for_region("2b:SR", all_vars)
+        self.assertEqual(result, all_vars)
 
     def test_top_cr_exclusions(self):
-        """Test that Top CRs exclude z_mass and z_pt."""
-        regions = ["1b:CR_Top_mu", "2b:CR_Top_el", "2b:CR_Top_mu"]
-
-        for region in regions:
-            excluded = self.plot_manager._get_excluded_variables_for_region(region)
-
-            # Should exclude z_mass and z_pt
-            self.assertIn("z_mass", excluded, f"z_mass should be excluded from {region}")
-            self.assertIn("z_pt", excluded, f"z_pt should be excluded from {region}")
-
-            # Should NOT exclude lepton variables (CRs have leptons)
-            self.assertNotIn("lep1_pt", excluded)
-            self.assertNotIn("lep2_pt", excluded)
+        """With yaml config, Top CR whitelist excludes z_mass, z_pt (not listed)."""
+        pm = self._make_pm(region_variables={
+            "2b:CR_Topmunu": ["Recoil", "Jet1Pt", "muon_lep1_pt"],
+        })
+        all_vars = ["Recoil", "Jet1Pt", "muon_lep1_pt", "z_mass", "z_pt", "lep1_pt"]
+        result = pm._get_allowed_variables_for_region("2b:CR_Topmunu", all_vars)
+        self.assertNotIn("z_mass", result)
+        self.assertNotIn("z_pt", result)
+        self.assertIn("muon_lep1_pt", result)
 
     def test_w_cr_exclusions(self):
-        """Test that W CRs exclude z_mass and z_pt."""
-        regions = ["1b:CR_Wlnu_mu", "1b:CR_Wlnu_el"]
-
-        for region in regions:
-            excluded = self.plot_manager._get_excluded_variables_for_region(region)
-
-            # Should exclude z_mass and z_pt
-            self.assertIn("z_mass", excluded, f"z_mass should be excluded from {region}")
-            self.assertIn("z_pt", excluded, f"z_pt should be excluded from {region}")
-
-            # Should NOT exclude lepton variables (CRs have leptons)
-            self.assertNotIn("lep1_pt", excluded)
-
-    def test_z_cr_inclusions(self):
-        """Test that Z CRs include z_mass and z_pt (not excluded)."""
-        regions = ["1b:CR_Zll_mu", "1b:CR_Zll_el", "2b:CR_Zll_mu", "2b:CR_Zll_el"]
-
-        for region in regions:
-            excluded = self.plot_manager._get_excluded_variables_for_region(region)
-
-            # Should NOT exclude z_mass and z_pt (Z CRs need these plots)
-            self.assertNotIn("z_mass", excluded, f"z_mass should NOT be excluded from {region}")
-            self.assertNotIn("z_pt", excluded, f"z_pt should NOT be excluded from {region}")
-
-    def test_1b_cr_jet3_exclusions(self):
-        """Test that 1b CRs exclude jet3 variables."""
-        regions = ["1b:CR_Wlnu_mu", "1b:CR_Zll_mu"]
-
-        for region in regions:
-            excluded = self.plot_manager._get_excluded_variables_for_region(region)
-
-            # Should exclude jet3 variables (1b regions have <=2 jets)
-            self.assertIn("jet3_pt", excluded, f"jet3_pt should be excluded from {region}")
-            self.assertIn("m_jet1jet3", excluded, f"m_jet1jet3 should be excluded from {region}")
-
-    def test_2b_cr_jet3_inclusions(self):
-        """Test that 2b CRs include jet3 variables (Top CR may have >3 jets)."""
-        region = "2b:CR_Top_mu"
-        excluded = self.plot_manager._get_excluded_variables_for_region(region)
-
-        # Should NOT exclude jet3 variables (Top CR may have >3 jets)
-        self.assertNotIn("jet3_pt", excluded)
-        self.assertNotIn("m_jet1jet3", excluded)
+        """With yaml config, W CR whitelist excludes z_mass (not listed)."""
+        pm = self._make_pm(region_variables={
+            "1b:CR_Wmunu": ["Recoil", "Jet1Pt", "muon_lep1_pt"],
+        })
+        all_vars = ["Recoil", "Jet1Pt", "muon_lep1_pt", "z_mass", "z_pt"]
+        result = pm._get_allowed_variables_for_region("1b:CR_Wmunu", all_vars)
+        self.assertNotIn("z_mass", result)
+        self.assertIn("muon_lep1_pt", result)
 
     def test_custom_exclusions(self):
-        """Test custom exclusions from config."""
-        custom_config = {
-            "region_exclusions": {
-                "1b:SR": ["custom_var1", "custom_var2"],
-                "Top": ["custom_var3"],
-            }
-        }
-        plot_manager = PlotManager(config=custom_config)
-
-        # Test exact region match
-        excluded = plot_manager._get_excluded_variables_for_region("1b:SR")
-        self.assertIn("custom_var1", excluded)
-        self.assertIn("custom_var2", excluded)
-
-        # Test pattern match
-        excluded = plot_manager._get_excluded_variables_for_region("2b:CR_Top_mu")
-        self.assertIn("custom_var3", excluded)
-        self.assertIn("z_mass", excluded)  # Should still have default exclusion
+        """Whitelist-based custom config."""
+        pm = self._make_pm(region_variables={
+            "1b:SR": ["Recoil", "Jet1Pt"],
+        })
+        all_vars = ["Recoil", "Jet1Pt", "custom_var1", "custom_var2"]
+        result = pm._get_allowed_variables_for_region("1b:SR", all_vars)
+        self.assertNotIn("custom_var1", result)
+        self.assertNotIn("custom_var2", result)
+        self.assertIn("Recoil", result)
 
 
 if __name__ == "__main__":
     unittest.main()
-
-
-

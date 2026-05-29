@@ -223,7 +223,7 @@ class CMSPlotStyle:
         # CMS requires inward ticks — the only override needed on top of hep.style.CMS
         plt.rcParams['xtick.direction'] = 'in'
         plt.rcParams['ytick.direction'] = 'in'
-        logging.info("CMS plot style applied" + (" (mplhep)" if _HAS_MPLHEP else " (matplotlib)"))
+        logging.debug("CMS plot style applied" + (" (mplhep)" if _HAS_MPLHEP else " (matplotlib)"))
 
     def get_color(self, name: str) -> str:
         """Get color by name."""

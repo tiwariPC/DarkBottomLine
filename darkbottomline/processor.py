@@ -128,7 +128,7 @@ class DarkBottomLineProcessor:
             "event_weights": {},
         }
 
-        logging.info(f"Initialized DarkBottomLine processor for year {config.get('year', 'unknown')} (is_data={self.is_data})")
+        logging.debug(f"Initialized DarkBottomLine processor for year {config.get('year', 'unknown')} (is_data={self.is_data})")
 
     def apply_lumi_mask(self, events: ak.Array) -> ak.Array:
         """

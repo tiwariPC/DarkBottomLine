@@ -2,11 +2,15 @@
 Region definition and management for DarkBottomLine analysis.
 """
 
+import warnings
 import awkward as ak
 import numpy as np
 import yaml
 from typing import Dict, Any, List, Optional, Union
 import logging
+
+warnings.filterwarnings("ignore", message="invalid value encountered in sqrt",
+                        category=RuntimeWarning)
 
 
 class Region:
@@ -81,7 +85,7 @@ class Region:
         else:
             mask = ak.Array(np.ones(len(events), dtype=bool))
         n_initial = int(ak.sum(mask))
-        logging.info(f"Region {self.name}: initial (preselected) events: {n_initial}")
+        logging.debug(f"Region {self.name}: initial (preselected) events: {n_initial}")
 
         after_cuts = []
         for var, cut_info in self.parsed_cuts.items():
@@ -117,9 +121,41 @@ class Region:
             after_cuts.append(f"{var}: {n_pass}")
 
         if after_cuts:
-            logging.info(" %s", ", ".join(after_cuts))
+            logging.debug(" %s", ", ".join(after_cuts))
 
         return mask
+
+    def apply_cuts_with_yields(
+        self, events: ak.Array, objects: Dict[str, Any], weight: Optional[np.ndarray] = None
+    ) -> Dict[str, float]:
+        """Apply cuts sequentially; return ordered {cut_label: weighted_yield_after_cut}."""
+        _ref_field = "event" if "event" in events.fields else (events.fields[0] if events.fields else None)
+        if _ref_field is not None:
+            mask = ak.ones_like(events[_ref_field], dtype=bool)
+        else:
+            mask = ak.Array(np.ones(len(events), dtype=bool))
+
+        yields: Dict[str, float] = {}
+        for var, cut_info in self.parsed_cuts.items():
+            operator = cut_info["operator"]
+            value    = cut_info["value"]
+            var_value = self._get_variable_value(events, objects, var)
+            if var_value is None:
+                continue
+            if operator == ">":   cut_mask = var_value > value
+            elif operator == ">=": cut_mask = var_value >= value
+            elif operator == "<":  cut_mask = var_value < value
+            elif operator == "<=": cut_mask = var_value <= value
+            elif operator == "==": cut_mask = var_value == value
+            elif operator == "!=": cut_mask = var_value != value
+            else: continue
+            mask = mask & ak.fill_none(cut_mask, False, axis=0)
+            mask_np = np.asarray(mask, dtype=bool)
+            if weight is not None:
+                yields[f"{var}{operator}{value}"] = float(weight[mask_np].sum())
+            else:
+                yields[f"{var}{operator}{value}"] = float(mask_np.sum())
+        return yields
 
     def _zeros_like_events(self, events: ak.Array, n_ev: int, dtype=float) -> ak.Array:
         """Return a per-event zeros array regardless of whether events has an 'event' field."""
@@ -214,9 +250,19 @@ class Region:
             return ak.zeros(n_ev, dtype=np.int64)
         if var == "NmuonsZ":
             # Z CR: 2 OS leptons, leading tight pt>30, subleading loose pt>10
-            return objects.get("n_z_muons", self._zeros_like_events(events, n_ev, dtype=int))
+            if "n_z_muons" in objects:
+                return objects["n_z_muons"]
+            # Flat-branch fallback for event-selection files
+            if "n_muons" in events.fields:
+                return events["n_muons"]
+            return self._zeros_like_events(events, n_ev, dtype=int)
         if var == "NelectronsZ":
-            return objects.get("n_z_electrons", self._zeros_like_events(events, n_ev, dtype=int))
+            if "n_z_electrons" in objects:
+                return objects["n_z_electrons"]
+            # Flat-branch fallback for event-selection files
+            if "n_electrons" in events.fields:
+                return events["n_electrons"]
+            return self._zeros_like_events(events, n_ev, dtype=int)
         if var == "Ntaus":
             if "tight_taus" in objects:
                 return self._safe_num_axis1(objects["tight_taus"], n_ev)
@@ -239,6 +285,34 @@ class Region:
                 for _fname in ("mt", "MT", "w_mt"):
                     if _fname in events.fields:
                         return ak.fill_none(events[_fname], 0.0)
+                # Compute from scalar leading-lepton branches + MET
+                met_pt_f  = events["PFMET_pt"]  if "PFMET_pt"  in events.fields else None
+                met_phi_f = events["PFMET_phi"] if "PFMET_phi" in events.fields else None
+                if met_pt_f is not None and met_phi_f is not None:
+                    for pt_f, phi_f in (
+                        ("muon_lep1_pt",     "muon_lep1_phi"),
+                        ("electron_lep1_pt", "electron_lep1_phi"),
+                        ("muon_pt",          "muon_phi"),      # jagged fallback
+                        ("electron_pt",      "electron_phi"),  # jagged fallback
+                    ):
+                        if pt_f in events.fields and phi_f in events.fields:
+                            try:
+                                lpt  = events[pt_f]
+                                lphi = events[phi_f]
+                                # jagged: take leading element; scalar: use directly
+                                if hasattr(lpt, 'ndim') and lpt.ndim == 1:
+                                    l1pt, l1phi = lpt, lphi
+                                else:
+                                    has1 = ak.num(lpt) >= 1
+                                    l1pt  = ak.where(has1, lpt[:, 0],  0.0)
+                                    l1phi = ak.where(has1, lphi[:, 0], 0.0)
+                                valid = l1pt > 0
+                                dphi = abs(l1phi - met_phi_f)
+                                dphi = ak.where(dphi > np.pi, 2 * np.pi - dphi, dphi)
+                                mt_val = ak.where(valid, np.sqrt(2 * l1pt * met_pt_f * (1 - np.cos(dphi))), 0.0)
+                                return ak.fill_none(mt_val, 0.0, axis=0)
+                            except Exception:
+                                pass
             # Transverse mass (tight pt>30 leptons for CR)
             met_pt = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
             met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
@@ -276,6 +350,29 @@ class Region:
                 for _fname in ("mll", "Mll", "z_mass"):
                     if _fname in events.fields:
                         return ak.fill_none(events[_fname], 0.0)
+                # Compute from scalar leading-lepton branches if available
+                for l1pt_f, l1eta_f, l1phi_f, l2pt_f, l2eta_f, l2phi_f in (
+                    ("muon_lep1_pt",     "muon_lep1_eta",     "muon_lep1_phi",
+                     "muon_lep2_pt",     "muon_lep2_eta",     "muon_lep2_phi"),
+                    ("electron_lep1_pt", "electron_lep1_eta", "electron_lep1_phi",
+                     "electron_lep2_pt", "electron_lep2_eta", "electron_lep2_phi"),
+                ):
+                    if all(f in events.fields for f in (l1pt_f, l1eta_f, l1phi_f, l2pt_f, l2eta_f, l2phi_f)):
+                        try:
+                            l1pt  = events[l1pt_f];  l1eta = events[l1eta_f]; l1phi = events[l1phi_f]
+                            l2pt  = events[l2pt_f];  l2eta = events[l2eta_f]; l2phi = events[l2phi_f]
+                            has2  = (l1pt > 0) & (l2pt > 0)
+                            dphi  = abs(l1phi - l2phi)
+                            dphi  = ak.where(dphi > np.pi, 2 * np.pi - dphi, dphi)
+                            deta  = l1eta - l2eta
+                            mll   = ak.where(
+                                has2,
+                                np.sqrt(2 * l1pt * l2pt * (np.cosh(deta) - np.cos(dphi))),
+                                0.0,
+                            )
+                            return ak.fill_none(mll, 0.0, axis=0)
+                        except Exception:
+                            pass
             # Z candidate mass: muon pair if NmuonsZ==2 else electron pair if NelectronsZ==2
             n_z_mu = objects.get("n_z_muons", self._zeros_like_events(events, n_ev, dtype=int))
             n_z_el = objects.get("n_z_electrons", self._zeros_like_events(events, n_ev, dtype=int))
@@ -290,6 +387,24 @@ class Region:
                     return np.asarray(ak.to_numpy(ak.ravel(mll)), dtype=np.float64)
                 except (Exception, BaseException):
                     return np.zeros(n_ev, dtype=np.float64)
+        if var == "Zpt":
+            # pT of dilepton system from scalar lep1/lep2 branches
+            for (l1pt_f, l1phi_f, l2pt_f, l2phi_f) in (
+                ("muon_lep1_pt",     "muon_lep1_phi",     "muon_lep2_pt",     "muon_lep2_phi"),
+                ("electron_lep1_pt", "electron_lep1_phi", "electron_lep2_pt", "electron_lep2_phi"),
+            ):
+                if all(f in events.fields for f in (l1pt_f, l1phi_f, l2pt_f, l2phi_f)):
+                    try:
+                        l1pt  = events[l1pt_f];  l1phi = events[l1phi_f]
+                        l2pt  = events[l2pt_f];  l2phi = events[l2phi_f]
+                        has2  = (l1pt > 0) & (l2pt > 0)
+                        px    = l1pt * np.cos(l1phi) + l2pt * np.cos(l2phi)
+                        py    = l1pt * np.sin(l1phi) + l2pt * np.sin(l2phi)
+                        zpt   = ak.where(has2, np.sqrt(px**2 + py**2), 0.0)
+                        return ak.fill_none(zpt, 0.0, axis=0)
+                    except Exception:
+                        pass
+            return np.zeros(n_ev, dtype=np.float64)
         if var == "DeltaPhi":
             jets = objects.get("jets", ak.Array([]))
             met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
@@ -368,7 +483,7 @@ class RegionManager:
         for region_name, region_config in self.config.get("regions", {}).items():
             self.regions[region_name] = Region(region_name, region_config)
 
-        logging.info(f"Loaded {len(self.regions)} regions: {list(self.regions.keys())}")
+        logging.debug(f"Loaded {len(self.regions)} regions: {list(self.regions.keys())}")
 
     def get_region(self, name: str) -> Optional[Region]:
         return self.regions.get(name)

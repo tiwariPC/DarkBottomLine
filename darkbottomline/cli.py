@@ -11,6 +11,20 @@ import uproot
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
+try:
+    from darkbottomline._version import __version__ as _fw_version
+except Exception:
+    _fw_version = None
+
+def _default_version() -> str:
+    """YYYYMMDD_<sha7> — today's date + commit SHA from framework version."""
+    from datetime import datetime
+    today = datetime.now().strftime("%Y%m%d")
+    if _fw_version and "+" in _fw_version:
+        sha = _fw_version.split("+", 1)[1]
+        return f"{today}_{sha}"
+    return today
+
 from .processor import DarkBottomLineProcessor
 from .analyzer import DarkBottomLineAnalyzer
 from .dnn_trainer import DNNTrainer
@@ -321,9 +335,218 @@ def _plot_dnn_score_only(scores: np.ndarray, plot_dir: str) -> None:
     logging.info("DNN score plot saved to %s", out)
 
 
+def _run_analyzer_from_eventselection(args):
+    """
+    Path 2b: load per-sample EVENTSELECTION.root files, run region analysis, save PKL output.
+
+    Reads all ROOT files matching process_groups patterns from --input (folder or list of files),
+    runs region cuts via RegionManager, fills histograms, and saves a merged PKL identical in
+    structure to the output of Path 1 analyze.
+    """
+    import json
+    import os
+    import uproot
+    import pickle
+
+    config = load_config(args.config)
+    if args.data:
+        config.setdefault("data", {})["is_data"] = True
+    is_data = config.get("data", {}).get("is_data", False)
+
+    cross_sections: Dict[str, float] = {}
+    if getattr(args, "xsection_json", None):
+        with open(args.xsection_json) as f:
+            cross_sections = json.load(f)
+
+    dnn_model  = getattr(args, "dnn_model",  None)
+    dnn_config = getattr(args, "dnn_config", None)
+
+    raw_inputs = _get_input_files(args.input)
+    # Expand any directories to their ROOT files
+    input_files = []
+    for p in raw_inputs:
+        if os.path.isdir(p):
+            input_files.extend(sorted(str(f) for f in Path(p).iterdir()
+                                      if f.suffix in (".root", ".pkl")))
+        else:
+            input_files.append(p)
+
+    if args.output:
+        outdir = os.path.dirname(args.output)
+        if outdir:
+            os.makedirs(outdir, exist_ok=True)
+
+    merged_result: Optional[Dict] = None
+
+    for file_path in input_files:
+        stem = Path(file_path).stem
+        xsec = cross_sections.get(stem) or cross_sections.get(Path(file_path).name)
+        try:
+            with uproot.open(str(file_path)) as f:
+                wte = 0.0
+                for key in ("weighted_total_events", "weighted_total_events;1"):
+                    if key in f:
+                        try:
+                            wte = float(f[key].values()[0])
+                            break
+                        except Exception:
+                            pass
+                if "Events" not in f:
+                    logging.warning("No Events tree in %s — skipping", stem)
+                    continue
+                raw = f["Events"].arrays(library="np")
+                branches = dict(raw)
+        except Exception as exc:
+            logging.warning("Could not load %s: %s — skipping", stem, exc)
+            continue
+
+        # Scale wte by xsec if provided (consistent with make-event-plots normalisation)
+        effective_wte = wte if wte > 0 else 1.0
+
+        analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
+        try:
+            result = analyzer.process_from_eventselection(
+                branches=branches,
+                weighted_total_events=effective_wte,
+                is_data=is_data,
+                dnn_model=dnn_model,
+                dnn_config=dnn_config,
+            )
+        except Exception as exc:
+            logging.error("Region analysis failed for %s: %s", stem, exc, exc_info=True)
+            continue
+
+        # Tag result with xsec for downstream normalisation
+        result.setdefault("metadata", {})["xsec"] = xsec
+        result["metadata"]["sample"] = stem
+
+        if merged_result is None:
+            merged_result = result
+        else:
+            merged_result = _merge_region_results(merged_result, result)
+        logging.debug("Processed %s (wte=%.1f)", stem, effective_wte)
+
+    if merged_result is None:
+        logging.error("No files processed — nothing to save.")
+        return
+
+    if args.output:
+        analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
+        analyzer.accumulator = merged_result
+        analyzer.save_results(args.output, output_format=args.output_format)
+        logging.info("Region analysis from event-selection saved to %s", args.output)
+
+
+def _merge_region_results(a: Dict, b: Dict) -> Dict:
+    """Shallow-merge two region-analysis result dicts (add histogram counts)."""
+    import copy
+    merged = copy.deepcopy(a)
+    for region, hists in b.get("region_histograms", {}).items():
+        if region not in merged.setdefault("region_histograms", {}):
+            merged["region_histograms"][region] = hists
+        else:
+            for hname, hdata in hists.items():
+                if hname not in merged["region_histograms"][region]:
+                    merged["region_histograms"][region][hname] = hdata
+                else:
+                    try:
+                        merged["region_histograms"][region][hname] = (
+                            merged["region_histograms"][region][hname] + hdata
+                        )
+                    except Exception:
+                        pass
+    for region, res in b.get("regions", {}).items():
+        merged.setdefault("regions", {})[region] = res
+    wte_a = merged.get("metadata", {}).get("weighted_total_events", 0.0)
+    wte_b = b.get("metadata", {}).get("weighted_total_events", 0.0)
+    merged.setdefault("metadata", {})["weighted_total_events"] = wte_a + wte_b
+    return merged
+
+
+def _trigger_plots(args):
+    """Call make_event_plots for --make-region-plots and/or --make-event-selection-plots."""
+    make_region_plots_flag    = getattr(args, "make_region_plots", False)
+    make_evsel_flag    = getattr(args, "make_event_selection_plots", False)
+    if not make_region_plots_flag and not make_evsel_flag:
+        return
+    # make_event_plots needs input_folder
+    if not getattr(args, "input_folder", None):
+        import os
+        # region-analysis/event-selection-plots: --input is the folder
+        raw = getattr(args, "input", None)
+        if raw:
+            candidate = raw[0] if isinstance(raw, list) else raw
+            if os.path.isdir(candidate):
+                args.input_folder = candidate
+        # full mode: derive from --event-selection-output
+        if not getattr(args, "input_folder", None):
+            evsel_out = getattr(args, "event_selection_output", None)
+            if evsel_out:
+                args.input_folder = os.path.dirname(evsel_out)
+        if not getattr(args, "input_folder", None):
+            logging.warning("--make-region-plots requested but no input_folder derivable from --input or --event-selection-output")
+            return
+    args.data_folder   = None
+    args.process_groups = getattr(args, "process_groups", None)
+    # map plot-specific args that may differ in name
+    if not getattr(args, "variables", None):
+        args.variables = getattr(args, "plot_variables", None)
+    if not getattr(args, "regions", None):
+        args.regions   = getattr(args, "plot_regions", None)
+    if make_region_plots_flag:
+        logging.info("Producing region plots...")
+        args.mode = "region-from-events"
+        make_event_plots(args)
+    if make_evsel_flag:
+        logging.info("Producing event-selection plots...")
+        args.mode = "event-selection"
+        make_event_plots(args)
+
+
 def run_analyzer(args):
-    """Run multi-region analysis."""
-    logging.info("Running multi-region analysis...")
+    """Run analysis pipeline."""
+    # Translate --mode into internal flags
+    mode = getattr(args, "mode", "full")
+    # backward compat: old --event-selection-only true still works
+    _old_esel = getattr(args, "event_selection_only", "false")
+    if isinstance(_old_esel, str) and _old_esel.lower() == "true":
+        mode = "event-selection"
+    # old --from-eventselection still works
+    if getattr(args, "from_eventselection", False):
+        mode = "region-analysis"
+
+    args.event_selection_only = "true" if mode == "event-selection" else "false"
+    args.from_eventselection   = (mode == "region-analysis")
+
+    make_evsel_plots = getattr(args, "make_event_selection_plots", False)
+
+    mode_labels = {
+        "event-selection": (
+            "Producing event-selection plots (EVENTSELECTION.root → stacked plots)..."
+            if make_evsel_plots else
+            "Running event selection (NanoAOD → EVENTSELECTION.root)..."
+        ),
+        "region-analysis": "Running region analysis (EVENTSELECTION.root → region plots)...",
+        "full":            "Running full pipeline (NanoAOD → event-selection + regions)...",
+    }
+    logging.info(mode_labels.get(mode, "Running analysis..."))
+
+    # event-selection + --make-event-selection-plots → plot only, no NanoAOD processing
+    if mode == "event-selection" and make_evsel_plots:
+        args.input_folder   = args.input[0]
+        args.data_folder    = None
+        args.process_groups = getattr(args, "process_groups", None)
+        args.variables      = getattr(args, "plot_variables", None)
+        args.regions        = getattr(args, "plot_regions", None)
+        args.mode           = "event-selection"
+        make_event_plots(args)
+        return
+
+    # region-analysis mode: delegate to _run_analyzer_from_eventselection then plot
+    if mode == "region-analysis":
+        _run_analyzer_from_eventselection(args)
+        _trigger_plots(args)
+        return
 
     # Unified pipeline flags
     dnn_model = getattr(args, "dnn_model", None)
@@ -332,22 +555,23 @@ def run_analyzer(args):
     dnn_outdir = getattr(args, "dnn_outdir", "outputs_dnn")
     dnn_only = getattr(args, "dnn_only", False)
 
-    # Convert string boolean to actual boolean
-    event_selection_only = args.event_selection_only.lower() == "true"
+    event_selection_only = (mode == "event-selection")
 
     # Validate arguments
     if event_selection_only:
         if not args.event_selection_output:
-            logging.error("--event-selection-output must be provided when using --event-selection-only")
+            logging.error("--event-selection-output required with --mode event-selection")
             sys.exit(1)
         logging.info("Event selection only mode: will stop after event selection (no region analysis)")
     elif not dnn_only:
-        # Region analysis required unless stopping at DNN level
-        if not (dnn_model or train_dnn_config) and (not args.regions_config or not args.output):
-            logging.error("--regions-config and --output are required when --event-selection-only is false")
+        # regions-config always required for full mode
+        if not args.regions_config:
+            logging.error("--regions-config required for --mode full")
             sys.exit(1)
-        if (dnn_model or train_dnn_config) and (not args.regions_config or not args.output):
-            logging.error("--regions-config and --output are required for region analysis after DNN scoring")
+        # --output required only when saving PKL (not needed if only making plots)
+        make_plots_any = getattr(args, "make_region_plots", False) or getattr(args, "make_event_selection_plots", False)
+        if not args.output and not make_plots_any:
+            logging.error("--output or --make-region-plots/--make-event-selection-plots required for --mode full")
             sys.exit(1)
 
     config = load_config(args.config)
@@ -496,14 +720,15 @@ def run_analyzer(args):
                 logging.info("Calling postprocess to finalize event_selection_output if needed...")
                 result = coffea_analyzer.postprocess(result)
 
-            # Save results (only if not in event_selection_only mode)
+            # Save results (only if not in event_selection_only mode and --output given)
             if not event_selection_only:
-                analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
-                analyzer.accumulator = result
-                outdir = os.path.dirname(args.output)
-                if outdir:
-                    os.makedirs(outdir, exist_ok=True)
-                analyzer.save_results(args.output, output_format=args.output_format)
+                if args.output:
+                    analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
+                    analyzer.accumulator = result
+                    outdir = os.path.dirname(args.output)
+                    if outdir:
+                        os.makedirs(outdir, exist_ok=True)
+                    analyzer.save_results(args.output, output_format=args.output_format)
             else:
                 logging.info("Event selection only mode: skipping region analysis and main output save")
 
@@ -582,11 +807,12 @@ def run_analyzer(args):
                         results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                                    event_selection_only=False, output_format=output_format_to_use,
                                                    total_events=total_events)
-                        outdir = os.path.dirname(args.output)
-                        if outdir:
-                            os.makedirs(outdir, exist_ok=True)
-                        analyzer.accumulator = results
-                        analyzer.save_results(args.output, output_format=args.output_format)
+                        if args.output:
+                            outdir = os.path.dirname(args.output)
+                            if outdir:
+                                os.makedirs(outdir, exist_ok=True)
+                            analyzer.accumulator = results
+                            analyzer.save_results(args.output, output_format=args.output_format)
 
                 elif dnn_model:
                     # Score with existing model → inject ml_score in-memory → optionally region analysis
@@ -601,27 +827,30 @@ def run_analyzer(args):
                         results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                                   event_selection_only=False, output_format=output_format_to_use,
                                                   total_events=total_events)
+                        if args.output:
+                            outdir = os.path.dirname(args.output)
+                            if outdir:
+                                os.makedirs(outdir, exist_ok=True)
+                            analyzer.accumulator = results
+                            analyzer.save_results(args.output, output_format=args.output_format)
+
+                else:
+                    results = analyzer.process(events, event_selection_output=args.event_selection_output,
+                                              event_selection_only=False, output_format=output_format_to_use,
+                                              total_events=total_events)
+                    if args.output:
                         outdir = os.path.dirname(args.output)
                         if outdir:
                             os.makedirs(outdir, exist_ok=True)
                         analyzer.accumulator = results
                         analyzer.save_results(args.output, output_format=args.output_format)
 
-                else:
-                    results = analyzer.process(events, event_selection_output=args.event_selection_output,
-                                              event_selection_only=False, output_format=output_format_to_use,
-                                              total_events=total_events)
-                    outdir = os.path.dirname(args.output)
-                    if outdir:
-                        os.makedirs(outdir, exist_ok=True)
-                    analyzer.accumulator = results
-                    analyzer.save_results(args.output, output_format=args.output_format)
-
     except Exception as e:
         logging.error("Error in multi-region analysis: %s", e, exc_info=True)
         raise
 
     logging.info("Multi-region analysis completed!")
+    _trigger_plots(args)
 
 
 def make_trees(args):
@@ -874,8 +1103,7 @@ def make_plots(args):
 
     # Generate version string if not provided (format: YYYYMMDD_HHMM)
     if not args.version:
-        from datetime import datetime
-        version = datetime.now().strftime("%Y%m%d_%H%M")
+        version = _default_version()
     else:
         version = args.version
 
@@ -962,8 +1190,7 @@ def make_single_plots(args):
 
     # Generate version string if not provided (format: YYYYMMDD_HHMM)
     if not args.version:
-        from datetime import datetime
-        version = datetime.now().strftime("%Y%m%d_%H%M")
+        version = _default_version()
     else:
         version = args.version
 
@@ -1000,8 +1227,7 @@ def make_stacked_plots(args):
 
     # Generate version string if not provided (format: YYYYMMDD_HHMM)
     if not args.version:
-        from datetime import datetime
-        version = datetime.now().strftime("%Y%m%d_%H%M")
+        version = _default_version()
     else:
         version = args.version
 
@@ -1074,12 +1300,30 @@ def make_event_plots(args):
     cross_sections: dict = {}
     if args.xsection_json:
         with open(args.xsection_json) as f:
-            cross_sections = json.load(f)
+            _raw = json.load(f)
+        # Flatten nested format {category: [{full_dataset, xsection, year}]}
+        # into {full_dataset_stem: xsec_pb} for direct stem lookup.
+        # Also keep flat {stem: xsec} format if already flat.
+        year_str = str(config.get("year", ""))
+        for _cat, _entries in _raw.items():
+            if isinstance(_entries, list):
+                for _e in _entries:
+                    if not isinstance(_e, dict):
+                        continue
+                    _ds = _e.get("full_dataset") or _e.get("dataset")
+                    _xsec = _e.get("xsection")
+                    _yr = str(_e.get("year", ""))
+                    if _ds and _xsec is not None:
+                        # prefer matching year; always overwrite so last match wins
+                        if not year_str or _yr == year_str or _ds not in cross_sections:
+                            cross_sections[_ds] = float(_xsec)
+            elif isinstance(_entries, (int, float)):
+                # already flat: {stem: xsec}
+                cross_sections[_cat] = float(_entries)
 
     version = args.version
     if not version:
-        from datetime import datetime
-        version = datetime.now().strftime("%Y%m%d_%H%M")
+        version = _default_version()
 
     out_files = plot_manager.create_stacked_plots(
         mode=args.mode,
@@ -1097,8 +1341,9 @@ def make_event_plots(args):
         save_root=args.save_root,
         regions_config=getattr(args, "regions_config", None),
         weight_systematic=getattr(args, "weight_systematic", None),
+        show_data=getattr(args, "show_data", False),
     )
-    logging.info(f"make-event-plots: {len(out_files)} plot(s) written to {args.output_dir}")
+    logging.info(f"analyze-regions: {len(out_files)} plot(s) written to {args.output_dir}")
 
 
 def make_datacard(args):
@@ -1220,63 +1465,93 @@ Examples:
     run_parser.set_defaults(func=run_analysis)
 
     # Analyze command
-    analyze_parser = subparsers.add_parser("analyze", help="Run multi-region analysis")
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Run analysis pipeline (event-selection, region analysis, or both)",
+    )
     analyze_parser.add_argument("--config", required=True, help="Base configuration file")
-    analyze_parser.add_argument("--regions-config", required=False, help="Regions configuration file (not required if --event-selection-only is used)")
-    analyze_parser.add_argument("--input", nargs="+", required=True, help="Input file(s), can be a single .txt file listing paths")
-    analyze_parser.add_argument("--output", required=False, help="Output file (not required if --event-selection-only is used)")
-    analyze_parser.add_argument("--event-selection-output", help="Path to save events that pass event-level selection (optional)")
-    analyze_parser.add_argument("--event-selection-only", type=str.lower, default="false", 
-                               choices=["true", "false"], 
-                               help="If true, stop after event selection and don't perform region analysis (default: false)")
-    analyze_parser.add_argument("--output-format", default="pkl", 
+    analyze_parser.add_argument("--regions-config", required=False,
+                               help="Regions config YAML (required for full/region-analysis modes)")
+    analyze_parser.add_argument("--input", nargs="+", required=True,
+                               help="Input file(s): NanoAOD ROOT, EVENTSELECTION.root, folder, or .txt list")
+    analyze_parser.add_argument(
+        "--mode", default="full",
+        choices=["full", "event-selection", "region-analysis"],
+        help=(
+            "Pipeline mode: "
+            "'full' = NanoAOD → event-selection + region analysis (default); "
+            "'event-selection' = NanoAOD → EVENTSELECTION.root (add --make-event-selection-plots to plot instead); "
+            "'region-analysis' = EVENTSELECTION.root → region cuts + plots"
+        ),
+    )
+    analyze_parser.add_argument("--output", required=False,
+                               help="Output PKL file (full/region-analysis modes)")
+    analyze_parser.add_argument("--event-selection-output",
+                               help="Path to save EVENTSELECTION.root (full and event-selection modes)")
+    analyze_parser.add_argument("--output-format", default="pkl",
                                choices=["pkl", "root", "parquet"],
                                help="Output file format (default: pkl)")
     analyze_parser.add_argument("--executor", choices=["iterative", "futures", "dask"],
                                default="iterative", help="Execution backend")
     analyze_parser.add_argument("--workers", type=int, default=4, help="Number of workers")
     analyze_parser.add_argument("--chunk-size", type=str, default=None,
-                               help="Number of events per chunk for futures/dask executors. Use 'auto' for automatic optimization, or specify an integer (default: 50000 for futures, 200000 for dask). Only used with futures/dask executors.")
-    analyze_parser.add_argument("--max-events", type=int, help="Maximum events to process across all chunks")
+                               help="Events per chunk for futures/dask (default: auto)")
+    analyze_parser.add_argument("--max-events", type=int,
+                               help="Maximum events to process across all chunks")
     analyze_parser.add_argument("--data", action="store_true",
-                               help="Input is collision data: apply golden JSON lumi mask and skip MC-only weights")
+                               help="Collision data: apply golden JSON lumi mask, skip MC weights")
+    analyze_parser.add_argument("--xsection-json", default=None, metavar="JSON",
+                               help="JSON mapping filename stem → cross-section in pb (region-analysis mode)")
+    # Plotting flags
+    analyze_parser.add_argument("--make-region-plots", action="store_true", default=False,
+                               help="Produce stacked region plots (pdf/png/txt/root) — region-analysis and full modes")
+    analyze_parser.add_argument("--make-event-selection-plots", action="store_true", default=False,
+                               help="Produce stacked event-selection plots (before region cuts)")
+    analyze_parser.add_argument("--plot-config", default=None,
+                               help="Plotting YAML (default: configs/plotting.yaml)")
+    analyze_parser.add_argument("--output-dir", default="outputs",
+                               help="Output directory for plots (default: outputs)")
+    analyze_parser.add_argument("--show-data", action="store_true", default=False,
+                               help="Unblind SR: show real data in SR plots (default: bkg-sum as pseudo-data)")
+    analyze_parser.add_argument("--save-root", action="store_true",
+                               help="Also save ROOT TH1 files for plots")
+    analyze_parser.add_argument("--plot-variables", nargs="+", default=None, metavar="VAR",
+                               help="Variables to plot (default: all)")
+    analyze_parser.add_argument("--plot-regions", nargs="+", default=None, metavar="REGION",
+                               help="Regions to plot (default: all)")
+    analyze_parser.add_argument("--version", default=None,
+                               help="Version tag for plot output subdirectory (default: timestamp)")
+    analyze_parser.add_argument("--weight-systematic", default=None, metavar="BRANCH",
+                               help="Weight branch override for plots (e.g. weight_pileupUP)")
     # DNN integration flags
     analyze_parser.add_argument(
         "--dnn-model", default=None,
-        help="Path to trained DNN checkpoint (.pt). When provided, scores each passing event "
-             "with the model before region analysis (adds ml_score branch).",
+        help="Path to trained DNN checkpoint (.pt). Scores events before region analysis.",
     )
     analyze_parser.add_argument(
         "--dnn-config", default=None,
-        help="DNN config YAML (e.g. configs/dnn.yaml). Used to resolve feature list when --dnn-model is set.",
+        help="DNN config YAML (e.g. configs/dnn.yaml).",
     )
     analyze_parser.add_argument(
         "--train-dnn", default=None,
-        help="If set to a DNN config YAML path, train the DNN on the event-selection output before "
-             "scoring and region analysis (implies --event-selection-only first, then full pipeline). "
-             "Requires --signal-pattern or --signal-prefix or --label-csv to label samples.",
+        help="DNN config YAML path: train DNN on event-selection output before region analysis.",
     )
     analyze_parser.add_argument(
         "--dnn-outdir", default="outputs_dnn",
-        help="Output directory for DNN model + metrics when --train-dnn is used (default: outputs_dnn)",
+        help="Output directory for DNN model + metrics (default: outputs_dnn)",
     )
     analyze_parser.add_argument(
         "--dnn-only", action="store_true",
-        help="Stop after DNN scoring — produce score distribution plot, skip region analysis. "
-             "Training plots (AUC, ranking, loss) are always produced when --train-dnn is set.",
+        help="Stop after DNN scoring — produce score plot, skip region analysis.",
     )
     analyze_parser.add_argument(
         "--signal-pattern", action="append", default=None, dest="signal_pattern",
         help="Regex to identify signal files for DNN training (repeatable)",
     )
-    analyze_parser.add_argument(
-        "--signal-prefix", default=None,
-        help="Filename prefix that marks signal samples for DNN training",
-    )
-    analyze_parser.add_argument(
-        "--label-csv", default=None,
-        help="CSV with columns path,label for DNN training label assignment",
-    )
+    analyze_parser.add_argument("--signal-prefix", default=None,
+                               help="Filename prefix marking signal samples for DNN training")
+    analyze_parser.add_argument("--label-csv", default=None,
+                               help="CSV with columns path,label for DNN training label assignment")
     analyze_parser.set_defaults(func=run_analyzer)
 
     # Make trees command
@@ -1422,59 +1697,6 @@ Examples:
     stacked_parser.add_argument("--plot-config", help="Path to plotting configuration YAML file (default: configs/plotting.yaml)")
     # All formats (PNG, PDF, ROOT, TXT) are generated automatically in batch mode
     stacked_parser.set_defaults(func=make_stacked_plots)
-
-    # Make event plots command
-    event_plots_parser = subparsers.add_parser(
-        "make-event-plots",
-        help="Create stacked MC+data plots (event-selection or region mode)",
-    )
-    event_plots_parser.add_argument(
-        "--mode", required=True,
-        choices=["event-selection", "region", "region-from-events"],
-        help=(
-            "Plot mode: "
-            "event-selection (flat per-sample files → stacked variable plots), "
-            "region (region histogram PKLs from 'analyze'), "
-            "region-from-events (event-selected files → apply region cuts in-memory → stacked region plots)"
-        ),
-    )
-    event_plots_parser.add_argument("--config", required=True,
-                                    help="Year config YAML (provides year + luminosity)")
-    event_plots_parser.add_argument("--input-folder", required=True, metavar="DIR",
-                                    help="Single folder containing all background ROOT/PKL files")
-    event_plots_parser.add_argument("--process-groups", default=None, metavar="JSON",
-                                    help="JSON file mapping process label → {files: [...]} groups "
-                                         "(default: read process_groups from plotting.yaml)")
-    event_plots_parser.add_argument("--data-folder", default=None, metavar="DIR",
-                                    help="Separate folder for data files (optional; "
-                                         "ignored if data groups defined in plotting.yaml)")
-    event_plots_parser.add_argument("--output-dir", required=True,
-                                    help="Root output directory")
-    event_plots_parser.add_argument("--xsection-json", default=None, metavar="JSON",
-                                    help="JSON file mapping filename stem → cross-section in pb")
-    event_plots_parser.add_argument("--variables", nargs="+", default=None, metavar="VAR",
-                                    help="Variables to plot (default: all)")
-    event_plots_parser.add_argument("--regions", nargs="+", default=None, metavar="REGION",
-                                    help="Regions to plot in region mode (default: all)")
-    event_plots_parser.add_argument("--save-root", action="store_true",
-                                    help="Also save ROOT TH1 files")
-    event_plots_parser.add_argument("--plot-config", default=None,
-                                    help="Plotting YAML (default: configs/plotting.yaml)")
-    event_plots_parser.add_argument("--version", default=None,
-                                    help="Version tag for output subdirectory (default: timestamp)")
-    event_plots_parser.add_argument(
-        "--regions-config", default=None, metavar="YAML",
-        help="Path to regions.yaml — required for region-from-events mode",
-    )
-    event_plots_parser.add_argument(
-        "--weight-systematic", default=None, metavar="BRANCH",
-        help=(
-            "Weight branch to use instead of 'full_event_weight' (nominal). "
-            "E.g. 'weight_pileupUP', 'weight_btagDOWN'. "
-            "Only applies to region-from-events mode."
-        ),
-    )
-    event_plots_parser.set_defaults(func=make_event_plots)
 
     # Make datacard command
     datacard_parser = subparsers.add_parser("make-datacard", help="Generate Combine datacard")

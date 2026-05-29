@@ -257,7 +257,7 @@ class TestDataGroupRegionRouting:
 
     def _make_pm_with_data(self, tmp_path):
         met_file  = self._make_region_pkl(tmp_path, "JetMET_Run2024C.pkl", "1b:SR",        "met", np.array([300., 400., 500.]))
-        egam_file = self._make_region_pkl(tmp_path, "EGamma_Run2024C.pkl", "1b:CR_Zll_el", "met", np.array([200., 250.]))
+        egam_file = self._make_region_pkl(tmp_path, "EGamma_Run2024C.pkl", "1b:CR_Zee", "met", np.array([200., 250.]))
 
         cfg_txt = textwrap.dedent(f"""\
             process_groups:
@@ -298,11 +298,11 @@ class TestDataGroupRegionRouting:
             return any(p in region for p in region_patterns)
 
         assert applies(rp_met,  "1b:SR")           is True
-        assert applies(rp_met,  "2b:CR_Top_mu")    is True
-        assert applies(rp_met,  "1b:CR_Zll_el")    is False
-        assert applies(rp_egam, "1b:CR_Zll_el")    is True
+        assert applies(rp_met,  "2b:CR_Topmunu")    is True
+        assert applies(rp_met,  "1b:CR_Zee")    is False
+        assert applies(rp_egam, "1b:CR_Zee")    is True
         assert applies(rp_egam, "1b:SR")            is False
-        assert applies(rp_egam, "2b:CR_Top_mu")     is False
+        assert applies(rp_egam, "2b:CR_Topmunu")     is False
 
     def test_empty_regions_list_matches_all(self):
         def applies(region_patterns, region):
@@ -310,7 +310,7 @@ class TestDataGroupRegionRouting:
                 return True
             return any(p in region for p in region_patterns)
 
-        for region in ["1b:SR", "2b:CR_Top_mu", "1b:CR_Zll_el"]:
+        for region in ["1b:SR", "2b:CR_Topmunu", "1b:CR_Zee"]:
             assert applies([], region) is True
 
 

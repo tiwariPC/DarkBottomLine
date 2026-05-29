@@ -17,7 +17,7 @@ regions:
       NjetsMin: ">=2"
       Nleptons: "==0"
 
-  "1b:CR_Wlnu_mu":
+  "1b:CR_Wmunu":
     description: "W+jets control region in 1b category (muon)"
     cuts:
       Nbjets: "==1"
@@ -26,7 +26,7 @@ regions:
       MET: ">100"
       MT: "<160"
       NAdditionalJets: "==0"
-  "1b:CR_Wlnu_el":
+  "1b:CR_Wenu":
     description: "W+jets control region in 1b category (electron)"
     cuts:
       Nbjets: "==1"
@@ -35,7 +35,7 @@ regions:
       MET: ">100"
       MT: "<160"
       NAdditionalJets: "==0"
-  "2b:CR_Top_mu":
+  "2b:CR_Topmunu":
     description: "Top control region in 2b category (muon)"
     cuts:
       Nbjets: "==2"
@@ -44,7 +44,7 @@ regions:
       MT: "<160"
       NAdditionalJets: ">=1"
       Njets: ">=3"
-  "2b:CR_Top_el":
+  "2b:CR_Topenu":
     description: "Top control region in 2b category (electron)"
     cuts:
       Nbjets: "==2"
@@ -54,7 +54,7 @@ regions:
       NAdditionalJets: ">=1"
       Njets: ">=3"
 
-  "1b:CR_Zll_mu":
+  "1b:CR_Zmumu":
     description: "Z+jets CR (1b) muon: 2 OS muons, leading tight pt>30, subleading loose pt>10"
     cuts:
       NmuonsZ: "==2"
@@ -62,7 +62,7 @@ regions:
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=2"
-  "1b:CR_Zll_el":
+  "1b:CR_Zee":
     description: "Z+jets CR (1b) electron: 2 OS electrons, leading tight pt>30, subleading loose pt>10"
     cuts:
       NelectronsZ: "==2"
@@ -71,7 +71,7 @@ regions:
       MllMax: "<110"
       Njets: "<=2"
 
-  "2b:CR_Zll_mu":
+  "2b:CR_Zmumu":
     description: "Z+jets CR (2b) muon: 2 OS muons, leading tight pt>30, subleading loose pt>10"
     cuts:
       NmuonsZ: "==2"
@@ -80,7 +80,7 @@ regions:
       MllMax: "<110"
       Njets: "<=3"
       NjetsMin: ">=2"
-  "2b:CR_Zll_el":
+  "2b:CR_Zee":
     description: "Z+jets CR (2b) electron: 2 OS electrons, leading tight pt>30, subleading loose pt>10"
     cuts:
       NelectronsZ: "==2"

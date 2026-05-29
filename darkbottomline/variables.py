@@ -293,6 +293,18 @@ def compute_event_variables(
     out.update(_jet_composite_variables(jet_lead, met_vars))
     out['dPhi_jetMET'] = _dphi_jet_met(objects, met_vars['PFMET_phi'])
 
+    # --- Leading lepton scalar branches (needed for MT/Mll in CR cuts) ---
+    for lep_key, prefix in (('muons', 'muon'), ('electrons', 'electron')):
+        lep = objects.get(lep_key, ak.Array([]))
+        for idx, suffix in ((0, 'lep1'), (1, 'lep2')):
+            try:
+                if hasattr(lep, 'pt'):
+                    out[f'{prefix}_{suffix}_pt']  = _lead(lep.pt,  idx, default=SENTINEL).astype(np.float32)
+                    out[f'{prefix}_{suffix}_phi'] = _lead(lep.phi, idx, default=SENTINEL).astype(np.float32)
+                    out[f'{prefix}_{suffix}_eta'] = _lead(lep.eta, idx, default=SENTINEL).astype(np.float32)
+            except Exception:
+                pass
+
     # --- Jagged object branches ---
     out.update(_jagged_variables(objects))
 

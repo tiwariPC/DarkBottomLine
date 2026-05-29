@@ -158,7 +158,7 @@ class DarkBottomLineAnalyzer:
             "event_weights": {},
         }
 
-        logging.info(f"Initialized analyzer with {len(self.region_manager.regions) if self.region_manager else 0} regions")
+        logging.debug(f"Initialized analyzer with {len(self.region_manager.regions) if self.region_manager else 0} regions")
 
     def _create_region_histograms(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -416,6 +416,108 @@ class DarkBottomLineAnalyzer:
 
         logging.info(f"Analysis completed in {processing_time:.2f} seconds")
 
+        return self.accumulator
+
+    def process_from_eventselection(
+        self,
+        branches: Dict[str, np.ndarray],
+        weighted_total_events: float,
+        is_data: bool = False,
+        dnn_model: Optional[str] = None,
+        dnn_config: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run region analysis starting from a pre-selected flat-branch dict (EVENTSELECTION.root).
+
+        Skips NanoAOD object building and event-level preselection — input events have already
+        passed the event selection.  Region cuts are applied via RegionManager using the flat
+        branches (same fallback logic as make-event-plots region-from-events mode).
+
+        Args:
+            branches:                flat {name: np.ndarray} from EVENTSELECTION.root Events tree
+            weighted_total_events:   sum of generator weights before preselection (from metadata TH1)
+            is_data:                 True for collision data (unit weights)
+            dnn_model:               path to trained DNN checkpoint (optional)
+            dnn_config:              path to DNN config YAML (optional)
+
+        Returns:
+            Same accumulator structure as process()
+        """
+        import time
+        start_time = time.time()
+
+        if self.region_manager is None:
+            raise ValueError("RegionManager not initialised — pass --regions-config")
+
+        n_ev = len(next(iter(branches.values()))) if branches else 0
+
+        # Build ak.Array from flat branches; convert object-dtype (jagged) arrays individually
+        ak_dict: Dict[str, Any] = {}
+        for k, v in branches.items():
+            if not isinstance(v, np.ndarray) or v.ndim != 1:
+                continue
+            if v.dtype == object:
+                try:
+                    ak_dict[k] = ak.Array(list(v))
+                except Exception:
+                    pass
+            else:
+                ak_dict[k] = v
+        events = ak.Array(ak_dict)
+
+        # Weights: read from branches if present, else unit
+        if is_data:
+            event_weights_nominal = np.ones(n_ev, dtype=np.float64)
+        else:
+            fw = branches.get("full_event_weight")
+            if fw is not None and len(fw) == n_ev:
+                event_weights_nominal = np.asarray(fw, dtype=np.float64)
+            else:
+                event_weights_nominal = np.ones(n_ev, dtype=np.float64)
+
+        # Optional DNN scoring
+        if dnn_model:
+            try:
+                from .dnn_inference import DNNInference
+                inferencer = DNNInference(dnn_model, dnn_config)
+                scores = inferencer.predict(events)
+                events = ak.with_field(events, scores, "ml_score")
+                logging.info("DNN scores added to events (ml_score)")
+            except Exception as _dnn_exc:
+                logging.warning("DNN scoring failed, continuing without scores: %s", _dnn_exc)
+
+        # Apply region cuts (objects={} — regions.py uses flat-branch fallbacks)
+        logging.debug("Applying region cuts from event-selection branches (%d events)...", n_ev)
+        region_masks = self.region_manager.apply_regions(events, objects={})
+
+        region_results: Dict[str, Any] = {}
+        for region_name, region_mask in region_masks.items():
+            n_passing = int(ak.sum(region_mask))
+            if n_passing == 0:
+                logging.debug("Skipping region %s: 0 events", region_name)
+                region_results[region_name] = {"n_events": 0, "variables": {}, "dnn_scores": None}
+                continue
+            logging.debug("Processing region %s (%d events)...", region_name, n_passing)
+            region_results[region_name] = self._process_region(events, {}, region_mask, region_name)
+
+        region_histograms = self._fill_region_histograms(events, {}, region_masks, event_weights_nominal)
+        region_cutflow    = self._calculate_region_cutflow(region_masks)
+        validation        = self.region_manager.validate_regions(events, {})
+        processing_time   = time.time() - start_time
+
+        self.accumulator["regions"]          = region_results
+        self.accumulator["region_histograms"] = region_histograms
+        self.accumulator["region_cutflow"]    = region_cutflow
+        self.accumulator["region_validation"] = validation
+        self.accumulator["event_weights"]     = {}
+        self.accumulator["metadata"] = {
+            "n_events_processed":  n_ev,
+            "n_regions":           len(self.region_manager.regions),
+            "processing_time":     processing_time,
+            "weighted_total_events": float(weighted_total_events),
+            "luminosity":          float(self.base_processor.config.get("lumi", 1.0)),
+        }
+        logging.debug("Region analysis from event-selection completed in %.2f s", processing_time)
         return self.accumulator
 
     def _extract_objects_from_results(self, base_results: Dict[str, Any]) -> Dict[str, Any]:
@@ -1571,10 +1673,24 @@ if COFFEA_AVAILABLE:
                         cf_edges   = np.arange(len(cut_counts) + 1, dtype=float)
                         f["cutflow"] = (cut_counts, cf_edges)
 
-                # Events TTree with all output branches
+                # Events TTree — flat numpy branches only (jagged ak.Arrays corrupt uproot output)
                 if branches:
                     try:
-                        f["Events"] = branches
-                        logging.info(f"Wrote Events tree with {n_selected} entries, {len(branches)} branches")
+                        flat_branches = {}
+                        for k, v in branches.items():
+                            if isinstance(v, np.ndarray):
+                                if v.dtype == object or v.ndim != 1:
+                                    continue  # jagged or multi-dim numpy
+                                flat_branches[k] = v
+                            elif isinstance(v, ak.Array):
+                                try:
+                                    arr = ak.to_numpy(v)
+                                    if arr.dtype == object or arr.ndim != 1:
+                                        continue  # jagged
+                                    flat_branches[k] = arr.astype(np.float32)
+                                except Exception:
+                                    continue
+                        f["Events"] = flat_branches
+                        logging.info(f"Wrote Events tree with {n_selected} entries, {len(flat_branches)} branches")
                     except Exception as e:
                         logging.error(f"Failed to write Events tree: {e}", exc_info=True)

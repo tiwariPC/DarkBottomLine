@@ -128,13 +128,14 @@ def _extract_branches(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
     return distributions
 
 
-def _apply_variable_plot_filter(variable: str, values: np.ndarray) -> np.ndarray:
+def _apply_variable_plot_filter(variable: str, values: np.ndarray,
+                                return_mask: bool = False) -> np.ndarray:
     if values.size == 0:
-        return values
-    values = values[values != _SENTINEL]
+        return np.ones(0, dtype=bool) if return_mask else values
+    mask = values != _SENTINEL
     if variable.lower().endswith("met_pt"):
-        return values[values >= 100.0]
-    return values
+        mask &= values >= 100.0
+    return mask if return_mask else values[mask]
 
 
 def _make_bins(
@@ -235,10 +236,26 @@ class PlotManager:
         self.colors = get_process_colors()
         self.labels = get_process_labels()
 
-        # Plot settings
-        self.figsize = self.config.get("figsize", (12, 8))
-        self.dpi = self.config.get("dpi", 300)
-        self.format = self.config.get("format", "pdf")
+        # Plot settings — all driven from plotting.yaml
+        self.dpi              = self.config.get("dpi", 200)
+        self.figsize          = tuple(self.config.get("figsize_ratio",    [12, 12]))
+        self.figsize_no_ratio = tuple(self.config.get("figsize_no_ratio", [12, 10]))
+        self.figsize_cutflow  = tuple(self.config.get("figsize_cutflow",  [12, 12]))
+        self.subplots_top     = self.config.get("subplots_top",    0.92)
+        self.subplots_bottom  = self.config.get("subplots_bottom", 0.09)
+        self.subplots_left    = self.config.get("subplots_left",   0.14)
+        self.subplots_right   = self.config.get("subplots_right",  0.95)
+        self.subplots_hspace  = self.config.get("subplots_hspace", 0.08)
+        self.main_height      = self.config.get("main_height",     3.0)
+        self.ratio_height     = self.config.get("ratio_height",    1.0)
+        self.fontsize_axis    = self.config.get("fontsize_axis",   22)
+        self.fontsize_legend  = self.config.get("fontsize_legend", 20)
+        self.fontsize_xtick_cutflow = self.config.get("fontsize_xtick_cutflow", 16)
+        self.unc_facecolor    = self.config.get("uncertainty_facecolor", "#bbbbbb")
+        self.unc_edgecolor    = self.config.get("uncertainty_edgecolor", "#666666")
+        self.unc_hatch        = self.config.get("uncertainty_hatch",     "////")
+        self.unc_alpha        = self.config.get("uncertainty_alpha",     0.8)
+        self.unc_label        = self.config.get("uncertainty_label",     "Stat. unc.")
 
         # Variables that should NOT use log scale (multiplicity plots, etc.)
         self.no_log_scale_vars = self.config.get("no_log_scale_vars", [
@@ -246,8 +263,20 @@ class PlotManager:
             'n_pv', 'pu_npv'
         ])
 
-        # Region-specific exclusions — loaded entirely from plotting.yaml (no hardcoded defaults here)
+        # Region-specific exclusions — kept for backward-compat but no longer used by default path
         self.region_exclusions = self.config.get("region_exclusions", {})
+
+        # Variables common to every region — prepended to each region's specific list.
+        self.common_variables: List[str] = list(self.config.get("common_variables", []))
+
+        # Per-region variable additions (region-specific on top of common_variables).
+        # Final plot list = common_variables + region_variables[region].
+        # Private keys starting with "_" are ignored.
+        raw_rv: Dict[str, Any] = self.config.get("region_variables", {})
+        self.region_variables: Dict[str, List[str]] = {
+            k: list(v) for k, v in raw_rv.items()
+            if not k.startswith("_") and isinstance(v, list)
+        }
 
         # Bin config from plotting.yaml
         self._variable_bins_cfg: Dict[str, Any] = self.config.get("variable_bins", {})
@@ -283,7 +312,9 @@ class PlotManager:
             else:
                 self.process_groups[label] = patterns
 
-        logging.info("Plot manager initialized")
+        self.event_selection_variables: List[str] = self.config.get("event_selection_variables", [])
+
+        logging.debug("Plot manager initialized")
 
     def _build_bins_from_config(self, variable: Optional[str]) -> Optional[np.ndarray]:
         """Resolve bin edges for *variable* from plotting.yaml variable_bins."""
@@ -595,23 +626,22 @@ class PlotManager:
 
         Examples:
             "1b:SR" -> {"category": "1b", "region_dir": "SR"}
-            "1b:CR_Wlnu_mu" -> {"category": "1b", "region_dir": "Wlnu_mu"}
-            "2b:CR_Top_el" -> {"category": "2b", "region_dir": "Top_el"}
-            "1b:CR_Zll_mu" -> {"category": "1b", "region_dir": "Zll_mu"}
+            "1b:CR_Wmunu" -> {"category": "1b", "region_dir": "Wlnu_mu"}
+            "2b:CR_Topenu" -> {"category": "2b", "region_dir": "Top_el"}
+            "1b:CR_Zmumu" -> {"category": "1b", "region_dir": "Zll_mu"}
 
         Args:
-            region: Region name (e.g., "1b:SR", "2b:CR_Wlnu_mu")
+            region: Region name (e.g., "1b:SR", "2b:CR_Wmunu")
 
         Returns:
             Dictionary with category and region_dir
         """
         parts = region.split(":")
         if len(parts) != 2:
-            # Fallback: use full region name
-            return {"category": "unknown", "region_dir": region}
+            return {"category": "event_selection", "region_dir": "event_selection"}
 
         category = parts[0]  # e.g., "1b" or "2b"
-        region_part = parts[1]  # e.g., "SR" or "CR_Wlnu_mu"
+        region_part = parts[1]  # e.g., "SR" or "CR_Wmunu"
 
         # Clean up region directory name
         if region_part.startswith("CR_"):
@@ -646,7 +676,7 @@ class PlotManager:
         - {base_output_dir}/plots/{version}/text/{category}/{region_dir}/{hist_name}.txt (yields)
 
         Example:
-            For region "1b:CR_Wlnu_mu" and hist_name "met":
+            For region "1b:CR_Wmunu" and hist_name "met":
             - outputs/plots/20231105_1430/png/1b/Wlnu_mu/met.png
             - outputs/plots/20231105_1430/pdf/1b/Wlnu_mu/met.pdf
             - outputs/plots/20231105_1430/root/met.root
@@ -655,7 +685,7 @@ class PlotManager:
         Args:
             fig: Matplotlib figure object
             hist_name: Name of the histogram
-            region: Region name (e.g., "1b:SR", "2b:CR_Wlnu_mu")
+            region: Region name (e.g., "1b:SR", "2b:CR_Wmunu")
             version: Version string (e.g., "v20251029_HHMM")
             base_output_dir: Base output directory
             is_log: Whether plot is in log scale
@@ -674,65 +704,40 @@ class PlotManager:
         region_dir = region_info["region_dir"]
 
         # Create directory structure: plots/{version}/png/{category}/{region_dir}/
-        png_dir = os.path.join(base_output_dir, "plots", version, "png", category, region_dir)
-        pdf_dir = os.path.join(base_output_dir, "plots", version, "pdf", category, region_dir)
+        if category == "event_selection":
+            png_dir  = os.path.join(base_output_dir, "plots", version, "png",  "event_selection")
+            pdf_dir  = os.path.join(base_output_dir, "plots", version, "pdf",  "event_selection")
+            text_dir = os.path.join(base_output_dir, "plots", version, "text", "event_selection")
+        else:
+            region_label = f"{category}_{region_dir}"
+            png_dir  = os.path.join(base_output_dir, "plots", version, "png",  "region_analysis", region_label)
+            pdf_dir  = os.path.join(base_output_dir, "plots", version, "pdf",  "region_analysis", region_label)
+            text_dir = os.path.join(base_output_dir, "plots", version, "text", "region_analysis", region_label)
         root_dir = os.path.join(base_output_dir, "plots", version, "root")
-        text_dir = os.path.join(base_output_dir, "plots", version, "text", category, region_dir)
 
         # Create all directories
         for dir_path in [png_dir, pdf_dir, root_dir, text_dir]:
             os.makedirs(dir_path, exist_ok=True)
 
-        # Determine file suffix for log plots
-        suffix = "_log" if is_log else ""
+        # File stem: region_hist_{category}_{region_dir}_{variable}{_log}
+        log_suffix = "_log" if is_log else ""
+        if category == "event_selection":
+            file_stem = f"hist_event_selection_{hist_name}{log_suffix}"
+        else:
+            file_stem = f"hist_{category}_{region_dir}_{hist_name}{log_suffix}"
 
         # Save PNG
-        png_path = os.path.join(png_dir, f"{hist_name}{suffix}.png")
+        png_path = os.path.join(png_dir, f"{file_stem}.png")
         fig.savefig(png_path, dpi=self.dpi, bbox_inches='tight')
         saved_files['png'] = png_path
 
         # Save PDF
-        pdf_path = os.path.join(pdf_dir, f"{hist_name}{suffix}.pdf")
+        pdf_path = os.path.join(pdf_dir, f"{file_stem}.pdf")
         fig.savefig(pdf_path, bbox_inches='tight')
         saved_files['pdf'] = pdf_path
 
-        # Save ROOT file (if ROOT is available)
-        # ROOT files: one file per variable (hist_name contains category_region_variable)
-        # Each file contains histograms from this specific region
-        try:
-            import ROOT
-            # hist_name already contains category_region_variable format
-            root_path = os.path.join(root_dir, f"{hist_name}{suffix}.root")
-            os.makedirs(root_dir, exist_ok=True)
-            root_file = ROOT.TFile(root_path, "RECREATE")
-
-            # Create TH1F for each process
-            # Note: hist_name already includes category and region, so we use it directly
-            if data_hists and hist_name in data_hists:
-                data_hist = self._create_th1f_from_hist(data_hists[hist_name], "data_obs", f"Data_{category}_{region_dir}")
-                data_hist.Write()
-
-            if mc_hists:
-                for process_name, process_hists in mc_hists.items():
-                    if hist_name in process_hists:
-                        th1f = self._create_th1f_from_hist(process_hists[hist_name], process_name, f"{process_name}_{category}_{region_dir}")
-                        th1f.Write()
-
-            if signal_hists and hist_name in signal_hists:
-                signal_hist = self._create_th1f_from_hist(signal_hists[hist_name], "signal", f"Signal_{category}_{region_dir}")
-                signal_hist.Write()
-
-            root_file.Close()
-            saved_files['root'] = root_path
-
-        except ImportError:
-            logging.warning("ROOT not available, skipping ROOT file creation")
-            saved_files['root'] = None
-
-        # Save yield text file
-        txt_path = os.path.join(text_dir, f"{hist_name}{suffix}.txt")
-        self._save_yield_text_file(txt_path, hist_name, data_hists, mc_hists, signal_hists)
-        saved_files['txt'] = txt_path
+        # ROOT: written by _plot_stacked_variable directly via uproot
+        saved_files['root'] = None
 
         return saved_files
 
@@ -847,25 +852,17 @@ class PlotManager:
         rows = list(background_rows)
         rows.append(("Total_Bkg", mc_total, mc_total_sumw2))
         if data_ndarray is not None:
-            rows.append(("data_obs", data_ndarray, np.sqrt(data_ndarray)))
-
-        col_w = 20
-        txt_path = stem.with_suffix(".txt")
-        with open(txt_path, "w") as fh:
-            header = f"{'Sample':<24}" + "".join(f"{b:>{col_w}}" for b in bin_labels)
-            fh.write(header + "\n" + "-" * len(header) + "\n")
-            for label, vals, sumw2 in rows:
-                cells = "".join(
-                    f"{f'{vals[i]:.2f}±{np.sqrt(sumw2[i]):.2f}':>{col_w}}" for i in range(n_bins)
-                )
-                fh.write(f"{label:<24}{cells}\n")
+            with np.errstate(invalid="ignore"):
+                rows.append(("data_obs", data_ndarray, np.sqrt(np.maximum(data_ndarray, 0.0))))
 
         tex_path = stem.with_suffix(".tex")
         with open(tex_path, "w") as fh:
             col_spec = "l" + "c" * n_bins
             bin_hdr = " & ".join(f"\\textbf{{{b}}}" for b in bin_labels)
             fh.write("\\begin{table}[htbp]\n\\centering\n")
-            fh.write(f"\\caption{{Yield table for {variable}}}\n\\label{{tab:{variable}}}\n")
+            _cap_var = variable.replace("_", r"\_")
+            _lbl_var = variable.replace("_", "-")
+            fh.write(f"\\caption{{Yield table for \\texttt{{{_cap_var}}}}}\n\\label{{tab:{_lbl_var}}}\n")
             fh.write(f"\\begin{{tabular}}{{{col_spec}}}\n\\toprule\n")
             fh.write(f"\\textbf{{Sample}} & {bin_hdr} \\\\ \\midrule\n")
             for label, vals, sumw2 in rows:
@@ -911,14 +908,17 @@ class PlotManager:
         show_ratio = data_ndarray is not None
         if show_ratio:
             fig, (ax, ax_ratio) = plt.subplots(
-                2, 1, figsize=(12, 12), sharex=True,
-                gridspec_kw={"height_ratios": [3.0, 1.0], "hspace": 0.08},
+                2, 1, figsize=self.figsize, sharex=True,
+                gridspec_kw={"height_ratios": [self.main_height, self.ratio_height],
+                             "hspace": self.subplots_hspace},
             )
-            fig.subplots_adjust(top=0.92, bottom=0.09, left=0.14, right=0.95)
+            fig.subplots_adjust(top=self.subplots_top, bottom=self.subplots_bottom,
+                                left=self.subplots_left, right=self.subplots_right)
         else:
-            fig, ax = plt.subplots(figsize=(12, 10))
+            fig, ax = plt.subplots(figsize=self.figsize_no_ratio)
             ax_ratio = None
-            fig.subplots_adjust(top=0.92, bottom=0.12, left=0.14, right=0.95)
+            fig.subplots_adjust(top=self.subplots_top, bottom=0.12,
+                                left=self.subplots_left, right=self.subplots_right)
 
         cumulative = np.zeros(len(bins) - 1, dtype=float)
         cumulative_sq = np.zeros(len(bins) - 1, dtype=float)
@@ -944,8 +944,8 @@ class PlotManager:
         unc_hi = np.append(cumulative + mc_stat_err, (cumulative + mc_stat_err)[-1])
         ax.fill_between(
             unc_x, unc_lo, unc_hi, step="post",
-            hatch="////", facecolor="#bbbbbb", edgecolor="#666666",
-            linewidth=0.0, alpha=0.8, zorder=5,
+            hatch=self.unc_hatch, facecolor=self.unc_facecolor, edgecolor=self.unc_edgecolor,
+            linewidth=0.0, alpha=self.unc_alpha, zorder=5,
         )
 
         if data_ndarray is not None:
@@ -976,9 +976,9 @@ class PlotManager:
                 x_lo = min(x_lo, float(bins[nz_d[0]]))
                 x_hi = max(x_hi, float(bins[nz_d[-1] + 1]))
         ax.set_xlim(x_lo, x_hi)
-        ax.set_ylabel("Events / bin", fontsize=22, labelpad=6)
+        ax.set_ylabel("Events / bin", fontsize=self.fontsize_axis, labelpad=6)
         if not show_ratio:
-            ax.set_xlabel(variable, fontsize=22)
+            ax.set_xlabel(variable, fontsize=self.fontsize_axis)
         ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]))
         ax.grid(False)
 
@@ -989,7 +989,7 @@ class PlotManager:
                 out=np.full_like(data_ndarray, np.nan, dtype=float), where=pred > 0,
             )
             data_ratio_err = np.divide(
-                np.sqrt(data_ndarray), pred,
+                np.sqrt(np.maximum(data_ndarray, 0.0)), pred,
                 out=np.zeros_like(data_ndarray, dtype=float), where=pred > 0,
             )
             pred_rel_err = np.divide(
@@ -1002,8 +1002,8 @@ class PlotManager:
             ratio_hi = np.append(1.0 + pred_rel_err, (1.0 + pred_rel_err)[-1])
             ax_ratio.fill_between(
                 unc_x, ratio_lo, ratio_hi, step="post",
-                hatch="////", facecolor="#bbbbbb", edgecolor="#3d3d3d",
-                linewidth=0.0, alpha=0.8, label="Stat. unc.", zorder=5,
+                hatch=self.unc_hatch, facecolor=self.unc_facecolor, edgecolor=self.unc_edgecolor,
+                linewidth=0.0, alpha=self.unc_alpha, label=self.unc_label, zorder=5,
             )
             if np.any(ratio_mask):
                 half_width = 0.5 * (bins[1:] - bins[:-1])
@@ -1014,9 +1014,9 @@ class PlotManager:
                     markeredgecolor="black", markersize=5.5,
                     elinewidth=1.0, capsize=0, zorder=10,
                 )
-            ax_ratio.legend(loc="upper right", fontsize=20, frameon=False)
-            ax_ratio.set_ylabel("Data / MC", fontsize=22, labelpad=6)
-            ax_ratio.set_xlabel(variable, fontsize=22, labelpad=8)
+            ax_ratio.legend(loc="upper right", fontsize=self.fontsize_legend, frameon=False)
+            ax_ratio.set_ylabel("Data / MC", fontsize=self.fontsize_axis, labelpad=6)
+            ax_ratio.set_xlabel(variable, fontsize=self.fontsize_axis, labelpad=8)
             ax_ratio.set_ylim(0, 2.0)
             ax_ratio.set_xlim(x_lo, x_hi)
             ax_ratio.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]))
@@ -1035,7 +1035,8 @@ class PlotManager:
         handles, labels_leg = ax.get_legend_handles_labels()
         if handles:
             data_idx = next((i for i, l in enumerate(labels_leg) if l == "Data"), None)
-            unc_idx = next((i for i, l in enumerate(labels_leg) if "Uncertainty" in l or "unc" in l.lower()), None)
+            unc_idx = next((i for i, l in enumerate(labels_leg)
+                            if l == self.unc_label or "unc" in l.lower()), None)
             ordered = (
                 ([data_idx] if data_idx is not None else [])
                 + [i for i in range(len(labels_leg)) if i not in (data_idx, unc_idx)]
@@ -1045,15 +1046,16 @@ class PlotManager:
             labels_leg = [labels_leg[i] for i in ordered]
             if unc_idx is not None:
                 handles[-1] = matplotlib.patches.Patch(
-                    hatch="////", facecolor="#bbbbbb", edgecolor="#3d3d3d",
-                    linewidth=0.0, label="Uncertainty",
+                    hatch=self.unc_hatch, facecolor=self.unc_facecolor,
+                    edgecolor=self.unc_edgecolor,
+                    linewidth=0.0, label=self.unc_label,
                 )
             ax.legend(
                 handles, labels_leg,
                 loc="upper right", bbox_to_anchor=(0.97, 0.97),
                 ncol=2, frameon=False, borderaxespad=0.0,
                 handlelength=1.5, columnspacing=1.0,
-                handletextpad=0.5, fontsize=20,
+                handletextpad=0.5, fontsize=self.fontsize_legend,
             )
 
         saved = self.save_plot_multi_format(
@@ -1062,13 +1064,44 @@ class PlotManager:
         )
         plt.close(fig)
 
-        # Write yield tables alongside the PNG
+        # Write ROOT file via uproot with actual histogram arrays
+        try:
+            import uproot as _up
+            region_info_r = self._parse_region_name(region)
+            cat_r = region_info_r["category"]
+            rdir_r = region_info_r["region_dir"]
+            if cat_r == "event_selection":
+                _root_stem = f"hist_event_selection_{variable}{'_log' if use_log else ''}"
+            else:
+                _root_stem = f"hist_{cat_r}_{rdir_r}_{variable}{'_log' if use_log else ''}"
+            root_out = Path(output_dir) / "plots" / version / "root" / f"{_root_stem}.root"
+            root_out.parent.mkdir(parents=True, exist_ok=True)
+            with _up.recreate(str(root_out)) as rf:
+                for label, hv, hs in rows:
+                    rf[label] = (hv.astype(float), bins.astype(float))
+                mc_total = sum(hv for _, hv, _ in rows)
+                rf["TotalBkg"] = (mc_total.astype(float), bins.astype(float))
+                if data_ndarray is not None:
+                    rf["data_obs"] = (data_ndarray.astype(float), bins.astype(float))
+            saved['root'] = str(root_out)
+        except Exception as _re:
+            logging.warning("ROOT write failed for %s/%s: %s", region, variable, _re)
+
+        # Write yield tables alongside the PNG — consistent with save_plot_multi_format paths
         region_info = self._parse_region_name(region)
         category = region_info["category"]
         region_dir = region_info["region_dir"]
-        text_dir = Path(output_dir) / "plots" / version / "text" / category / region_dir
+        _is_log_yield = saved.get("png", "").endswith("_log.png")
+        _log_suf = "_log" if _is_log_yield else ""
+        if category == "event_selection":
+            text_dir = Path(output_dir) / "plots" / version / "text" / "event_selection"
+            _yield_stem = text_dir / f"hist_event_selection_{variable}{_log_suf}"
+        else:
+            region_label = f"{category}_{region_dir}"
+            text_dir = Path(output_dir) / "plots" / version / "text" / "region_analysis" / region_label
+            _yield_stem = text_dir / f"hist_{category}_{region_dir}_{variable}{_log_suf}"
         text_dir.mkdir(parents=True, exist_ok=True)
-        self._write_yield_table(text_dir / variable, variable, bins, rows, data_ndarray)
+        self._write_yield_table(_yield_stem, variable, bins, rows, data_ndarray)
 
         return [v for v in saved.values() if v]
 
@@ -1089,6 +1122,7 @@ class PlotManager:
         save_root: bool = False,
         regions_config: Optional[str] = None,
         weight_systematic: Optional[str] = None,
+        show_data: bool = False,
     ) -> List[str]:
         """Create stacked MC+data plots.
 
@@ -1158,6 +1192,7 @@ class PlotManager:
                 regions=regions,
                 regions_config=regions_config,
                 weight_systematic=getattr(self, "_weight_systematic", None),
+                show_data=show_data,
             ))
         return created
 
@@ -1204,13 +1239,17 @@ class PlotManager:
             paths = self._resolve_group_files(input_folder, patterns)
             entries = []
             for p in paths:
-                xsec = cross_sections.get(p.stem) or cross_sections.get(p.name)
+                _stem = p.stem.replace("_EVENTSELECTION", "")
+                xsec = (cross_sections.get(p.stem)
+                        or cross_sections.get(_stem)
+                        or cross_sections.get(p.name))
                 try:
                     loaded = self._load_one_file(p)
                     entries.append({
                         "weighted_total_events": loaded["weighted_total_events"],
                         "branches": _extract_branches(loaded["objects"]),
                         "xsec": xsec,
+                        "path": p,
                     })
                 except Exception as exc:
                     logging.warning("Skipping %s: %s", p, exc)
@@ -1246,9 +1285,48 @@ class PlotManager:
                         merged[k] = np.concatenate([merged[k], v]) if k in merged else v
             data_branches = merged
 
-        all_vars: List[str] = variables or sorted(
-            {k for entries in bkg_groups.values() for e in entries for k in e["branches"]}
+        _skip_prefixes = ("weight_", "full_event_weight", "genWeight")
+        # Priority: CLI --variables > plotting.yaml event_selection_variables > all branches
+        all_vars: List[str] = (
+            variables
+            or self.event_selection_variables
+            or sorted(set(
+                k for entries in bkg_groups.values() for e in entries for k in e["branches"]
+                if not any(k.startswith(p) for p in _skip_prefixes)
+            ))
         )
+
+        # ---- event-selection cutflow ----
+        evtsel_cutflow_per_proc: Dict[str, Dict[str, float]] = {}
+        for proc_label, entries in bkg_groups.items():
+            proc_cf: Dict[str, float] = {}
+            for e in entries:
+                cf = None
+                try:
+                    import uproot as _up
+                    p = e.get("path")
+                    if p and str(p).endswith(".root"):
+                        with _up.open(str(p)) as _f:
+                            for _key in ("cutflow", "cutflow;1"):
+                                if _key in _f:
+                                    _h = _f[_key]
+                                    _labels = [str(b) for b in _h.axes[0]]
+                                    _vals   = _h.values()
+                                    cf = dict(zip(_labels, _vals))
+                                    break
+                except Exception:
+                    pass
+                if cf:
+                    xsec = e.get("xsec")
+                    wte  = e.get("weighted_total_events", 1.0)
+                    scale = ((luminosity * xsec * 1000.0) / wte
+                             if xsec is not None and wte > 0
+                             else (luminosity / wte if wte > 0 else 1.0))
+                    for cut, val in cf.items():
+                        proc_cf[cut] = proc_cf.get(cut, 0.0) + val * scale
+            if proc_cf:
+                evtsel_cutflow_per_proc[proc_label] = proc_cf
+
         created: List[str] = []
         for var in all_vars:
             all_vals = [
@@ -1288,7 +1366,45 @@ class PlotManager:
                 region="event_selection", version=version, save_root=save_root,
             )
             created.extend(files)
-            logging.info("Created event-selection plot: %s (%d files)", var, len(files))
+            logging.debug("Created event-selection plot: %s (%d files)", var, len(files))
+
+        # ---- data cutflow (raw counts, no normalisation) ----
+        data_cutflow_arr: Optional[np.ndarray] = None
+        _cf_labels_ref: Optional[List[str]] = None
+        for label, entries in dat_groups.items():
+            for e in entries:
+                try:
+                    import uproot as _up
+                    p = e.get("path")
+                    if p and str(p).endswith(".root"):
+                        with _up.open(str(p)) as _f:
+                            for _key in ("cutflow", "cutflow;1"):
+                                if _key in _f:
+                                    _h = _f[_key]
+                                    _lbls = [str(b) for b in _h.axes[0]]
+                                    _vals = _h.values().astype(float)
+                                    if _cf_labels_ref is None:
+                                        _cf_labels_ref = _lbls
+                                    aligned = np.array([_vals[_lbls.index(l)] if l in _lbls else 0.0
+                                                        for l in (_cf_labels_ref or _lbls)])
+                                    data_cutflow_arr = aligned if data_cutflow_arr is None else data_cutflow_arr + aligned
+                                    break
+                except Exception:
+                    pass
+
+        # ---- event-selection cutflow plot ----
+        if evtsel_cutflow_per_proc:
+            cf_files = self._plot_cutflow(
+                evtsel_cutflow_per_proc=evtsel_cutflow_per_proc,
+                region_cutflow_per_proc={},
+                region_name="event_selection",
+                output_dir=output_dir,
+                version=version,
+                year=year,
+                luminosity=luminosity,
+                data_cutflow=data_cutflow_arr,
+            )
+            created.extend(cf_files)
 
         return created
 
@@ -1332,7 +1448,10 @@ class PlotManager:
             paths = self._resolve_group_files(input_folder, patterns)
             entries = []
             for p in paths:
-                xsec = cross_sections.get(p.stem) or cross_sections.get(p.name)
+                _stem = p.stem.replace("_EVENTSELECTION", "")
+                xsec = (cross_sections.get(p.stem)
+                        or cross_sections.get(_stem)
+                        or cross_sections.get(p.name))
                 try:
                     entries.append({"data": _load_region_pkl(p), "xsec": xsec})
                 except Exception as exc:
@@ -1397,12 +1516,12 @@ class PlotManager:
 
         created: List[str] = []
         for region in all_regions:
-            excl = self._get_excluded_variables_for_region(region)
             all_vars_set: set = set()
             for entries in bkg_groups.values():
                 for e in entries:
                     all_vars_set.update(e["data"].get("region_histograms", {}).get(region, {}).keys())
-            all_vars_for_region = [v for v in (variables or sorted(all_vars_set)) if v not in excl]
+            candidate_vars = variables or sorted(all_vars_set)
+            all_vars_for_region = self._get_allowed_variables_for_region(region, candidate_vars)
 
             for var in all_vars_for_region:
                 bins_ref: Optional[np.ndarray] = self._build_bins_from_config(var)
@@ -1446,7 +1565,7 @@ class PlotManager:
                     region=region, version=version, save_root=save_root,
                 )
                 created.extend(files)
-                logging.info("Created region plot: %s / %s (%d files)", region, var, len(files))
+                logging.debug("Created region plot: %s / %s (%d files)", region, var, len(files))
 
         return created
 
@@ -1464,6 +1583,7 @@ class PlotManager:
         regions: Optional[List[str]],
         regions_config: Optional[str],
         weight_systematic: Optional[str],
+        show_data: bool = False,
     ) -> List[str]:
         """Load event-selected ROOT/PKL files, apply region cuts in-memory, produce stacked region plots.
 
@@ -1490,6 +1610,20 @@ class PlotManager:
 
         # ---- helpers ----
 
+        def _load_cutflow_root(path: Path) -> Optional[Dict[str, float]]:
+            """Load event-selection cutflow from EVENTSELECTION.root cutflow TH1."""
+            try:
+                with _uproot.open(str(path)) as f:
+                    for key in ("cutflow", "cutflow;1"):
+                        if key in f:
+                            h = f[key]
+                            labels = [str(b) for b in h.axes[0]]
+                            vals   = h.values()
+                            return dict(zip(labels, vals))
+            except Exception:
+                pass
+            return None
+
         def _load_events_root(path: Path) -> Optional[Dict[str, Any]]:
             """Return {"branches": {name: np.ndarray}, "wte": float} or None on failure."""
             try:
@@ -1504,10 +1638,16 @@ class PlotManager:
                             except Exception:
                                 pass
                     if "Events" not in f:
-                        logging.warning("No Events tree in %s", path.name)
+                        logging.debug("No Events tree in %s", path.name)
                         return None
-                    branches = f["Events"].arrays(library="np")
-                    return {"branches": dict(branches), "wte": wte}
+                    tree = f["Events"]
+                    branches: dict = {}
+                    for bname in tree.keys():
+                        try:
+                            branches[bname] = tree[bname].array(library="np")
+                        except Exception as _berr:
+                            logging.debug("Skipping corrupt branch %s in %s: %s", bname, path.name, _berr)
+                    return {"branches": branches, "wte": wte}
             except Exception as exc:
                 logging.warning("Could not load %s: %s", path.name, exc)
                 return None
@@ -1532,21 +1672,41 @@ class PlotManager:
         # ---- load per-group ----
         # {proc_label: [{"branches": dict, "wte": float, "xsec": float|None}]}
         bkg_entries: Dict[str, List[Dict[str, Any]]] = {}
+        # Per-process event-selection cutflow: {proc_label: {cut_label: weighted_yield}}
+        evtsel_cutflow_per_proc: Dict[str, Dict[str, float]] = {}
         for proc_label, patterns in process_groups.items():
             paths = self._resolve_group_files(input_folder, patterns)
             entries = []
+            proc_cf: Dict[str, float] = {}
             for p in paths:
                 loaded = _load_file(p)
                 if loaded is None:
                     continue
-                xsec = cross_sections.get(p.stem) or cross_sections.get(p.name)
+                _stem = p.stem.replace("_EVENTSELECTION", "")
+                xsec = (cross_sections.get(p.stem)
+                        or cross_sections.get(_stem)
+                        or cross_sections.get(p.name))
+                wte  = loaded["wte"]
+                scale = ((luminosity * xsec * 1000.0) / wte
+                         if xsec is not None and wte > 0
+                         else (luminosity / wte if wte > 0 else 1.0))
+                cf = _load_cutflow_root(p)
+                if cf:
+                    for cut, val in cf.items():
+                        proc_cf[cut] = proc_cf.get(cut, 0.0) + val * scale
                 entries.append({
                     "branches": loaded["branches"],
-                    "wte": loaded["wte"],
+                    "wte": wte,
                     "xsec": xsec,
                 })
             if entries:
                 bkg_entries[proc_label] = entries
+            if proc_cf:
+                evtsel_cutflow_per_proc[proc_label] = proc_cf
+
+        logging.debug("evtsel_cutflow_per_proc: %d processes, %s",
+                      len(evtsel_cutflow_per_proc),
+                      {k: len(v) for k, v in evtsel_cutflow_per_proc.items()})
 
         # Data groups (no xsec)
         raw_data_cfg = self.config.get("process_groups", {})
@@ -1572,23 +1732,27 @@ class PlotManager:
                 logging.warning("Region %s not found in %s", region_name, regions_config)
                 continue
 
-            excl = self._get_excluded_variables_for_region(region_name)
-
             # Determine variable list from first available group
             if variables:
-                var_list = [v for v in variables if v not in excl]
+                candidate_vars = variables
             else:
                 all_branches: set = set()
                 for entries in bkg_entries.values():
                     for e in entries:
                         all_branches.update(e["branches"].keys())
-                # Exclude weight branches and internal branches from plot list
                 _weight_prefixes = ("weight_", "full_event_weight", "genWeight")
-                var_list = sorted(
+                candidate_vars = sorted(
                     b for b in all_branches
                     if not any(b.startswith(p) for p in _weight_prefixes)
-                    and b not in excl
                 )
+            # Include derived vars from the whitelist even if not stored as branches.
+            # _get_allowed_variables_for_region intersects with candidate_vars, so
+            # we union in the full whitelist first so derived vars survive intersection.
+            _whitelist = (self.common_variables
+                          + list(self.region_variables.get(region_name) or
+                                 next((v for k, v in self.region_variables.items() if k in region_name), []) or []))
+            candidate_vars = list(dict.fromkeys(list(candidate_vars) + _whitelist))
+            var_list = self._get_allowed_variables_for_region(region_name, candidate_vars)
 
             for var in var_list:
                 bins_ref: Optional[np.ndarray] = self._build_bins_from_config(var)
@@ -1606,9 +1770,20 @@ class PlotManager:
                         # Apply region mask using RegionManager
                         try:
                             import awkward as _ak
-                            # Build minimal ak.Array from flat branches for region cuts
-                            events_ak = _ak.Array({k: v for k, v in br.items()
-                                                   if isinstance(v, np.ndarray) and v.ndim == 1})
+                            # Flat branches go in directly; object-dtype (jagged) branches
+                            # are converted individually via ak.Array so CR lepton cuts work
+                            ak_dict = {}
+                            for k, v in br.items():
+                                if not isinstance(v, np.ndarray) or v.ndim != 1:
+                                    continue
+                                if v.dtype == object:
+                                    try:
+                                        ak_dict[k] = _ak.Array(list(v))
+                                    except Exception:
+                                        pass
+                                else:
+                                    ak_dict[k] = v
+                            events_ak = _ak.Array(ak_dict)
                             mask = region_obj.apply_cuts(events_ak, objects={})
                         except Exception as _mask_exc:
                             logging.warning(
@@ -1619,26 +1794,62 @@ class PlotManager:
                         mask_np = np.asarray(mask, dtype=bool)
                         vals_raw = br.get(var)
                         if vals_raw is None:
+                            # Try computing derived variable (mt, z_mass, z_pt, etc.)
+                            # that isn't stored as a flat branch but is derivable from
+                            # the event fields via Region._get_variable_value.
+                            _var_map = {
+                                "mt":     "MT",
+                                "z_mass": "Mll",
+                                "z_pt":   "Zpt",
+                                "mll":    "Mll",
+                            }
+                            _canon = _var_map.get(var, var)
+                            try:
+                                _derived = region_obj._get_variable_value(events_ak, objects={}, var=_canon)
+                                if _derived is not None:
+                                    if isinstance(_derived, np.ndarray):
+                                        _arr = _derived.astype(float)
+                                    else:
+                                        _arr = np.asarray(_ak.to_numpy(
+                                            _ak.fill_none(_ak.Array(_derived), -9.0)
+                                            if not isinstance(_derived, _ak.Array)
+                                            else _ak.fill_none(_derived, -9.0)
+                                        ), dtype=float)
+                                    if _arr.ndim == 1 and len(_arr) == len(mask_np):
+                                        vals_raw = _arr
+                            except Exception:
+                                pass
+                        if vals_raw is None:
                             continue
-                        vals = _apply_variable_plot_filter(var, vals_raw[mask_np])
+                        if isinstance(vals_raw, np.ndarray) and vals_raw.dtype == object:
+                            continue  # jagged branch — not plottable as scalar histogram
+                        try:
+                            vals_masked = np.asarray(vals_raw[mask_np], dtype=float)
+                        except (ValueError, TypeError):
+                            continue
+                        # sentinel filter: keep same mask for weights
+                        sentinel_mask = _apply_variable_plot_filter(var, vals_masked, return_mask=True)
+                        vals = vals_masked[sentinel_mask]
                         if vals.size == 0:
                             continue
 
                         w_arr = br.get(weight_branch)
                         if w_arr is not None:
-                            w = np.asarray(w_arr, dtype=float)[mask_np]
+                            w = np.asarray(w_arr, dtype=float)[mask_np][sentinel_mask]
                         else:
-                            w = np.ones(mask_np.sum(), dtype=float)
+                            w = np.ones(vals.size, dtype=float)
 
                         scale = ((luminosity * xsec * 1000.0) / wte
                                  if xsec is not None and wte > 0
                                  else (luminosity / wte if wte > 0 else 1.0))
 
                         if bins_ref is None:
-                            all_vals_for_bins = [
-                                _apply_variable_plot_filter(var, e2["branches"].get(var, np.array([])))
-                                for ee in bkg_entries.values() for e2 in ee
-                            ]
+                            all_vals_for_bins = []
+                            for ee in bkg_entries.values():
+                                for e2 in ee:
+                                    v2 = e2["branches"].get(var, np.array([]))
+                                    if isinstance(v2, np.ndarray) and v2.dtype != object:
+                                        all_vals_for_bins.append(_apply_variable_plot_filter(var, v2))
                             bins_ref = _make_bins(all_vals_for_bins, self._build_bins_from_config,
                                                   var, self._n_bins_default)
                             if bins_ref is None or len(bins_ref) < 2:
@@ -1653,32 +1864,71 @@ class PlotManager:
                     if group_hv is not None and group_hv.size > 0:
                         bkg_rows.append((proc_label, group_hv, group_hs))
 
-                if not bkg_rows or bins_ref is None:
+                if bins_ref is None:
                     continue
-                if np.allclose(sum(h for _, h, _ in bkg_rows), 0.0):
-                    continue
+                # Ensure every process group has a row (zero if no events pass) — always plot all groups
+                loaded_labels = {label for label, _, _ in bkg_rows}
+                for proc_label in bkg_entries:
+                    if proc_label not in loaded_labels:
+                        bkg_rows.append((proc_label,
+                                         np.zeros(len(bins_ref) - 1),
+                                         np.zeros(len(bins_ref) - 1)))
 
-                # Data histogram (no xsec, no region mask applied — data already region-selected)
+                # Data: CRs show real data; SR blinded by default (shows bkg-sum as pseudo-data)
                 data_hist: Optional[np.ndarray] = None
-                for label, info in data_entries.items():
-                    rp = info["region_patterns"]
-                    if rp and not any(pat in region_name for pat in rp):
-                        continue
-                    for e in info["entries"]:
-                        import awkward as _ak
-                        br = e["branches"]
-                        try:
-                            events_ak = _ak.Array({k: v for k, v in br.items()
-                                                   if isinstance(v, np.ndarray) and v.ndim == 1})
-                            mask_d = region_obj.apply_cuts(events_ak, objects={})
-                            mask_d_np = np.asarray(mask_d, dtype=bool)
-                        except Exception:
-                            mask_d_np = np.ones(len(next(iter(br.values()))), dtype=bool)
-                        dv = _apply_variable_plot_filter(var, br.get(var, np.array([]))[mask_d_np])
-                        if dv.size == 0:
+                _is_sr = region_name.endswith(":SR")
+
+                if _is_sr and not show_data:
+                    # Blinded SR: use total bkg-sum as pseudo-data points
+                    bkg_total = sum(h for _, h, _ in bkg_rows)
+                    data_hist = bkg_total
+                else:
+                    for label, info in data_entries.items():
+                        rp = info["region_patterns"]
+                        if rp and not any(pat in region_name for pat in rp):
                             continue
-                        dh, _ = np.histogram(dv, bins=bins_ref)
-                        data_hist = dh if data_hist is None else data_hist + dh
+                        for e in info["entries"]:
+                            import awkward as _ak
+                            br = e["branches"]
+                            try:
+                                ak_dict_d = {}
+                                for k, v in br.items():
+                                    if not isinstance(v, np.ndarray) or v.ndim != 1:
+                                        continue
+                                    if v.dtype == object:
+                                        try:
+                                            ak_dict_d[k] = _ak.Array(list(v))
+                                        except Exception:
+                                            pass
+                                    else:
+                                        ak_dict_d[k] = v
+                                events_ak = _ak.Array(ak_dict_d)
+                                mask_d = region_obj.apply_cuts(events_ak, objects={})
+                                mask_d_np = np.asarray(mask_d, dtype=bool)
+                            except Exception:
+                                mask_d_np = np.ones(len(next(iter(br.values()))), dtype=bool)
+                            _dvals_raw = br.get(var)
+                            if _dvals_raw is None:
+                                _var_map = {"mt": "MT", "z_mass": "Mll", "z_pt": "Zpt", "mll": "Mll"}
+                                _canon = _var_map.get(var, var)
+                                try:
+                                    _derived = region_obj._get_variable_value(events_ak, objects={}, var=_canon)
+                                    if _derived is not None:
+                                        _dvals_raw = np.asarray(_ak.to_numpy(
+                                            _ak.fill_none(_derived if isinstance(_derived, _ak.Array)
+                                                          else _ak.Array(_derived), -9.0)
+                                        ), dtype=float)
+                                        if _dvals_raw.ndim != 1 or len(_dvals_raw) != len(mask_d_np):
+                                            _dvals_raw = None
+                                except Exception:
+                                    pass
+                            if _dvals_raw is None or (isinstance(_dvals_raw, np.ndarray) and _dvals_raw.dtype == object):
+                                continue
+                            dv = _apply_variable_plot_filter(var, np.asarray(_dvals_raw, dtype=float)[mask_d_np])
+                            if dv.size == 0:
+                                continue
+                            dh, _ = np.histogram(dv, bins=bins_ref)
+                            data_hist = dh if data_hist is None else data_hist + dh
 
                 syst_label = f" [{weight_systematic}]" if weight_systematic else ""
                 files = self._plot_stacked_variable(
@@ -1688,12 +1938,371 @@ class PlotManager:
                     region=region_name, version=version, save_root=False,
                 )
                 created.extend(files)
-                logging.info(
+                logging.debug(
                     "region-from-events: %s / %s%s (%d files)",
                     region_name, var, syst_label, len(files),
                 )
 
+        # ---- per-region cutflow plots ----
+        if evtsel_cutflow_per_proc:
+            import awkward as _ak
+            for region_name in target_regions:
+                region_obj = region_manager.regions.get(region_name)
+                if region_obj is None:
+                    continue
+                # Per-process sequential region-cut yields: {proc: {cut: yield}}
+                region_cf_per_proc: Dict[str, Dict[str, float]] = {}
+                for proc_label, entries in bkg_entries.items():
+                    proc_region_cf: Dict[str, float] = {}
+                    for e in entries:
+                        br, wte, xsec = e["branches"], e["wte"], e["xsec"]
+                        scale = ((luminosity * xsec * 1000.0) / wte
+                                 if xsec is not None and wte > 0
+                                 else (luminosity / wte if wte > 0 else 1.0))
+                        try:
+                            ak_dict = {}
+                            for k, v in br.items():
+                                if not isinstance(v, np.ndarray) or v.ndim != 1:
+                                    continue
+                                if v.dtype == object:
+                                    try:
+                                        ak_dict[k] = _ak.Array(list(v))
+                                    except Exception:
+                                        pass
+                                else:
+                                    ak_dict[k] = v
+                            events_ak = _ak.Array(ak_dict)
+                            w_arr = br.get(weight_branch)
+                            w = np.asarray(w_arr, dtype=float) if w_arr is not None else np.ones(len(events_ak))
+                            per_cut = region_obj.apply_cuts_with_yields(events_ak, objects={}, weight=w * scale)
+                            for cut_label, val in per_cut.items():
+                                proc_region_cf[cut_label] = proc_region_cf.get(cut_label, 0.0) + val
+                        except Exception:
+                            pass
+                    if proc_region_cf:
+                        region_cf_per_proc[proc_label] = proc_region_cf
+                # ---- data cutflow for this region (raw counts, no normalisation) ----
+                # SR blinded unless --show-data: use bkg-sum pseudo-data instead.
+                data_cf_arr: Optional[np.ndarray] = None
+                _is_sr_cf = region_name.endswith(":SR")
+                _all_evtsel_labels = list(next(iter(evtsel_cutflow_per_proc.values()), {}).keys()) if evtsel_cutflow_per_proc else []
+                _all_region_labels = list(next(iter(region_cf_per_proc.values()), {}).keys()) if region_cf_per_proc else []
+                _all_cf_labels = _all_evtsel_labels + _all_region_labels
+                if _is_sr_cf and not show_data:
+                    # Pseudo-data = MC total
+                    if _all_cf_labels and (evtsel_cutflow_per_proc or region_cf_per_proc):
+                        _bkg_total = np.zeros(len(_all_cf_labels), dtype=float)
+                        for _proc_cf in {**evtsel_cutflow_per_proc, **region_cf_per_proc}.values():
+                            pass  # already merged into evtsel/region dicts separately below
+                        for _proc, _pcf in evtsel_cutflow_per_proc.items():
+                            for _i, _lbl in enumerate(_all_evtsel_labels):
+                                _bkg_total[_i] += _pcf.get(_lbl, 0.0)
+                        for _proc, _pcf in region_cf_per_proc.items():
+                            for _i, _lbl in enumerate(_all_region_labels):
+                                _bkg_total[len(_all_evtsel_labels) + _i] += _pcf.get(_lbl, 0.0)
+                        data_cf_arr = _bkg_total
+                elif _all_cf_labels and data_entries:
+                    for _dlabel, _dinfo in data_entries.items():
+                        _drp = _dinfo["region_patterns"]
+                        if _drp and not any(pat in region_name for pat in _drp):
+                            continue
+                        for _de, _dpath in zip(_dinfo["entries"], self._resolve_group_files(input_folder, data_groups.get(_dlabel, []))):
+                            _dbr = _de["branches"]
+                            try:
+                                _ak_dict_d: Dict[str, Any] = {}
+                                for k, v in _dbr.items():
+                                    if not isinstance(v, np.ndarray) or v.ndim != 1:
+                                        continue
+                                    if v.dtype == object:
+                                        try:
+                                            _ak_dict_d[k] = _ak.Array(list(v))
+                                        except Exception:
+                                            pass
+                                    else:
+                                        _ak_dict_d[k] = v
+                                _devents = _ak.Array(_ak_dict_d)
+                                _dw = np.ones(len(_devents), dtype=float)
+                                _d_evtsel_cf: Dict[str, float] = _load_cutflow_root(_dpath) or {}
+                                _d_region_cf = region_obj.apply_cuts_with_yields(_devents, objects={}, weight=_dw)
+                                _dcf_aligned = np.array(
+                                    [_d_evtsel_cf.get(l, 0.0) for l in _all_evtsel_labels] +
+                                    [_d_region_cf.get(l, 0.0) for l in _all_region_labels],
+                                    dtype=float,
+                                )
+                                data_cf_arr = _dcf_aligned if data_cf_arr is None else data_cf_arr + _dcf_aligned
+                            except Exception:
+                                pass
+
+                if region_cf_per_proc or evtsel_cutflow_per_proc:
+                    logging.debug("Plotting cutflow for %s (evtsel=%d procs, region=%d procs)",
+                                 region_name, len(evtsel_cutflow_per_proc), len(region_cf_per_proc))
+                    try:
+                        cf_files = self._plot_cutflow(
+                            evtsel_cutflow_per_proc=evtsel_cutflow_per_proc,
+                            region_cutflow_per_proc=region_cf_per_proc,
+                            region_name=region_name,
+                            output_dir=output_dir,
+                            version=version,
+                            year=year,
+                            luminosity=luminosity,
+                            data_cutflow=data_cf_arr,
+                        )
+                        created.extend(cf_files)
+                    except Exception as _cf_exc:
+                        logging.error("Cutflow plot failed for %s: %s",
+                                      region_name, _cf_exc, exc_info=True)
+
         return created
+
+    @staticmethod
+    def _root_to_mpl_label(label: str) -> str:
+        """Convert ROOT LaTeX (N_{#mu}, #tau Veto) to matplotlib math."""
+        import re as _re
+        _greek = {
+            '#mu': r'\mu', '#tau': r'\tau', '#gamma': r'\gamma',
+            '#nu': r'\nu', '#phi': r'\phi', '#eta': r'\eta',
+            '#Delta': r'\Delta',
+        }
+        s = label
+        for root_sym, mpl_sym in _greek.items():
+            s = s.replace(root_sym, mpl_sym)
+        def _wrap(m):
+            tok = m.group(0)
+            return f'${tok}$' if any(c in tok for c in ('^', '_', '\\')) else tok
+        return _re.sub(r'\S+', _wrap, s)
+
+    def _plot_cutflow(
+        self,
+        evtsel_cutflow_per_proc: Dict[str, Dict[str, float]],
+        region_cutflow_per_proc: Dict[str, Dict[str, float]],
+        region_name: str,
+        output_dir: str,
+        version: str,
+        year: str,
+        luminosity: float,
+        data_cutflow: Optional[np.ndarray] = None,
+    ) -> List[str]:
+        """
+        Cutflow plot matching event_stacked_plotter.py aesthetics:
+        stacked bars per background process (evtsel steps) + ratio panel.
+        Region cuts appended as additional bars after event-selection steps.
+        """
+        import matplotlib.ticker as _ticker
+        import mplhep as hep
+
+        # ---- unified cut label list ----
+        _all_evtsel = list(next(iter(evtsel_cutflow_per_proc.values()), {}).keys()) if evtsel_cutflow_per_proc else []
+        _all_region = list(next(iter(region_cutflow_per_proc.values()), {}).keys()) if region_cutflow_per_proc else []
+        all_labels = _all_evtsel + _all_region
+        n_evtsel   = len(_all_evtsel)
+
+        if not all_labels:
+            logging.warning("_plot_cutflow: no cut labels — skipping")
+            return []
+
+        x = np.arange(len(all_labels), dtype=float)
+
+        # ---- color map ----
+        _PALETTE = ["#3f90da","#ffa90e","#bd1f01","#94a4a2","#832db6",
+                    "#a96b59","#e76300","#b9ac70","#717581","#92dadd"]
+        all_procs = list(evtsel_cutflow_per_proc.keys())
+        color_map: Dict[str, str] = {}
+        if hasattr(self, '_group_colors'):
+            color_map = dict(self._group_colors)
+        for i, proc in enumerate(all_procs):
+            if proc not in color_map:
+                color_map[proc] = _PALETTE[i % len(_PALETTE)]
+
+        # ---- per-process arrays aligned to all_labels ----
+        def _align(proc_cf: Dict[str, float], labels: List[str]) -> np.ndarray:
+            return np.array([proc_cf.get(lbl, 0.0) for lbl in labels], dtype=float)
+
+        total_vals = np.zeros(len(all_labels), dtype=float)
+        proc_arrays: List[tuple] = []
+        for proc in all_procs:
+            arr = np.concatenate([
+                _align(evtsel_cutflow_per_proc.get(proc, {}), _all_evtsel),
+                _align(region_cutflow_per_proc.get(proc, {}), _all_region),
+            ])
+            proc_arrays.append((proc, arr))
+            total_vals += arr
+
+        # sort smallest→largest (same as event_stacked_plotter)
+        proc_arrays.sort(key=lambda t: float(np.sum(t[1])))
+
+        fig, (ax1, ax2) = plt.subplots(
+            2, 1, figsize=(max(self.figsize_cutflow[0], len(all_labels) * 0.85),
+                           self.figsize_cutflow[1]),
+            gridspec_kw={"height_ratios": [self.main_height, self.ratio_height],
+                         "hspace": self.subplots_hspace},
+            sharex=True,
+        )
+        fig.subplots_adjust(top=self.subplots_top, bottom=self.subplots_bottom,
+                            left=self.subplots_left, right=self.subplots_right)
+
+        # ---- top panel: stacked bars per process, no gaps ----
+        cumulative = np.zeros(len(all_labels), dtype=float)
+        for proc, arr in proc_arrays:
+            color = color_map.get(proc, "#3f90da")
+            label = self._group_labels.get(proc, proc) if hasattr(self, '_group_labels') else proc
+            ax1.bar(x, arr, bottom=cumulative, width=1.0,
+                    color=color, edgecolor="none", label=label)
+            cumulative += arr
+
+        # dashed line separating evtsel from region cuts
+        if n_evtsel > 0 and _all_region:
+            ax1.axvline(n_evtsel - 0.5, color="black", linestyle="--",
+                        linewidth=1.0, alpha=0.5)
+
+        # ---- data overlay (raw counts, same style as main stacked plots) ----
+        has_data = False
+        _dc = np.zeros(len(all_labels), dtype=float)
+        if data_cutflow is not None:
+            _raw = np.asarray(data_cutflow, dtype=float)
+            n = min(len(_raw), len(all_labels))
+            _dc[:n] = _raw[:n]
+            mask = _dc > 0
+            if np.any(mask):
+                has_data = True
+                ax1.errorbar(
+                    x[mask], _dc[mask],
+                    xerr=np.full(mask.sum(), 0.4),
+                    yerr=np.sqrt(_dc[mask]),
+                    fmt="o", color="black",
+                    markerfacecolor="black", markeredgecolor="black",
+                    markersize=5.5, elinewidth=1.2, capsize=0,
+                    label="Data", zorder=10,
+                )
+
+        ax1.set_ylabel("Events", fontsize=self.fontsize_axis, labelpad=6)
+        ax1.set_yscale("log")
+        pos = cumulative[cumulative > 0]
+        ymin = max(1e-3, min(float(np.min(pos)), 1e2)) if pos.size else 1e-3
+        ymax = max(1.0, float(np.max(cumulative)),
+                   float(np.max(_dc)) if data_cutflow is not None else 1.0)
+        ax1.set_ylim(ymin, ymax * 10.0)
+        ax1.grid(False)
+
+        hep.cms.label("Work in progress", data=has_data,
+                      lumi=round(luminosity, 2), com=13.6, loc=0, ax=ax1)
+
+        handles, leg_labels = ax1.get_legend_handles_labels()
+        if handles:
+            ax1.legend(handles, leg_labels, loc="upper right",
+                       bbox_to_anchor=(0.97, 0.97), ncol=2, frameon=False,
+                       handlelength=1.5, columnspacing=1.0,
+                       handletextpad=0.5, fontsize=20)
+
+        # ---- bottom panel: Data / MC ----
+        mc_total = cumulative
+        pred_rel_err = np.where(mc_total > 0, np.sqrt(mc_total) / mc_total, 0.0)
+        x_edges = np.append(x - 0.5, x[-1] + 0.5)
+        ratio_lo = np.append(1.0 - pred_rel_err, (1.0 - pred_rel_err)[-1])
+        ratio_hi = np.append(1.0 + pred_rel_err, (1.0 + pred_rel_err)[-1])
+        ax2.fill_between(x_edges, ratio_lo, ratio_hi, step="post",
+                         facecolor="#bbbbbb", edgecolor="none", alpha=0.6, label="MC stat.")
+        if has_data and data_cutflow is not None:
+            ratio = np.divide(_dc, mc_total, out=np.full_like(mc_total, np.nan), where=mc_total > 0)
+            ratio_err = np.where(_dc > 0, np.sqrt(_dc) / np.where(mc_total > 0, mc_total, 1.0), 0.0)
+            ratio_mask = np.isfinite(ratio)
+            if np.any(ratio_mask):
+                ax2.errorbar(
+                    x[ratio_mask], ratio[ratio_mask],
+                    xerr=np.full(ratio_mask.sum(), 0.4),
+                    yerr=ratio_err[ratio_mask],
+                    fmt="o", color="black",
+                    markerfacecolor="black", markeredgecolor="black",
+                    markersize=5.0, elinewidth=1.2, capsize=0, zorder=10,
+                )
+        else:
+            ax2.axhline(1.0, color="#999999", linestyle="--", linewidth=1.0)
+        ax2.axhline(1.0, color="black", linestyle="-", linewidth=1.2)
+        if n_evtsel > 0 and _all_region:
+            ax2.axvline(n_evtsel - 0.5, color="black", linestyle="--",
+                        linewidth=1.0, alpha=0.5)
+        ax2.set_ylim(0.0, 2.0)
+        ax2.set_ylabel("Data / MC", fontsize=self.fontsize_axis, labelpad=6)
+        ax2.yaxis.set_major_locator(_ticker.FixedLocator([0, 0.5, 1.0, 1.5, 2.0]))
+        ax2.grid(False)
+
+        ax2.set_xticks(x)
+        ax2.set_xticklabels(
+            [self._root_to_mpl_label(str(lbl)) for lbl in all_labels],
+            rotation=35, ha="right", fontsize=self.fontsize_xtick_cutflow,
+        )
+        ax2.set_xlabel("", fontsize=self.fontsize_axis)
+        ax1.set_xlim(-0.5, len(all_labels) - 0.5)
+        ax2.set_xlim(-0.5, len(all_labels) - 0.5)
+
+        # ---- output dirs ----
+        region_info  = self._parse_region_name(region_name)
+        category     = region_info["category"]
+        region_dir   = region_info["region_dir"]
+        is_evtsel    = (category == "event_selection")
+        region_label = "event_selection" if is_evtsel else f"{category}_{region_dir}"
+        plot_subdir  = "event_selection" if is_evtsel else f"region_analysis/{region_label}"
+
+        saved = []
+        for fmt in ("png", "pdf"):
+            out_dir = Path(output_dir) / "plots" / version / fmt / plot_subdir
+            out_dir.mkdir(parents=True, exist_ok=True)
+            p = out_dir / f"cutflow_{region_label}.{fmt}"
+            fig.savefig(str(p), dpi=self.dpi, bbox_inches="tight")
+            saved.append(str(p))
+        plt.close(fig)
+
+        # TXT + TEX tables
+        step_eff = np.ones(len(total_vals), dtype=float)
+        for i in range(1, len(total_vals)):
+            step_eff[i] = total_vals[i] / total_vals[i - 1] if total_vals[i - 1] > 0 else 0.0
+        txt_dir = Path(output_dir) / "plots" / version / "text" / plot_subdir
+        txt_dir.mkdir(parents=True, exist_ok=True)
+
+        def _root_to_latex(label: str) -> str:
+            """Convert ROOT label (N_{#mu}, #tau Veto) to proper LaTeX."""
+            _greek = {
+                '#mu': r'\mu', '#tau': r'\tau', '#gamma': r'\gamma',
+                '#nu': r'\nu', '#phi': r'\phi', '#eta': r'\eta',
+                '#Delta': r'\Delta', '#Sigma': r'\Sigma',
+            }
+            s = label
+            for root_sym, tex_sym in _greek.items():
+                s = s.replace(root_sym, tex_sym)
+            # wrap substrings containing ^, _, or \ in $...$
+            import re as _re
+            def _wrap(m):
+                tok = m.group(0)
+                return f'${tok}$' if any(c in tok for c in ('^', '_', '\\')) else tok
+            return _re.sub(r'\S+', _wrap, s)
+
+        tex_path = txt_dir / f"cutflow_{region_label}.tex"
+        with open(tex_path, "w") as fh:
+            fh.write("\\begin{table}[htbp]\n\\centering\n")
+            fh.write(f"\\caption{{Cutflow: {region_name.replace('_', ' ')}}}\n")
+            fh.write(f"\\label{{tab:cutflow_{region_label}}}\n")
+            fh.write("\\begin{tabular}{lrr}\n\\toprule\n")
+            fh.write("\\textbf{Step} & \\textbf{Yield} & \\textbf{Step eff.} \\\\ \\midrule\n")
+            for i, lbl in enumerate(all_labels):
+                tex_lbl = _root_to_latex(lbl)
+                fh.write(f"{tex_lbl} & ${total_vals[i]:.2f}$ & ${step_eff[i]:.4f}$ \\\\\n")
+            fh.write("\\bottomrule\n\\end{tabular}\n\\end{table}\n")
+        saved.append(str(tex_path))
+
+        # ROOT TH1D
+        try:
+            import uproot as _up
+            root_dir = Path(output_dir) / "plots" / version / "root"
+            root_dir.mkdir(parents=True, exist_ok=True)
+            root_path = root_dir / f"cutflow_{region_label}.root"
+            edges = np.arange(len(all_labels) + 1, dtype=float)
+            with _up.recreate(str(root_path)) as rf:
+                rf[f"cutflow_{region_label}"] = (total_vals, edges)
+            saved.append(str(root_path))
+        except Exception as _exc:
+            logging.warning("Could not save cutflow ROOT for %s: %s", region_name, _exc)
+
+        logging.info("Cutflow for %s saved (%d files)", region_name, len(saved))
+        return saved
 
     def _create_th1f_from_hist(self, hist_data: Any, name: str, title: str) -> Any:
         """
@@ -1883,7 +2492,7 @@ class PlotManager:
         Also applies configurable exclusions from self.region_exclusions.
 
         Args:
-            region: Region name (e.g., "1b:SR", "2b:CR_Top_mu")
+            region: Region name (e.g., "1b:SR", "2b:CR_Topmunu")
 
         Returns:
             List of variable name patterns to exclude
@@ -1892,7 +2501,7 @@ class PlotManager:
         category = region_info["category"]
         region_type = region_info["region_dir"]
         is_sr = "SR" in region_type
-        is_cr = "CR" in region or "Top" in region_type or "Wlnu" in region_type or "Zll" in region_type
+        is_cr = "CR" in region
 
         excluded = []
 
@@ -1961,6 +2570,34 @@ class PlotManager:
 
         return excluded_unique
 
+    def _get_allowed_variables_for_region(self, region: str, all_vars: List[str]) -> List[str]:
+        """Return ordered variable list for *region*: common_variables + region-specific additions.
+
+        common_variables always prepended. region_variables provides per-region extras
+        (exact key matched first, then substring). Only vars present in all_vars kept.
+        When neither common_variables nor region_variables are configured, returns all_vars.
+        """
+        region_extras: Optional[List[str]] = self.region_variables.get(region)
+        if region_extras is None:
+            for key, wl in self.region_variables.items():
+                if key in region:
+                    region_extras = wl
+                    break
+
+        if self.common_variables or region_extras is not None:
+            combined = list(self.common_variables) + list(region_extras or [])
+            # deduplicate preserving order
+            seen: set = set()
+            unique: List[str] = []
+            for v in combined:
+                if v not in seen:
+                    seen.add(v)
+                    unique.append(v)
+            present = set(all_vars)
+            return [v for v in unique if v in present]
+
+        return list(all_vars)
+
     def _create_individual_variable_plots(self, results: Dict[str, Any], region: str,
                                           output_dir: str, show_data: bool,
                                           version: str, formats: Optional[List[str]] = None,
@@ -1987,26 +2624,12 @@ class PlotManager:
             logging.warning(f"No histograms found for region {region}")
             return plot_files
 
-        # Get excluded variables for this region
-        excluded_vars = self._get_excluded_variables_for_region(region)
-
-        # Get list of variables to plot (exclude internal/system variables and region-specific exclusions)
-        variables_to_plot = []
-        exclude_patterns = ['_dnn_score', '_region_variables']
-        for var_name in region_histograms.keys():
-            # Check if variable should be excluded
-            should_exclude = False
-
-            # Check against exclude patterns
-            if any(exclude in var_name for exclude in exclude_patterns):
-                should_exclude = True
-
-            # Check against region-specific exclusions
-            if any(excluded_var in var_name for excluded_var in excluded_vars):
-                should_exclude = True
-
-            if not should_exclude:
-                variables_to_plot.append(var_name)
+        _internal_patterns = ['_dnn_score', '_region_variables']
+        candidate_vars = [
+            v for v in region_histograms.keys()
+            if not any(pat in v for pat in _internal_patterns)
+        ]
+        variables_to_plot = self._get_allowed_variables_for_region(region, candidate_vars)
 
         # Parse region once — used for all variables
         region_info = self._parse_region_name(region)
@@ -2252,38 +2875,37 @@ class PlotManager:
                                output_path: Path, show_data: bool,
                                version: Optional[str] = None, output_dir: Optional[str] = None) -> str:
         """Create kinematic distribution plots."""
-        # Get excluded variables for this region
-        excluded_vars = self._get_excluded_variables_for_region(region)
+        _allowed = set(self._get_allowed_variables_for_region(region, list(histograms.keys())))
 
         # Determine which plots to include based on region
         plot_vars = []
 
         # Plot MET
-        if 'met' in histograms:
+        if 'met' in _allowed:
             plot_vars.append(('met', "MET [GeV]", "Missing Transverse Energy"))
 
         # Plot jet pT (jet1)
-        if 'jet1_pt' in histograms:
+        if 'jet1_pt' in _allowed:
             plot_vars.append(('jet1_pt', "Jet1 pT [GeV]", "Leading Jet pT"))
-        elif 'jet_pt' in histograms:
+        elif 'jet_pt' in _allowed:
             plot_vars.append(('jet_pt', "Jet pT [GeV]", "Jet Transverse Momentum"))
 
         # Plot jet eta
-        if 'jet1_eta' in histograms:
+        if 'jet1_eta' in _allowed:
             plot_vars.append(('jet1_eta', "Jet1 η", "Leading Jet Pseudorapidity"))
-        elif 'jet_eta' in histograms:
+        elif 'jet_eta' in _allowed:
             plot_vars.append(('jet_eta', "Jet η", "Jet Pseudorapidity"))
 
         # Plot b-tag score
-        if 'btag_deepjet' in histograms:
+        if 'btag_deepjet' in _allowed:
             plot_vars.append(('btag_deepjet', "DeepJet Score", "B-tagging Discriminant"))
 
-        # Plot jet2 pT (if available and not excluded)
-        if 'jet2_pt' in histograms and not any('jet2' in var for var in excluded_vars):
+        # Plot jet2 pT
+        if 'jet2_pt' in _allowed:
             plot_vars.append(('jet2_pt', "Jet2 pT [GeV]", "Subleading Jet pT"))
 
-        # Plot jet3 pT (only for 2b regions, not for 1b)
-        if 'jet3_pt' in histograms and not any('jet3' in var for var in excluded_vars):
+        # Plot jet3 pT
+        if 'jet3_pt' in _allowed:
             plot_vars.append(('jet3_pt', "Jet3 pT [GeV]", "Third Jet pT"))
 
         # Create figure with appropriate number of subplots
@@ -2343,40 +2965,39 @@ class PlotManager:
                                   output_path: Path, show_data: bool,
                                   version: Optional[str] = None, output_dir: Optional[str] = None) -> str:
         """Create multiplicity distribution plots."""
-        # Get excluded variables for this region
-        excluded_vars = self._get_excluded_variables_for_region(region)
+        _allowed = set(self._get_allowed_variables_for_region(region, list(histograms.keys())))
 
         # Determine which plots to include based on region
         plot_indices = []
         plot_vars = []
 
         # Plot jet multiplicity
-        if 'n_jets' in histograms:
+        if 'n_jets' in _allowed:
             plot_indices.append(0)
             plot_vars.append(('n_jets', "Number of Jets", "Jet Multiplicity"))
 
         # Plot b-jet multiplicity
-        if 'n_bjets' in histograms:
+        if 'n_bjets' in _allowed:
             plot_indices.append(1)
             plot_vars.append(('n_bjets', "Number of B-jets", "B-jet Multiplicity"))
 
-        # Plot muon multiplicity (only for CRs)
-        if 'n_muons' in histograms and not any('n_muons' in var for var in excluded_vars):
+        # Plot muon multiplicity
+        if 'n_muons' in _allowed:
             plot_indices.append(2)
             plot_vars.append(('n_muons', "Number of Muons", "Muon Multiplicity"))
 
-        # Plot electron multiplicity (only for CRs)
-        if 'n_electrons' in histograms and not any('n_electrons' in var for var in excluded_vars):
+        # Plot electron multiplicity
+        if 'n_electrons' in _allowed:
             plot_indices.append(3)
             plot_vars.append(('n_electrons', "Number of Electrons", "Electron Multiplicity"))
 
         # Plot tau multiplicity
-        if 'n_taus' in histograms:
+        if 'n_taus' in _allowed:
             plot_indices.append(4)
             plot_vars.append(('n_taus', "Number of Taus", "Tau Multiplicity"))
 
-        # Plot lepton multiplicity (only for CRs)
-        if 'n_leptons' in histograms and not any('n_leptons' in var for var in excluded_vars):
+        # Plot lepton multiplicity
+        if 'n_leptons' in _allowed:
             plot_indices.append(5)
             plot_vars.append(('n_leptons', "Number of Leptons", "Lepton Multiplicity"))
 

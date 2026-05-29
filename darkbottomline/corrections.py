@@ -210,7 +210,7 @@ def _load_correction_file_with_edges_fix(file_path: str) -> Optional[CorrectionS
     except Exception as e:
         err_str = str(e)
         truncated = err_str[:200] + " [...]" if len(err_str) > 200 else err_str
-        logging.warning(
+        logging.debug(
             "CorrectionSet.from_string failed after bin-edge fix for %s (will fall back to from_file): %s",
             file_path,
             truncated,
@@ -255,7 +255,7 @@ class CorrectionManager:
                 cs = _load_correction_file_with_edges_fix(file_path)
                 if cs is not None:
                     self.corrections[correction_type] = cs
-                    logging.info(
+                    logging.debug(
                         f"Loaded {correction_type} corrections from {file_path} "
                         "(bin edges fixed for correctionlib)"
                     )
@@ -268,7 +268,7 @@ class CorrectionManager:
                     with gzip.open(path_to_try, "rt") as f:
                         data = f.read().strip()
                     self.corrections[correction_type] = CorrectionSet.from_string(data)
-                    logging.info(f"Loaded {correction_type} corrections from {path_to_try} (gzip)")
+                    logging.debug(f"Loaded {correction_type} corrections from {path_to_try} (gzip)")
                     loaded = True
                 except Exception as e:
                     logging.warning(f"Failed to load {correction_type} (gzip): {e}")
@@ -277,7 +277,7 @@ class CorrectionManager:
                 path_to_try = str(resolved_path) if resolved_path is not None else file_path
                 try:
                     self.corrections[correction_type] = CorrectionSet.from_file(path_to_try)
-                    logging.info(f"Loaded {correction_type} corrections from {path_to_try}")
+                    logging.debug(f"Loaded {correction_type} corrections from {path_to_try}")
                     loaded = True
                 except Exception as e:
                     err_msg = str(e).lower()
@@ -285,7 +285,7 @@ class CorrectionManager:
                         cs = _load_correction_file_with_edges_fix(file_path)
                         if cs is not None:
                             self.corrections[correction_type] = cs
-                            logging.info(
+                            logging.debug(
                                 f"Loaded {correction_type} corrections from {file_path} "
                                 "(applied bin-edge fix for non-monotonic edges)"
                             )
