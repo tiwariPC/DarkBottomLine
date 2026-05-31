@@ -59,6 +59,71 @@ def _check_hadd_exists() -> None:
         raise RuntimeError("Cannot find 'hadd' in PATH. Please load ROOT environment first.")
 
 
+def _check_events_tree_readable(path: Path) -> Tuple[bool, str | None]:
+    """Return whether the file's Events tree can be read by uproot.
+
+    Files without an Events tree are kept, since they may still contribute summary
+    trees. Files that have an Events tree but fail a small read probe are skipped.
+    """
+    # Prefer a PyROOT-based probe when available because it exercises ROOT's
+    # native IO paths and can detect corruption that uproot may not report.
+    try:
+        import ROOT  # type: ignore
+        # Allow disabling PyROOT probe via environment variable to avoid
+        # crashes when reading corrupted baskets in multithreaded probes.
+        import os
+        if os.getenv("MERGE_DISABLE_PYROOT"):
+            root_available = False
+        else:
+            root_available = True
+    except Exception:
+        root_available = False
+
+    if root_available:
+        try:
+            tf = ROOT.TFile.Open(str(path), "READ")
+            if not tf or tf.IsZombie():
+                return False, "PyROOT: cannot open file"
+            if not tf.GetListOfKeys().Contains("Events"):
+                tf.Close()
+                return True, None
+
+            tree = tf.Get("Events")
+            n = int(tree.GetEntries())
+            probe_n = min(10, max(1, n))
+            # Try reading a few entries to exercise baskets.
+            for i in range(probe_n):
+                try:
+                    tree.GetEntry(i)
+                except Exception as e:
+                    tf.Close()
+                    return False, f"PyROOT:GetEntry error: {e}"
+            tf.Close()
+            return True, None
+        except Exception as exc:
+            return False, f"PyROOT: {type(exc).__name__}: {exc}".splitlines()[0]
+
+    # Fallback to uproot probe if PyROOT isn't available.
+    try:
+        import uproot  # type: ignore
+        import awkward as ak  # type: ignore
+    except Exception:
+        # If neither library is available, assume OK (can't check here).
+        return True, None
+
+    try:
+        with uproot.open(path) as f_in:
+            if "Events" not in f_in:
+                return True, None
+
+            events_tree = f_in["Events"]
+            events_tree.arrays(entry_start=0, entry_stop=10, library="ak")
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}".splitlines()[0]
+
+    return True, None
+
+
 def _collect_tasks(input_dirs: Sequence[Path], output_dir: Path) -> List[MergeTask]:
     tasks: List[MergeTask] = []
     for in_dir in input_dirs:
@@ -69,13 +134,32 @@ def _collect_tasks(input_dirs: Sequence[Path], output_dir: Path) -> List[MergeTa
         if not root_files:
             continue
 
-        input_bytes = sum((f.stat().st_size for f in root_files), 0)
+        good_files: List[Path] = []
+        skipped_files: List[Tuple[Path, str]] = []
+        for root_file in root_files:
+            is_ok, reason = _check_events_tree_readable(root_file)
+            if is_ok:
+                good_files.append(root_file)
+            else:
+                skipped_files.append((root_file, reason or "unreadable Events tree"))
+
+        if skipped_files:
+            print(f"[SKIP] {in_dir.name}: ignoring {len(skipped_files)} file(s) with unreadable Events trees")
+            for bad_file, reason in skipped_files[:10]:
+                print(f"[SKIP] {in_dir.name}: {bad_file.name} -> {reason}")
+            if len(skipped_files) > 10:
+                print(f"[SKIP] {in_dir.name}: ... and {len(skipped_files) - 10} more")
+
+        if not good_files:
+            continue
+
+        input_bytes = sum((f.stat().st_size for f in good_files), 0)
         out_root = output_dir / f"{in_dir.name}.root"
         tasks.append(
             MergeTask(
                 folder=in_dir,
                 group_key=in_dir.name,
-                files=root_files,
+                files=good_files,
                 input_bytes=input_bytes,
                 output_root=out_root,
             )
