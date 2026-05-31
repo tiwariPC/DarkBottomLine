@@ -1543,7 +1543,7 @@ if COFFEA_AVAILABLE:
                 accumulator["metadata"] = {}
             if self.weighted_total_events is not None:
                 accumulator["metadata"]["weighted_total_events"] = self.weighted_total_events
-            
+
             return accumulator
 
         def _write_event_selection_root(
@@ -1617,4 +1617,4 @@ if COFFEA_AVAILABLE:
                     except Exception as e:
                         logging.error(f"Failed to write Events tree: {e}", exc_info=True)
 
-            return accumulator
+            return None
