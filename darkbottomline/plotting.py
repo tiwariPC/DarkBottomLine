@@ -69,13 +69,73 @@ def _flatten_numeric(values: Any) -> np.ndarray:
     return np.asarray(result, dtype=float) if result else np.array([], dtype=float)
 
 
-def _extract_branches(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
+def _should_load_key(key: str, variables: Optional[List[str]]) -> bool:
+    """Return True if key matches any variable in the whitelist (fuzzy match)."""
+    if variables is None:
+        return True
+    key_l = key.lower()
+    for var in variables:
+        var_l = var.lower()
+        if var_l in key_l or key_l in var_l:
+            return True
+    return False
+
+
+def _clean_sample_name(name: str) -> str:
+    """Strip common suffixes (generator, tune, hadd, etc.) to get the core sample ID."""
+    # Ordered: longer/more specific first to avoid partial false matches
+    suffixes = [
+        "_EVENTSELECTION", "_hadd",
+        "_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
+        "_TuneCP5_13p6TeV_madgraphMLM-pythia8",
+        "_TuneCP5_13p6TeV_powheg-pythia8",
+        "_TuneCP5_13TeV_amcatnloFXFX-pythia8",
+        "_TuneCP5_13TeV_madgraphMLM-pythia8",
+        "_TuneCP5_13TeV_powheg-pythia8",
+        "_TuneCUETP8M1_13TeV_amcatnloFXFX-pythia8",
+        "_TuneCUETP8M1_13TeV_madgraphMLM-pythia8",
+        "_TuneCP5_13p6TeV", "_TuneCP5_13TeV", "_TuneCUETP8M1_13TeV",
+        "_13p6TeV", "_13TeV",
+        "_nanoAOD", "_NANOAOD",
+        "_Run3Summer22", "_Run3Summer22EE", "_Run3Summer23",
+    ]
+    result = name
+    for suffix in suffixes:
+        if suffix in result:
+            result = result[:result.index(suffix)]
+    return result
+
+
+def _find_xsec(stem: str, cross_sections: Dict[str, float]) -> Optional[float]:
+    """Look up cross-section for *stem*, using cleaned sample-name matching."""
+    if not cross_sections:
+        return None
+    # 1. exact match
+    xsec = cross_sections.get(stem)
+    if xsec is not None:
+        return xsec
+    # 2. cleaned exact match
+    clean = _clean_sample_name(stem)
+    xsec = cross_sections.get(clean)
+    if xsec is not None:
+        return xsec
+    # 3. cleaned substring match in either direction
+    for k, v in cross_sections.items():
+        k_clean = _clean_sample_name(k)
+        if k_clean == clean or k_clean in clean or clean in k_clean:
+            return v
+    return None
+
+
+def _extract_branches(objects: Dict[str, Any], variables: Optional[List[str]] = None) -> Dict[str, np.ndarray]:
     """Flatten a nested objects dict from PKL/ROOT to {branch_name: flat_array}."""
     distributions: Dict[str, np.ndarray] = {}
     for key, value in objects.items():
         if key.endswith("_mask"):
             continue
         if not isinstance(value, list):
+            if not _should_load_key(key, variables):
+                continue
             arr = _flatten_numeric(value)
             if arr.size > 0:
                 distributions[key] = arr
@@ -91,9 +151,12 @@ def _extract_branches(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
                         if _is_number(fv):
                             numeric_fields.add(f)
             for field in sorted(numeric_fields):
+                derived_key = f"{key}_{field}"
+                if not _should_load_key(derived_key, variables):
+                    continue
                 flat = _flatten_numeric([item.get(field) for item in value if isinstance(item, dict)])
                 if flat.size > 0:
-                    distributions[f"{key}_{field}"] = flat
+                    distributions[derived_key] = flat
             continue
         if isinstance(first, list):
             inner = next((x for row in value if isinstance(row, list) for x in row if x is not None), None)
@@ -108,6 +171,9 @@ def _extract_branches(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
                                 if _is_number(fv):
                                     numeric_fields.add(f)
                 for field in sorted(numeric_fields):
+                    derived_key = f"{key}_{field}"
+                    if not _should_load_key(derived_key, variables):
+                        continue
                     vals: List[float] = []
                     for row in value:
                         if not isinstance(row, list):
@@ -120,8 +186,10 @@ def _extract_branches(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
                                     if math.isfinite(v2):
                                         vals.append(v2)
                     if vals:
-                        distributions[f"{key}_{field}"] = np.asarray(vals, dtype=float)
+                        distributions[derived_key] = np.asarray(vals, dtype=float)
                 continue
+        if not _should_load_key(key, variables):
+            continue
         flat = _flatten_numeric(value)
         if flat.size > 0:
             distributions[key] = flat
@@ -766,7 +834,7 @@ class PlotManager:
             return self._load_pkl_files(pkl_files)
         raise FileNotFoundError(f"No ROOT or PKL files in {folder}")
 
-    def _load_pkl_files(self, paths: List[Path]) -> Dict[str, Any]:
+    def _load_pkl_files(self, paths: List[Path], keys_filter: Optional[List[str]] = None) -> Dict[str, Any]:
         merged: Dict[str, Any] = {"weighted_total_events": 0, "objects": {}}
         loaded_count = 0
         for p in paths:
@@ -782,6 +850,8 @@ class PlotManager:
                 obj_keys = list(objs.keys()) if isinstance(objs, dict) else []
                 if isinstance(objs, dict):
                     for k, v in objs.items():
+                        if keys_filter is not None and not _should_load_key(k, keys_filter):
+                            continue
                         if k in merged["objects"]:
                             if isinstance(merged["objects"][k], list) and isinstance(v, list):
                                 merged["objects"][k] = merged["objects"][k] + v
@@ -790,16 +860,17 @@ class PlotManager:
                         else:
                             merged["objects"][k] = v
                 loaded_count += 1
-                logging.info("Loaded PKL %s: wte=%d, objects=%d keys %s",
-                             p.name, wte, len(obj_keys),
-                             f"({', '.join(obj_keys[:5])}{'...' if len(obj_keys) > 5 else ''})" if obj_keys else "()")
+                kept_keys = [k for k in obj_keys if keys_filter is None or _should_load_key(k, keys_filter)]
+                logging.info("Loaded PKL %s: wte=%d, objects=%d keys (kept=%d) %s",
+                             p.name, wte, len(obj_keys), len(kept_keys),
+                             f"({', '.join(kept_keys[:5])}{'...' if len(kept_keys) > 5 else ''})" if kept_keys else "()")
             except Exception as exc:
                 logging.warning("Could not load %s: %s", p.name, exc)
         logging.info("PKL load complete: %d/%d files loaded, total wte=%d, total object keys=%d",
                      loaded_count, len(paths), merged["weighted_total_events"], len(merged["objects"]))
         return merged
 
-    def _load_root_files(self, paths: List[Path]) -> Dict[str, Any]:
+    def _load_root_files(self, paths: List[Path], keys_filter: Optional[List[str]] = None) -> Dict[str, Any]:
         try:
             import uproot
         except ImportError:
@@ -816,6 +887,9 @@ class PlotManager:
                     objs: Dict[str, Any] = {}
                     skip_branches = 0
                     for branch in tree.keys():
+                        if keys_filter is not None and not _should_load_key(str(branch), keys_filter):
+                            skip_branches += 1
+                            continue
                         try:
                             arr = tree[branch].array(library="np")
                             objs[branch] = arr.tolist() if hasattr(arr, "tolist") else list(arr)
@@ -1226,11 +1300,45 @@ class PlotManager:
             ))
         return created
 
-    def _load_one_file(self, path: Path) -> Dict[str, Any]:
+    def _load_one_file(self, path: Path, variables: Optional[List[str]] = None) -> Dict[str, Any]:
         """Load a single ROOT or PKL file. Returns {"weighted_total_events": int, "objects": dict}."""
         if path.suffix == ".root":
-            return self._load_root_files([path])
-        return self._load_pkl_files([path])
+            return self._load_root_files([path], keys_filter=variables)
+        return self._load_pkl_files([path], keys_filter=variables)
+
+    @staticmethod
+    def _normalize_cross_sections(cross_sections: Dict[str, float]) -> Dict[str, float]:
+        """Convert nested xsection dict to flat format if needed.
+
+        Nested format (from xsection_background.json):
+            {"WtoLNu-2Jets": [{"year":..., "process":..., "xsection":..., "full_dataset":...}, ...]}
+        Flat format (expected by lookup):
+            {"WtoLNu-2Jets_PTLNu-40to100_...": 1598.0, ...}
+        """
+        if not cross_sections:
+            return cross_sections
+        _first_val = next(iter(cross_sections.values()), None)
+        if not isinstance(_first_val, list):
+            return cross_sections
+        _flat_xs: Dict[str, float] = {}
+        for _entries in cross_sections.values():
+            if not isinstance(_entries, list):
+                continue
+            for _entry in _entries:
+                if not isinstance(_entry, dict):
+                    continue
+                _xs = _entry.get("xsection")
+                if _xs is None:
+                    continue
+                _xs_f = float(_xs)
+                _fd = _entry.get("full_dataset")
+                if _fd:
+                    _flat_xs[str(_fd)] = _xs_f
+                _proc = _entry.get("process")
+                if _proc:
+                    _flat_xs[str(_proc)] = _xs_f
+        logging.info("Normalized nested xsec dict: %d entries (flat)", len(_flat_xs))
+        return _flat_xs
 
     def _resolve_group_files(self, input_folder: str, patterns: List[str]) -> List[Path]:
         """Find all ROOT/PKL files in input_folder whose name contains any of the patterns.
@@ -1273,33 +1381,10 @@ class PlotManager:
         input_folder: str,
         groups: Dict[str, List[str]],
         cross_sections: Dict[str, float],
+        variables: Optional[List[str]] = None,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Load files for each process group. Returns {label: [{"weighted_total_events", "branches", "xsec"}]}."""
-        # Normalize nested xsec dict (from xsection_background.json) to flat format.
-        # Nested: {"WtoLNu-2Jets": [{"year":..., "process":..., "xsection":..., "full_dataset":...}, ...]}
-        # Flat (expected): {"WtoLNu-2Jets_PTLNu-40to100_...": 1598.0, ...}
-        if cross_sections:
-            _first_val = next(iter(cross_sections.values()), None)
-            if isinstance(_first_val, list):   # nested format detected
-                _flat_xs: Dict[str, float] = {}
-                for _entries in cross_sections.values():
-                    if not isinstance(_entries, list):
-                        continue
-                    for _entry in _entries:
-                        if not isinstance(_entry, dict):
-                            continue
-                        _xs = _entry.get("xsection")
-                        if _xs is None:
-                            continue
-                        _xs_f = float(_xs)
-                        _fd = _entry.get("full_dataset")
-                        if _fd:
-                            _flat_xs[str(_fd)] = _xs_f
-                        _proc = _entry.get("process")
-                        if _proc:
-                            _flat_xs[str(_proc)] = _xs_f
-                cross_sections = _flat_xs
-                logging.info("Normalized nested xsec dict: %d entries (flat)", len(cross_sections))
+        cross_sections = self._normalize_cross_sections(cross_sections)
 
         result: Dict[str, List[Dict[str, Any]]] = {}
         logging.info("=== Loading %d process groups from %s ===", len(groups), input_folder)
@@ -1310,19 +1395,13 @@ class PlotManager:
             skipped_paths = []
             for p in paths:
                 _stem = p.stem.replace("_EVENTSELECTION", "")
-                # direct key match
-                xsec = (cross_sections.get(p.stem)
-                        or cross_sections.get(_stem)
-                        or cross_sections.get(p.name))
-                # substring fallback: filename contains key or key contains filename stem
-                if xsec is None and cross_sections:
-                    for _k, _v in cross_sections.items():
-                        if _k in p.stem or p.stem in _k:
-                            xsec = _v
-                            logging.debug("xsec substring match: '%s' -> %s pb", _k, _v)
-                            break
+                xsec = _find_xsec(p.stem, cross_sections)
+                if xsec is None:
+                    xsec = _find_xsec(_stem, cross_sections)
+                if xsec is None:
+                    xsec = _find_xsec(p.name, cross_sections)
                 try:
-                    loaded = self._load_one_file(p)
+                    loaded = self._load_one_file(p, variables)
                     branches = _extract_branches(loaded["objects"])
                     entries.append({
                         "weighted_total_events": loaded["weighted_total_events"],
@@ -1367,9 +1446,9 @@ class PlotManager:
         save_root: bool,
     ) -> List[str]:
         logging.info("=== Creating event-selection plots ===")
-        bkg_groups  = self._load_group_entries(input_folder, process_groups, cross_sections)
-        sig_groups  = self._load_group_entries(input_folder, signal_groups,  cross_sections)
-        dat_groups  = self._load_group_entries(input_folder, data_groups,    {})  # no xsec for data
+        bkg_groups  = self._load_group_entries(input_folder, process_groups, cross_sections, variables)
+        sig_groups  = self._load_group_entries(input_folder, signal_groups,  cross_sections, variables)
+        dat_groups  = self._load_group_entries(input_folder, data_groups,    {}, None)  # no xsec for data
 
         logging.info("Loaded groups: bkg=%d, sig=%d, data=%d",
                      len(bkg_groups), len(sig_groups), len(dat_groups))
@@ -1545,6 +1624,8 @@ class PlotManager:
         save_root: bool,
     ) -> List[str]:
         logging.info("=== Creating region stacked plots ===")
+        cross_sections = self._normalize_cross_sections(cross_sections)
+
         try:
             import hist as hist_lib
             _HAS_HIST = True
@@ -1572,17 +1653,11 @@ class PlotManager:
             entries = []
             for p in paths:
                 _stem = p.stem.replace("_EVENTSELECTION", "")
-                # direct key match
-                xsec = (cross_sections.get(p.stem)
-                        or cross_sections.get(_stem)
-                        or cross_sections.get(p.name))
-                # substring fallback: filename contains key or key contains filename stem
-                if xsec is None and cross_sections:
-                    for _k, _v in cross_sections.items():
-                        if _k in p.stem or p.stem in _k:
-                            xsec = _v
-                            logging.debug("xsec substring match: '%s' -> %s pb", _k, _v)
-                            break
+                xsec = _find_xsec(p.stem, cross_sections)
+                if xsec is None:
+                    xsec = _find_xsec(_stem, cross_sections)
+                if xsec is None:
+                    xsec = _find_xsec(p.name, cross_sections)
                 try:
                     data = _load_region_pkl(p)
                     entries.append({"data": data, "xsec": xsec})
@@ -1765,6 +1840,8 @@ class PlotManager:
           3. Fill per-variable histograms with full_event_weight (nominal) or weight_systematic.
           4. Scale by lumi * xsec * 1000 / wte and stack across groups.
         """
+        cross_sections = self._normalize_cross_sections(cross_sections)
+
         import uproot as _uproot
         from .regions import RegionManager
 
@@ -1796,7 +1873,7 @@ class PlotManager:
                 pass
             return None
 
-        def _load_events_root(path: Path) -> Optional[Dict[str, Any]]:
+        def _load_events_root(path: Path, variables: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
             """Return {"branches": {name: np.ndarray}, "wte": float} or None on failure."""
             try:
                 with _uproot.open(str(path)) as f:
@@ -1815,6 +1892,8 @@ class PlotManager:
                     tree = f["Events"]
                     branches: dict = {}
                     for bname in tree.keys():
+                        if variables is not None and not _should_load_key(str(bname), variables):
+                            continue
                         try:
                             branches[bname] = tree[bname].array(library="np")
                         except Exception as _berr:
@@ -1824,22 +1903,26 @@ class PlotManager:
                 logging.warning("Could not load %s: %s", path.name, exc)
                 return None
 
-        def _load_events_pkl(path: Path) -> Optional[Dict[str, Any]]:
+        def _load_events_pkl(path: Path, variables: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
             try:
                 with open(path, "rb") as fh:
                     d = pickle.load(fh)
-                branches = {k: np.asarray(v) for k, v in d.get("branches", {}).items()
-                            if isinstance(v, (np.ndarray, list))}
+                branches = {}
+                for k, v in d.get("branches", {}).items():
+                    if variables is not None and not _should_load_key(k, variables):
+                        continue
+                    if isinstance(v, (np.ndarray, list)):
+                        branches[k] = np.asarray(v)
                 wte = float(d.get("weighted_total_events", 0.0))
                 return {"branches": branches, "wte": wte}
             except Exception as exc:
                 logging.warning("Could not load %s: %s", path.name, exc)
                 return None
 
-        def _load_file(path: Path) -> Optional[Dict[str, Any]]:
+        def _load_file(path: Path, variables: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
             if path.suffix == ".root":
-                return _load_events_root(path)
-            return _load_events_pkl(path)
+                return _load_events_root(path, variables)
+            return _load_events_pkl(path, variables)
 
         # ---- load per-group ----
         # {proc_label: [{"branches": dict, "wte": float, "xsec": float|None}]}
@@ -1853,14 +1936,16 @@ class PlotManager:
             proc_cf: Dict[str, float] = {}
             loaded_count = 0
             for p in paths:
-                loaded = _load_file(p)
+                loaded = _load_file(p, variables)
                 if loaded is None:
                     logging.warning("[%s] failed to load %s", proc_label, p.name)
                     continue
                 _stem = p.stem.replace("_EVENTSELECTION", "")
-                xsec = (cross_sections.get(p.stem)
-                        or cross_sections.get(_stem)
-                        or cross_sections.get(p.name))
+                xsec = _find_xsec(p.stem, cross_sections)
+                if xsec is None:
+                    xsec = _find_xsec(_stem, cross_sections)
+                if xsec is None:
+                    xsec = _find_xsec(p.name, cross_sections)
                 wte  = loaded["wte"]
                 scale = ((luminosity * xsec * 1000.0) / wte
                          if xsec is not None and wte > 0
@@ -1899,7 +1984,7 @@ class PlotManager:
             grp_cfg = raw_data_cfg.get(label, {})
             region_patterns: List[str] = grp_cfg.get("regions", []) if isinstance(grp_cfg, dict) else []
             paths = self._resolve_group_files(input_folder, patterns)
-            loaded_list = [e for p in paths for e in [_load_file(p)] if e is not None]
+            loaded_list = [e for p in paths for e in [_load_file(p, variables)] if e is not None]
             if loaded_list:
                 data_entries[label] = {"entries": loaded_list, "region_patterns": region_patterns}
                 logging.info("[Data:%s] loaded %d files, region_patterns=%s",
