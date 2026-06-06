@@ -178,8 +178,7 @@ def main() -> None:
 
     # ---- 2. Load data from ROOT ----
     region = args.region
-    region_safe = region.replace(":", "_")
-    weight_branch = f"weight_{region_safe}"
+    weight_branch = f"weight_{region}"
     signal_prefix = _resolve_signal_prefix(args.signal_prefix, args.signal_category)
     exclude_prefixes = _parse_prefixes(args.exclude_prefixes, default="run")
     bg_prefix = str(args.background_prefix).strip().lower() if args.background_prefix else None

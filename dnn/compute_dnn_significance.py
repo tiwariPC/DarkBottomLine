@@ -152,8 +152,7 @@ def main():
 
     X_parts, y_parts, w_parts = [], [], []
     region = args.region
-    region_safe = region.replace(":", "_")
-    weight_branch = f"weight_{region_safe}"
+    weight_branch = f"weight_{region}"
 
     with uproot.open(args.root) as f:
         trees = list_sample_region_trees(f, region)

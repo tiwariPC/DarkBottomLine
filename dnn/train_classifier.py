@@ -796,8 +796,7 @@ def main():
         raise ValueError("No features specified")
 
     region = args.region
-    region_safe = region.replace(":", "_")
-    weight_branch = f"weight_{region_safe}"
+    weight_branch = f"weight_{region}"
     patterns = tuple(args.signal_pattern) if args.signal_pattern else DEFAULT_SIGNAL_PATTERNS
     label_map = _load_label_csv(args.label_csv) if args.label_csv else None
     bg_prefix = str(args.background_prefix).strip().lower() if args.background_prefix else None

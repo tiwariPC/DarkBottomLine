@@ -513,9 +513,8 @@ class DNNTrainer:
         from dnn.common import sanitize_feature_frame
 
         region = self.data_config.get("region", "preselection")
-        region_safe = region.replace(":", "_")
         features_req = list(REQUESTED_FEATURES_25)
-        weight_branch = f"weight_{region_safe}"
+        weight_branch = f"weight_{region}"
         max_ev = int(self.data_config.get("max_events_per_sample", 200000))
 
         X_parts, y_parts, w_parts = [], [], []
@@ -646,8 +645,7 @@ class DNNTrainer:
         weight_clip = float(tc.get("weight_clip", 100.0))
         excl = tuple(p.strip().lower() for p in str(exclude_prefixes).split(",") if p.strip())
         patterns = tuple(signal_patterns) if signal_patterns else DEFAULT_SIGNAL_PATTERNS
-        region_safe = region.replace(":", "_")
-        weight_branch = f"weight_{region_safe}"
+        weight_branch = f"weight_{region}"
 
         label_map: Optional[Dict[str, int]] = None
         if label_csv:

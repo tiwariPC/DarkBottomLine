@@ -147,8 +147,7 @@ def main():
     label_counts = {0: 0, 1: 0}
     feature_sources: dict[str, str] = {}
 
-    region_safe = args.region.replace(":", "_")
-    weight_branch = f"weight_{region_safe}"
+    weight_branch = f"weight_{args.region}"
 
     with uproot.open(args.root) as f:
         trees = list_sample_region_trees(f, args.region)
