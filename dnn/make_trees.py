@@ -164,10 +164,11 @@ def convert_files(
 
             out_dict["signal"] = np.full(n, int(sig_flag), dtype="int8")
             out_dict["isdata"] = np.full(n, int(data_flag), dtype="int8")
-            out_dict[f"weight_{region_name}"] = w
+            region_name_safe = region_name.replace(":", "_")
+            out_dict[f"weight_{region_name_safe}"] = w
 
             # Write to sample/region tree
-            tree_key = f"{sample}/{region_name}"
+            tree_key = f"{sample}/{region_name.replace(':', '_')}"
             out_f[tree_key] = out_dict
 
             summary[sample] = {

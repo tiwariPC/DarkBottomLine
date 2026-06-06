@@ -84,6 +84,36 @@ def _asimov_significance_from_hist(sig: np.ndarray, bkg: np.ndarray, eps: float 
     return float(np.sqrt(max(2.0 * float(np.sum(np.maximum(term, 0.0))), 0.0)))
 
 
+def _asimov_significance_from_hist_syst(
+    sig: np.ndarray,
+    bkg: np.ndarray,
+    sigma_rel: float,
+    eps: float = 1e-12,
+) -> float:
+    s = np.maximum(np.asarray(sig, dtype="f8"), 0.0)
+    b = np.maximum(np.asarray(bkg, dtype="f8"), 0.0)
+    if sigma_rel <= 0.0:
+        return _asimov_significance_from_hist(s, b, eps=eps)
+    sigma_b2 = (sigma_rel * b) ** 2
+    mask_syst = (b > eps) & (sigma_b2 > eps)
+    term = np.zeros_like(s, dtype="f8")
+    if np.any(mask_syst):
+        s_m = s[mask_syst]; b_m = b[mask_syst]; sb2_m = sigma_b2[mask_syst]
+        num = (s_m + b_m) * (b_m + sb2_m)
+        den = b_m * b_m + (s_m + b_m) * sb2_m
+        ratio1 = np.where(den > eps, num / den, 1.0)
+        term1 = np.where(ratio1 > 1.0 + eps, (s_m + b_m) * np.log(ratio1), 0.0)
+        ratio2 = sb2_m * s_m / np.maximum(b_m * (b_m + sb2_m), eps)
+        term2 = (b_m * b_m / np.maximum(sb2_m, eps)) * np.log1p(ratio2)
+        term[mask_syst] = term1 - term2
+    mask_pure = ~mask_syst & (b > eps)
+    if np.any(mask_pure):
+        s_p = s[mask_pure]; b_p = b[mask_pure]
+        term[mask_pure] = (s_p + b_p) * np.log1p(s_p / b_p) - s_p
+    z2 = 2.0 * np.sum(np.maximum(term, 0.0))
+    return float(np.sqrt(max(z2, 0.0)))
+
+
 def _compute_feature_significance(
     X_df,
     y: np.ndarray,
@@ -92,6 +122,7 @@ def _compute_feature_significance(
     outdir: Path,
     source_map: dict | None = None,
     n_bins: int = 40,
+    sig_syst: float = 0.0,
 ) -> list[dict]:
     from sklearn.metrics import roc_auc_score
 
@@ -100,13 +131,29 @@ def _compute_feature_significance(
     y_i = np.asarray(y, dtype="i4")
     w_f = np.maximum(np.asarray(w, dtype="f8"), 0.0)
 
+    # Counting-experiment baseline (pure S/√B)
+    S_total = float(np.sum(w_f[y_i == 1]))
+    B_total = float(np.sum(w_f[y_i == 0]))
+    sig_syst_val = float(sig_syst)
+    z_counting_stat = _asimov_significance_from_hist(
+        np.array([max(S_total, 0.0)]), np.array([max(B_total, 0.0)]),
+    )
+    if sig_syst_val > 0.0:
+        z_counting_syst = _asimov_significance_from_hist_syst(
+            np.array([max(S_total, 0.0)]), np.array([max(B_total, 0.0)]), sig_syst_val,
+        )
+    else:
+        z_counting_syst = z_counting_stat
+
     for feat in features:
         x = np.asarray(X_df[feat].to_numpy(), dtype="f8")
         m = np.isfinite(x)
         x, yy, ww = x[m], y_i[m], w_f[m]
 
         if x.size == 0 or np.sum(ww[yy == 1]) <= 0 or np.sum(ww[yy == 0]) <= 0:
-            rows.append({"feature": feat, "source": (source_map or {}).get(feat, "unknown"), "auc": float("nan"), "asimov_z": 0.0})
+            rows.append({"feature": feat, "source": (source_map or {}).get(feat, "unknown"),
+                         "auc": float("nan"), "asimov_z": 0.0, "asimov_z_syst": 0.0,
+                         "delta_z": 0.0, "delta_z_syst": 0.0})
             continue
 
         qlo, qhi = _weighted_percentile(x, ww, np.array([0.01, 0.99], dtype="f8"))
@@ -119,10 +166,14 @@ def _compute_feature_significance(
         hs, _ = np.histogram(x[yy == 1], bins=edges, weights=ww[yy == 1])
         hb, _ = np.histogram(x[yy == 0], bins=edges, weights=ww[yy == 0])
         z = _asimov_significance_from_hist(hs, hb)
+        z_syst = _asimov_significance_from_hist_syst(hs, hb, float(sig_syst))
         auc = float(roc_auc_score(yy, x, sample_weight=ww))
-        rows.append({"feature": feat, "source": (source_map or {}).get(feat, "unknown"), "auc": auc, "asimov_z": z})
+        rows.append({"feature": feat, "source": (source_map or {}).get(feat, "unknown"),
+                     "auc": auc, "asimov_z": z, "asimov_z_syst": z_syst,
+                     "delta_z": z - z_counting_stat, "delta_z_syst": z_syst - z_counting_syst})
 
-    rows.sort(key=lambda r: (r["asimov_z"], abs((r["auc"] if np.isfinite(r["auc"]) else 0.5) - 0.5)), reverse=True)
+    sort_key = "asimov_z_syst" if float(sig_syst) > 0.0 else "asimov_z"
+    rows.sort(key=lambda r: (r[sort_key], abs((r["auc"] if np.isfinite(r["auc"]) else 0.5) - 0.5)), reverse=True)
 
     import pandas as pd
     pd.DataFrame(rows).to_csv(outdir / "feature_significance.csv", index=False)
@@ -133,15 +184,55 @@ def _compute_feature_significance(
     import matplotlib.pyplot as plt
 
     labels = [r["feature"] for r in rows]
-    vals = [float(r["asimov_z"]) for r in rows]
-    plt.figure(figsize=(max(8, 0.55 * len(labels)), 5.5))
-    plt.bar(labels, vals, color="#3f90da", edgecolor="black", linewidth=0.8)
-    plt.xticks(rotation=40, ha="right")
-    plt.ylabel("Feature significance (binned Asimov Z)")
-    plt.title("Per-feature significance ranking")
-    plt.tight_layout()
-    plt.savefig(outdir / "feature_significance.png", dpi=160)
-    plt.close()
+    vals_stat = [float(r["asimov_z"]) for r in rows]
+    vals_syst = [float(r["asimov_z_syst"]) for r in rows]
+    has_syst = float(sig_syst) > 0.0
+
+    def _draw_bars(ax, vals, ylabel, title, color="#3f90da"):
+        ax.bar(labels, vals, color=color, edgecolor="black", linewidth=0.8)
+        ax.set_xticks(range(len(labels)))
+        ax.set_xticklabels(labels, rotation=40, ha="right")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
+
+    if has_syst:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(max(16, 1.1 * len(labels)), 5.5))
+        _draw_bars(ax1, vals_stat, "Asimov Z (pure stat)", "Per-feature significance (pure statistical)")
+        syst_label = f"syst-aware (\u03c3_rel={float(sig_syst)*100:.0f}%)"
+        _draw_bars(ax2, vals_syst, f"Asimov Z ({syst_label})", f"Per-feature significance ({syst_label})", "#d62728")
+        fig.tight_layout()
+        fig.savefig(outdir / "feature_significance.png", dpi=160)
+        plt.close(fig)
+    else:
+        fig, ax = plt.subplots(1, 1, figsize=(max(12, 0.7 * len(labels)), 5.5))
+        _draw_bars(ax, vals_stat, "Asimov Z (pure stat)", "Per-feature significance (pure statistical)")
+        fig.tight_layout()
+        fig.savefig(outdir / "feature_significance.png", dpi=160)
+        plt.close(fig)
+
+    # Delta-Z plot
+    vals_delta_stat = [float(r["delta_z"]) for r in rows]
+    vals_delta_syst = [float(r["delta_z_syst"]) for r in rows]
+    if has_syst:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(max(16, 1.1 * len(labels)), 5.5))
+        _draw_bars(ax1, vals_delta_stat, "\u0394Z (pure stat)",
+                   f"Effective significance (pure stat)\nbaseline = S/\u221aB = {z_counting_stat:.2f}\u03c3")
+        ax1.axhline(y=0, color="gray", linewidth=0.8, linestyle="--")
+        syst_label = f"syst-aware (\u03c3_rel={float(sig_syst)*100:.0f}%)"
+        _draw_bars(ax2, vals_delta_syst, f"\u0394Z ({syst_label})",
+                   f"Effective significance ({syst_label})\nbaseline = S/\u221aB (syst) = {z_counting_syst:.2f}\u03c3", "#d62728")
+        ax2.axhline(y=0, color="gray", linewidth=0.8, linestyle="--")
+        fig.tight_layout()
+        fig.savefig(outdir / "feature_significance_delta.png", dpi=160)
+        plt.close(fig)
+    else:
+        fig, ax = plt.subplots(1, 1, figsize=(max(12, 0.7 * len(labels)), 5.5))
+        _draw_bars(ax, vals_delta_stat, "\u0394Z (pure stat)",
+                   f"Effective significance\nbaseline = S/\u221aB = {z_counting_stat:.2f}\u03c3")
+        ax.axhline(y=0, color="gray", linewidth=0.8, linestyle="--")
+        fig.tight_layout()
+        fig.savefig(outdir / "feature_significance_delta.png", dpi=160)
+        plt.close(fig)
 
     return rows
 
@@ -422,8 +513,9 @@ class DNNTrainer:
         from dnn.common import sanitize_feature_frame
 
         region = self.data_config.get("region", "preselection")
+        region_safe = region.replace(":", "_")
         features_req = list(REQUESTED_FEATURES_25)
-        weight_branch = f"weight_{region}"
+        weight_branch = f"weight_{region_safe}"
         max_ev = int(self.data_config.get("max_events_per_sample", 200000))
 
         X_parts, y_parts, w_parts = [], [], []
@@ -554,7 +646,8 @@ class DNNTrainer:
         weight_clip = float(tc.get("weight_clip", 100.0))
         excl = tuple(p.strip().lower() for p in str(exclude_prefixes).split(",") if p.strip())
         patterns = tuple(signal_patterns) if signal_patterns else DEFAULT_SIGNAL_PATTERNS
-        weight_branch = f"weight_{region}"
+        region_safe = region.replace(":", "_")
+        weight_branch = f"weight_{region_safe}"
 
         label_map: Optional[Dict[str, int]] = None
         if label_csv:
@@ -679,8 +772,10 @@ class DNNTrainer:
         topo_feats = [s.strip() for s in str(self.topo_config.get("features", "M_Jet1Jet2,dRJet12")).split(",") if s.strip()]
         topo_min_sig = int(self.topo_config.get("min_signal_events", 16))
 
-        # Feature significance ranking
-        signif_rows = _compute_feature_significance(X, y, w, features, plot_dir_p, source_map=feature_sources)
+        # Feature significance ranking (syst-aware when configured)
+        sig_syst_val = float(self.training_config.get("sig_syst", 0.0))
+        signif_rows = _compute_feature_significance(X, y, w, features, plot_dir_p, source_map=feature_sources,
+                                                     sig_syst=sig_syst_val)
         logging.info("Feature significance written to %s", plot_dir_p / "feature_significance.csv")
 
         if top_k > 0:
