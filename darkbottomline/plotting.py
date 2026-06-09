@@ -69,13 +69,73 @@ def _flatten_numeric(values: Any) -> np.ndarray:
     return np.asarray(result, dtype=float) if result else np.array([], dtype=float)
 
 
-def _extract_branches(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
+def _should_load_key(key: str, variables: Optional[List[str]]) -> bool:
+    """Return True if key matches any variable in the whitelist (fuzzy match)."""
+    if variables is None:
+        return True
+    key_l = key.lower()
+    for var in variables:
+        var_l = var.lower()
+        if var_l in key_l or key_l in var_l:
+            return True
+    return False
+
+
+def _clean_sample_name(name: str) -> str:
+    """Strip common suffixes (generator, tune, hadd, etc.) to get the core sample ID."""
+    # Ordered: longer/more specific first to avoid partial false matches
+    suffixes = [
+        "_EVENTSELECTION", "_hadd",
+        "_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
+        "_TuneCP5_13p6TeV_madgraphMLM-pythia8",
+        "_TuneCP5_13p6TeV_powheg-pythia8",
+        "_TuneCP5_13TeV_amcatnloFXFX-pythia8",
+        "_TuneCP5_13TeV_madgraphMLM-pythia8",
+        "_TuneCP5_13TeV_powheg-pythia8",
+        "_TuneCUETP8M1_13TeV_amcatnloFXFX-pythia8",
+        "_TuneCUETP8M1_13TeV_madgraphMLM-pythia8",
+        "_TuneCP5_13p6TeV", "_TuneCP5_13TeV", "_TuneCUETP8M1_13TeV",
+        "_13p6TeV", "_13TeV",
+        "_nanoAOD", "_NANOAOD",
+        "_Run3Summer22", "_Run3Summer22EE", "_Run3Summer23",
+    ]
+    result = name
+    for suffix in suffixes:
+        if suffix in result:
+            result = result[:result.index(suffix)]
+    return result
+
+
+def _find_xsec(stem: str, cross_sections: Dict[str, float]) -> Optional[float]:
+    """Look up cross-section for *stem*, using cleaned sample-name matching."""
+    if not cross_sections:
+        return None
+    # 1. exact match
+    xsec = cross_sections.get(stem)
+    if xsec is not None:
+        return xsec
+    # 2. cleaned exact match
+    clean = _clean_sample_name(stem)
+    xsec = cross_sections.get(clean)
+    if xsec is not None:
+        return xsec
+    # 3. cleaned substring match in either direction
+    for k, v in cross_sections.items():
+        k_clean = _clean_sample_name(k)
+        if k_clean == clean or k_clean in clean or clean in k_clean:
+            return v
+    return None
+
+
+def _extract_branches(objects: Dict[str, Any], variables: Optional[List[str]] = None) -> Dict[str, np.ndarray]:
     """Flatten a nested objects dict from PKL/ROOT to {branch_name: flat_array}."""
     distributions: Dict[str, np.ndarray] = {}
     for key, value in objects.items():
         if key.endswith("_mask"):
             continue
         if not isinstance(value, list):
+            if not _should_load_key(key, variables):
+                continue
             arr = _flatten_numeric(value)
             if arr.size > 0:
                 distributions[key] = arr
@@ -91,9 +151,12 @@ def _extract_branches(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
                         if _is_number(fv):
                             numeric_fields.add(f)
             for field in sorted(numeric_fields):
+                derived_key = f"{key}_{field}"
+                if not _should_load_key(derived_key, variables):
+                    continue
                 flat = _flatten_numeric([item.get(field) for item in value if isinstance(item, dict)])
                 if flat.size > 0:
-                    distributions[f"{key}_{field}"] = flat
+                    distributions[derived_key] = flat
             continue
         if isinstance(first, list):
             inner = next((x for row in value if isinstance(row, list) for x in row if x is not None), None)
@@ -108,6 +171,9 @@ def _extract_branches(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
                                 if _is_number(fv):
                                     numeric_fields.add(f)
                 for field in sorted(numeric_fields):
+                    derived_key = f"{key}_{field}"
+                    if not _should_load_key(derived_key, variables):
+                        continue
                     vals: List[float] = []
                     for row in value:
                         if not isinstance(row, list):
@@ -120,8 +186,10 @@ def _extract_branches(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
                                     if math.isfinite(v2):
                                         vals.append(v2)
                     if vals:
-                        distributions[f"{key}_{field}"] = np.asarray(vals, dtype=float)
+                        distributions[derived_key] = np.asarray(vals, dtype=float)
                 continue
+        if not _should_load_key(key, variables):
+            continue
         flat = _flatten_numeric(value)
         if flat.size > 0:
             distributions[key] = flat
@@ -766,19 +834,24 @@ class PlotManager:
             return self._load_pkl_files(pkl_files)
         raise FileNotFoundError(f"No ROOT or PKL files in {folder}")
 
-    def _load_pkl_files(self, paths: List[Path]) -> Dict[str, Any]:
+    def _load_pkl_files(self, paths: List[Path], keys_filter: Optional[List[str]] = None) -> Dict[str, Any]:
         merged: Dict[str, Any] = {"weighted_total_events": 0, "objects": {}}
+        loaded_count = 0
         for p in paths:
             try:
                 with open(p, "rb") as fh:
                     data = pickle.load(fh)
                 if not isinstance(data, dict):
+                    logging.warning("Skipping %s: top-level type is %s, expected dict", p.name, type(data).__name__)
                     continue
                 wte = int(data.get("weighted_total_events", 0) or 0)
                 merged["weighted_total_events"] += wte
                 objs = data.get("objects", {})
+                obj_keys = list(objs.keys()) if isinstance(objs, dict) else []
                 if isinstance(objs, dict):
                     for k, v in objs.items():
+                        if keys_filter is not None and not _should_load_key(k, keys_filter):
+                            continue
                         if k in merged["objects"]:
                             if isinstance(merged["objects"][k], list) and isinstance(v, list):
                                 merged["objects"][k] = merged["objects"][k] + v
@@ -786,29 +859,42 @@ class PlotManager:
                                 merged["objects"][k] = np.concatenate([merged["objects"][k], v])
                         else:
                             merged["objects"][k] = v
+                loaded_count += 1
+                kept_keys = [k for k in obj_keys if keys_filter is None or _should_load_key(k, keys_filter)]
+                logging.info("Loaded PKL %s: wte=%d, objects=%d keys (kept=%d) %s",
+                             p.name, wte, len(obj_keys), len(kept_keys),
+                             f"({', '.join(kept_keys[:5])}{'...' if len(kept_keys) > 5 else ''})" if kept_keys else "()")
             except Exception as exc:
                 logging.warning("Could not load %s: %s", p.name, exc)
+        logging.info("PKL load complete: %d/%d files loaded, total wte=%d, total object keys=%d",
+                     loaded_count, len(paths), merged["weighted_total_events"], len(merged["objects"]))
         return merged
 
-    def _load_root_files(self, paths: List[Path]) -> Dict[str, Any]:
+    def _load_root_files(self, paths: List[Path], keys_filter: Optional[List[str]] = None) -> Dict[str, Any]:
         try:
             import uproot
         except ImportError:
             raise ImportError("uproot required for ROOT file loading")
         merged: Dict[str, Any] = {"weighted_total_events": 0, "objects": {}}
+        loaded_count = 0
         for p in paths:
             try:
                 with uproot.open(str(p)) as f:
                     if "Events" not in f:
+                        logging.warning("Skipping ROOT %s: no 'Events' tree", p.name)
                         continue
                     tree = f["Events"]
                     objs: Dict[str, Any] = {}
+                    skip_branches = 0
                     for branch in tree.keys():
+                        if keys_filter is not None and not _should_load_key(str(branch), keys_filter):
+                            skip_branches += 1
+                            continue
                         try:
                             arr = tree[branch].array(library="np")
                             objs[branch] = arr.tolist() if hasattr(arr, "tolist") else list(arr)
                         except Exception:
-                            pass
+                            skip_branches += 1
                     wte = 0
                     for key in ("weighted_total_events", "weighted_total_events;1"):
                         if key in f:
@@ -829,8 +915,15 @@ class PlotManager:
                                 merged["objects"][k] = merged["objects"][k] + v
                         else:
                             merged["objects"][k] = v
+                    loaded_count += 1
+                    branch_keys = list(objs.keys())
+                    logging.info("Loaded ROOT %s: wte=%d, branches=%d (skipped=%d) keys=%s",
+                                 p.name, wte, len(branch_keys), skip_branches,
+                                 f"({', '.join(branch_keys[:5])}{'...' if len(branch_keys) > 5 else ''})" if branch_keys else "()")
             except Exception as exc:
                 logging.warning("Could not load ROOT %s: %s", p.name, exc)
+        logging.info("ROOT load complete: %d/%d files loaded, total wte=%d, total object keys=%d",
+                     loaded_count, len(paths), merged["weighted_total_events"], len(merged["objects"]))
         return merged
 
     def _write_yield_table(
@@ -899,6 +992,13 @@ class PlotManager:
         if not _HAS_MPLHEP:
             logging.warning("mplhep not available — skipping stacked plot for %s", variable)
             return []
+
+        total_mc_yield = float(np.sum(sum(h for _, h, _ in background_rows)))
+        data_yield = float(np.sum(data_ndarray)) if data_ndarray is not None else None
+        logging.debug("_plot_stacked_variable: %s/%s, rows=%d, bins=%d, total_mc=%.3f, data=%s",
+                      region, variable, len(background_rows), len(bins) - 1,
+                      total_mc_yield,
+                      f"{data_yield:.1f}" if data_yield is not None else "None")
 
         # Sort backgrounds ascending by integral (smallest at bottom)
         rows = sorted(background_rows, key=lambda t: float(np.sum(t[1])))
@@ -1103,7 +1203,11 @@ class PlotManager:
         text_dir.mkdir(parents=True, exist_ok=True)
         self._write_yield_table(_yield_stem, variable, bins, rows, data_ndarray)
 
-        return [v for v in saved.values() if v]
+        result_paths = [v for v in saved.values() if v]
+        logging.debug("_plot_stacked_variable done: %s/%s -> %d files (%s)",
+                      region, variable, len(result_paths),
+                      ', '.join(Path(p).suffix for p in result_paths) if result_paths else "none")
+        return result_paths
 
     def create_stacked_plots(
         self,
@@ -1196,11 +1300,45 @@ class PlotManager:
             ))
         return created
 
-    def _load_one_file(self, path: Path) -> Dict[str, Any]:
+    def _load_one_file(self, path: Path, variables: Optional[List[str]] = None) -> Dict[str, Any]:
         """Load a single ROOT or PKL file. Returns {"weighted_total_events": int, "objects": dict}."""
         if path.suffix == ".root":
-            return self._load_root_files([path])
-        return self._load_pkl_files([path])
+            return self._load_root_files([path], keys_filter=variables)
+        return self._load_pkl_files([path], keys_filter=variables)
+
+    @staticmethod
+    def _normalize_cross_sections(cross_sections: Dict[str, float]) -> Dict[str, float]:
+        """Convert nested xsection dict to flat format if needed.
+
+        Nested format (from xsection_background.json):
+            {"WtoLNu-2Jets": [{"year":..., "process":..., "xsection":..., "full_dataset":...}, ...]}
+        Flat format (expected by lookup):
+            {"WtoLNu-2Jets_PTLNu-40to100_...": 1598.0, ...}
+        """
+        if not cross_sections:
+            return cross_sections
+        _first_val = next(iter(cross_sections.values()), None)
+        if not isinstance(_first_val, list):
+            return cross_sections
+        _flat_xs: Dict[str, float] = {}
+        for _entries in cross_sections.values():
+            if not isinstance(_entries, list):
+                continue
+            for _entry in _entries:
+                if not isinstance(_entry, dict):
+                    continue
+                _xs = _entry.get("xsection")
+                if _xs is None:
+                    continue
+                _xs_f = float(_xs)
+                _fd = _entry.get("full_dataset")
+                if _fd:
+                    _flat_xs[str(_fd)] = _xs_f
+                _proc = _entry.get("process")
+                if _proc:
+                    _flat_xs[str(_proc)] = _xs_f
+        logging.info("Normalized nested xsec dict: %d entries (flat)", len(_flat_xs))
+        return _flat_xs
 
     def _resolve_group_files(self, input_folder: str, patterns: List[str]) -> List[Path]:
         """Find all ROOT/PKL files in input_folder whose name contains any of the patterns.
@@ -1217,14 +1355,25 @@ class PlotManager:
         resolved: List[Path] = []
         matched_paths: set = set()
         for pattern in patterns:
+            pattern_hits = 0
             for p in all_files:
                 if p in matched_paths:
                     continue
                 if pattern in p.name:
                     resolved.append(p)
                     matched_paths.add(p)
+                    pattern_hits += 1
+            if pattern_hits:
+                logging.info("Pattern '%s' matched %d file(s)", pattern, pattern_hits)
+            else:
+                logging.warning("Pattern '%s' matched 0 files in %s", pattern, input_folder)
+        unmatched = [p.name for p in all_files if p not in matched_paths]
+        if unmatched:
+            logging.info("Unmatched files (%d): %s", len(unmatched), ', '.join(unmatched[:10]) + ('...' if len(unmatched) > 10 else ''))
         if not resolved:
-            logging.warning("No files matched patterns %s in %s", patterns, input_folder)
+            logging.warning("No files matched ANY patterns %s in %s (total files: %d)", patterns, input_folder, len(all_files))
+        else:
+            logging.info("Resolved %d/%d files for patterns %s", len(resolved), len(all_files), patterns)
         return resolved
 
     def _load_group_entries(
@@ -1232,29 +1381,54 @@ class PlotManager:
         input_folder: str,
         groups: Dict[str, List[str]],
         cross_sections: Dict[str, float],
+        variables: Optional[List[str]] = None,
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Load files for each process group. Returns {label: [{"weighted_total_events", "branches", "xsec"}]}."""
+        cross_sections = self._normalize_cross_sections(cross_sections)
+
         result: Dict[str, List[Dict[str, Any]]] = {}
+        logging.info("=== Loading %d process groups from %s ===", len(groups), input_folder)
         for label, patterns in groups.items():
             paths = self._resolve_group_files(input_folder, patterns)
             entries = []
+            loaded_paths = []
+            skipped_paths = []
             for p in paths:
                 _stem = p.stem.replace("_EVENTSELECTION", "")
-                xsec = (cross_sections.get(p.stem)
-                        or cross_sections.get(_stem)
-                        or cross_sections.get(p.name))
+                xsec = _find_xsec(p.stem, cross_sections)
+                if xsec is None:
+                    xsec = _find_xsec(_stem, cross_sections)
+                if xsec is None:
+                    xsec = _find_xsec(p.name, cross_sections)
                 try:
-                    loaded = self._load_one_file(p)
+                    loaded = self._load_one_file(p, variables)
+                    branches = _extract_branches(loaded["objects"])
                     entries.append({
                         "weighted_total_events": loaded["weighted_total_events"],
-                        "branches": _extract_branches(loaded["objects"]),
+                        "branches": branches,
                         "xsec": xsec,
                         "path": p,
                     })
+                    loaded_paths.append(p.name)
+                    logging.info("  [%s] loaded %s: wte=%d, branches=%d, xsec=%s",
+                                 label, p.name, loaded["weighted_total_events"],
+                                 len(branches), "%.4g pb" % xsec if xsec is not None else "None")
                 except Exception as exc:
-                    logging.warning("Skipping %s: %s", p, exc)
+                    skipped_paths.append((p.name, str(exc)))
+                    logging.warning("  [%s] skipping %s: %s", label, p.name, exc)
             if entries:
                 result[label] = entries
+                total_wte = sum(e["weighted_total_events"] for e in entries)
+                logging.info("[%s] SUMMARY: %d/%d files loaded, total wte=%d, unique branches=%d",
+                             label, len(entries), len(paths), total_wte,
+                             len(set(k for e in entries for k in e["branches"].keys())))
+            else:
+                logging.warning("[%s] NO FILES LOADED — group will be missing from plots!", label)
+            for name, err in skipped_paths:
+                logging.debug("  [%s] skipped detail: %s -> %s", label, name, err)
+        loaded_labels = list(result.keys())
+        logging.info("=== Group loading complete: %d/%d groups with data (%s) ===",
+                     len(loaded_labels), len(groups), ', '.join(loaded_labels) if loaded_labels else "NONE")
         return result
 
     def _create_event_selection_plots(
@@ -1271,9 +1445,13 @@ class PlotManager:
         variables: Optional[List[str]],
         save_root: bool,
     ) -> List[str]:
-        bkg_groups  = self._load_group_entries(input_folder, process_groups, cross_sections)
-        sig_groups  = self._load_group_entries(input_folder, signal_groups,  cross_sections)
-        dat_groups  = self._load_group_entries(input_folder, data_groups,    {})  # no xsec for data
+        logging.info("=== Creating event-selection plots ===")
+        bkg_groups  = self._load_group_entries(input_folder, process_groups, cross_sections, variables)
+        sig_groups  = self._load_group_entries(input_folder, signal_groups,  cross_sections, variables)
+        dat_groups  = self._load_group_entries(input_folder, data_groups,    {}, None)  # no xsec for data
+
+        logging.info("Loaded groups: bkg=%d, sig=%d, data=%d",
+                     len(bkg_groups), len(sig_groups), len(dat_groups))
 
         # Merge all data entries into one flat branch dict (raw counts, no normalisation)
         data_branches: Optional[Dict[str, np.ndarray]] = None
@@ -1284,6 +1462,11 @@ class PlotManager:
                     for k, v in e["branches"].items():
                         merged[k] = np.concatenate([merged[k], v]) if k in merged else v
             data_branches = merged
+            logging.info("Merged data branches: %d variables, total events=%s",
+                         len(merged),
+                         ', '.join(f"{k}={len(v)}" for k, v in list(merged.items())[:3]) + ('...' if len(merged) > 3 else ''))
+        else:
+            logging.warning("No data groups loaded — data points will not be shown")
 
         _skip_prefixes = ("weight_", "full_event_weight", "genWeight")
         # Priority: CLI --variables > plotting.yaml event_selection_variables > all branches
@@ -1295,6 +1478,8 @@ class PlotManager:
                 if not any(k.startswith(p) for p in _skip_prefixes)
             ))
         )
+        logging.info("Variables to plot: %d (%s)", len(all_vars),
+                     ', '.join(all_vars[:5]) + ('...' if len(all_vars) > 5 else ''))
 
         # ---- event-selection cutflow ----
         evtsel_cutflow_per_proc: Dict[str, Dict[str, float]] = {}
@@ -1328,6 +1513,7 @@ class PlotManager:
                 evtsel_cutflow_per_proc[proc_label] = proc_cf
 
         created: List[str] = []
+        skipped_vars = []
         for var in all_vars:
             all_vals = [
                 _apply_variable_plot_filter(var, e["branches"].get(var, np.array([])))
@@ -1338,6 +1524,10 @@ class PlotManager:
 
             bins = _make_bins(all_vals, self._build_bins_from_config, var, self._n_bins_default)
             if bins is None or len(bins) < 2:
+                total_events = sum(v.size for v in all_vals)
+                logging.warning("Skipping %s: could not create bins (total events=%d, n_groups_with_data=%d)",
+                                var, total_events, sum(1 for v in all_vals if v.size > 0))
+                skipped_vars.append(var)
                 continue
 
             bkg_rows: List[Tuple[str, np.ndarray, np.ndarray]] = []
@@ -1351,13 +1541,21 @@ class PlotManager:
                     group_hs += hs
                 bkg_rows.append((proc_label, group_hv, group_hs))
 
-            if np.allclose(sum(h for _, h, _ in bkg_rows), 0.0):
+            total_mc = sum(h for _, h, _ in bkg_rows)
+            if np.allclose(total_mc, 0.0):
+                logging.warning("Skipping %s: total MC yield is zero (rows=%d)", var, len(bkg_rows))
+                skipped_vars.append(var)
                 continue
 
             data_hist: Optional[np.ndarray] = None
+            data_count = 0
             if data_branches is not None:
                 dv = _apply_variable_plot_filter(var, data_branches.get(var, np.array([])))
                 data_hist = _histogram_counts(dv, bins)
+                data_count = int(np.sum(data_hist)) if data_hist is not None else 0
+
+            logging.info("Plotting %s: bins=%d, bkg_rows=%d, total_mc=%.3f, data_count=%d",
+                         var, len(bins) - 1, len(bkg_rows), float(np.sum(total_mc)), data_count)
 
             files = self._plot_stacked_variable(
                 variable=var, bins=bins,
@@ -1366,7 +1564,9 @@ class PlotManager:
                 region="event_selection", version=version, save_root=save_root,
             )
             created.extend(files)
-            logging.debug("Created event-selection plot: %s (%d files)", var, len(files))
+            logging.info("Created event-selection plot: %s -> %d files", var, len(files))
+        if skipped_vars:
+            logging.warning("Skipped %d/%d variables: %s", len(skipped_vars), len(all_vars), ', '.join(skipped_vars))
 
         # ---- data cutflow (raw counts, no normalisation) ----
         data_cutflow_arr: Optional[np.ndarray] = None
@@ -1423,11 +1623,15 @@ class PlotManager:
         regions: Optional[List[str]],
         save_root: bool,
     ) -> List[str]:
+        logging.info("=== Creating region stacked plots ===")
+        cross_sections = self._normalize_cross_sections(cross_sections)
+
         try:
             import hist as hist_lib
             _HAS_HIST = True
         except ImportError:
             _HAS_HIST = False
+            logging.warning("'hist' library not available — histogram type detection limited")
 
         def _load_region_pkl(path: Path) -> Dict[str, Any]:
             with open(path, "rb") as fh:
@@ -1449,15 +1653,27 @@ class PlotManager:
             entries = []
             for p in paths:
                 _stem = p.stem.replace("_EVENTSELECTION", "")
-                xsec = (cross_sections.get(p.stem)
-                        or cross_sections.get(_stem)
-                        or cross_sections.get(p.name))
+                xsec = _find_xsec(p.stem, cross_sections)
+                if xsec is None:
+                    xsec = _find_xsec(_stem, cross_sections)
+                if xsec is None:
+                    xsec = _find_xsec(p.name, cross_sections)
                 try:
-                    entries.append({"data": _load_region_pkl(p), "xsec": xsec})
+                    data = _load_region_pkl(p)
+                    entries.append({"data": data, "xsec": xsec})
+                    regions_in_file = list(data.get("region_histograms", {}).keys())
+                    logging.info("  [%s] loaded %s: xsec=%s, regions=%s",
+                                 proc_label, p.name,
+                                 "%.4g pb" % xsec if xsec is not None else "None",
+                                 ', '.join(regions_in_file[:5]) + ('...' if len(regions_in_file) > 5 else ''))
                 except Exception as exc:
-                    logging.warning("Skipping %s: %s", p, exc)
+                    logging.warning("[%s] skipping %s: %s", proc_label, p.name, exc)
             if entries:
                 bkg_groups[proc_label] = entries
+                all_regs = sorted({r for e in entries for r in e["data"].get("region_histograms", {}).keys()})
+                logging.info("[%s] SUMMARY: %d files, regions=%s", proc_label, len(entries), ', '.join(all_regs))
+            else:
+                logging.warning("[%s] NO FILES LOADED — group will be missing!", proc_label)
 
         # Data PKLs: {data_label: {"pkls": [dict], "region_patterns": [str]}}
         # region_patterns from yaml data group "regions" key — if absent, matches all regions.
@@ -1469,6 +1685,10 @@ class PlotManager:
             pkls = _load_pkl_group(patterns)
             if pkls:
                 data_loaded[label] = {"pkls": pkls, "region_patterns": region_patterns}
+                logging.info("[Data:%s] loaded %d PKLs, region_patterns=%s",
+                             label, len(pkls), region_patterns if region_patterns else "(all)")
+            else:
+                logging.warning("[Data:%s] NO DATA FILES LOADED", label)
 
         def _data_hist_for_region(region: str, var: str) -> Optional[np.ndarray]:
             """Sum histogram values from whichever data group(s) apply to this region."""
@@ -1515,6 +1735,8 @@ class PlotManager:
             return None, None, None
 
         created: List[str] = []
+        skipped_region_var = []
+        logging.info("Regions to process: %d (%s)", len(all_regions), ', '.join(all_regions[:5]) + ('...' if len(all_regions) > 5 else ''))
         for region in all_regions:
             all_vars_set: set = set()
             for entries in bkg_groups.values():
@@ -1522,14 +1744,18 @@ class PlotManager:
                     all_vars_set.update(e["data"].get("region_histograms", {}).get(region, {}).keys())
             candidate_vars = variables or sorted(all_vars_set)
             all_vars_for_region = self._get_allowed_variables_for_region(region, candidate_vars)
+            logging.info("Region '%s': candidate_vars=%d, after filtering=%d",
+                         region, len(candidate_vars), len(all_vars_for_region))
 
             for var in all_vars_for_region:
                 bins_ref: Optional[np.ndarray] = self._build_bins_from_config(var)
                 bkg_rows: List[Tuple[str, np.ndarray, np.ndarray]] = []
+                procs_with_data = []
 
                 for proc_label, entries in bkg_groups.items():
                     group_hv: Optional[np.ndarray] = None
                     group_hs: Optional[np.ndarray] = None
+                    file_hits = 0
                     for e in entries:
                         rh = e["data"].get("region_histograms", {}).get(region, {})
                         h = rh.get(var)
@@ -1539,6 +1765,7 @@ class PlotManager:
                                    or e["data"].get("weighted_total_events", 0) or 0)
                         edges, hv, hs = _h_to_numpy(h)
                         if hv is None or hv.size == 0:
+                            logging.debug("  %s/%s/%s: histogram empty after conversion", region, proc_label, var)
                             continue
                         if bins_ref is None and edges is not None:
                             bins_ref = edges
@@ -1547,16 +1774,30 @@ class PlotManager:
                                  else (luminosity / wte if wte > 0 else 1.0))
                         group_hv = hv * scale if group_hv is None else group_hv + hv * scale
                         group_hs = hs * scale**2 if group_hs is None else group_hs + hs * scale**2
+                        file_hits += 1
 
                     if group_hv is not None and group_hv.size > 0:
                         bkg_rows.append((proc_label, group_hv, group_hs))
+                        procs_with_data.append(proc_label)
+                        logging.debug("  %s/%s: %d files, integral=%.4f", region, proc_label, file_hits, float(np.sum(group_hv)))
 
+                total_mc = sum(h for _, h, _ in bkg_rows)
                 if not bkg_rows or bins_ref is None:
+                    logging.warning("Skipping %s/%s: no bkg_rows=%s, bins_ref=%s",
+                                    region, var, not bkg_rows, bins_ref is None)
+                    skipped_region_var.append((region, var, "no_data"))
                     continue
-                if np.allclose(sum(h for _, h, _ in bkg_rows), 0.0):
+                if np.allclose(total_mc, 0.0):
+                    logging.warning("Skipping %s/%s: total MC yield is zero (rows=%d, procs=%s)",
+                                    region, var, len(bkg_rows), ', '.join(procs_with_data))
+                    skipped_region_var.append((region, var, "zero_yield"))
                     continue
 
                 data_hist = _data_hist_for_region(region, var)
+                data_sum = float(np.sum(data_hist)) if data_hist is not None else 0
+                logging.info("Plotting %s/%s: bins=%d, bkg_rows=%d, total_mc=%.3f, data_sum=%.1f, procs=%s",
+                             region, var, len(bins_ref) - 1, len(bkg_rows),
+                             float(np.sum(total_mc)), data_sum, ', '.join(procs_with_data))
 
                 files = self._plot_stacked_variable(
                     variable=var, bins=bins_ref,
@@ -1565,8 +1806,14 @@ class PlotManager:
                     region=region, version=version, save_root=save_root,
                 )
                 created.extend(files)
-                logging.debug("Created region plot: %s / %s (%d files)", region, var, len(files))
+                logging.info("Created region plot: %s / %s -> %d files", region, var, len(files))
 
+        if skipped_region_var:
+            logging.warning("Skipped %d region/var combos: %s",
+                            len(skipped_region_var),
+                            ', '.join(f"{r}/{v}({why})" for r, v, why in skipped_region_var[:10])
+                            + ('...' if len(skipped_region_var) > 10 else ''))
+        logging.info("Region stacked plots complete: %d plots created", len(created))
         return created
 
     def _create_region_from_events_plots(
@@ -1593,6 +1840,8 @@ class PlotManager:
           3. Fill per-variable histograms with full_event_weight (nominal) or weight_systematic.
           4. Scale by lumi * xsec * 1000 / wte and stack across groups.
         """
+        cross_sections = self._normalize_cross_sections(cross_sections)
+
         import uproot as _uproot
         from .regions import RegionManager
 
@@ -1624,7 +1873,7 @@ class PlotManager:
                 pass
             return None
 
-        def _load_events_root(path: Path) -> Optional[Dict[str, Any]]:
+        def _load_events_root(path: Path, variables: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
             """Return {"branches": {name: np.ndarray}, "wte": float} or None on failure."""
             try:
                 with _uproot.open(str(path)) as f:
@@ -1643,6 +1892,8 @@ class PlotManager:
                     tree = f["Events"]
                     branches: dict = {}
                     for bname in tree.keys():
+                        if variables is not None and not _should_load_key(str(bname), variables):
+                            continue
                         try:
                             branches[bname] = tree[bname].array(library="np")
                         except Exception as _berr:
@@ -1652,40 +1903,49 @@ class PlotManager:
                 logging.warning("Could not load %s: %s", path.name, exc)
                 return None
 
-        def _load_events_pkl(path: Path) -> Optional[Dict[str, Any]]:
+        def _load_events_pkl(path: Path, variables: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
             try:
                 with open(path, "rb") as fh:
                     d = pickle.load(fh)
-                branches = {k: np.asarray(v) for k, v in d.get("branches", {}).items()
-                            if isinstance(v, (np.ndarray, list))}
+                branches = {}
+                for k, v in d.get("branches", {}).items():
+                    if variables is not None and not _should_load_key(k, variables):
+                        continue
+                    if isinstance(v, (np.ndarray, list)):
+                        branches[k] = np.asarray(v)
                 wte = float(d.get("weighted_total_events", 0.0))
                 return {"branches": branches, "wte": wte}
             except Exception as exc:
                 logging.warning("Could not load %s: %s", path.name, exc)
                 return None
 
-        def _load_file(path: Path) -> Optional[Dict[str, Any]]:
+        def _load_file(path: Path, variables: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
             if path.suffix == ".root":
-                return _load_events_root(path)
-            return _load_events_pkl(path)
+                return _load_events_root(path, variables)
+            return _load_events_pkl(path, variables)
 
         # ---- load per-group ----
         # {proc_label: [{"branches": dict, "wte": float, "xsec": float|None}]}
         bkg_entries: Dict[str, List[Dict[str, Any]]] = {}
         # Per-process event-selection cutflow: {proc_label: {cut_label: weighted_yield}}
         evtsel_cutflow_per_proc: Dict[str, Dict[str, float]] = {}
+        logging.info("=== Loading background files for region-from-events ===")
         for proc_label, patterns in process_groups.items():
             paths = self._resolve_group_files(input_folder, patterns)
             entries = []
             proc_cf: Dict[str, float] = {}
+            loaded_count = 0
             for p in paths:
-                loaded = _load_file(p)
+                loaded = _load_file(p, variables)
                 if loaded is None:
+                    logging.warning("[%s] failed to load %s", proc_label, p.name)
                     continue
                 _stem = p.stem.replace("_EVENTSELECTION", "")
-                xsec = (cross_sections.get(p.stem)
-                        or cross_sections.get(_stem)
-                        or cross_sections.get(p.name))
+                xsec = _find_xsec(p.stem, cross_sections)
+                if xsec is None:
+                    xsec = _find_xsec(_stem, cross_sections)
+                if xsec is None:
+                    xsec = _find_xsec(p.name, cross_sections)
                 wte  = loaded["wte"]
                 scale = ((luminosity * xsec * 1000.0) / wte
                          if xsec is not None and wte > 0
@@ -1699,25 +1959,38 @@ class PlotManager:
                     "wte": wte,
                     "xsec": xsec,
                 })
+                loaded_count += 1
+                logging.info("[%s] loaded %s: wte=%.1f, xsec=%s, branches=%d",
+                             proc_label, p.name, wte,
+                             "%.4g pb" % xsec if xsec is not None else "None",
+                             len(loaded["branches"]))
             if entries:
                 bkg_entries[proc_label] = entries
+                logging.info("[%s] SUMMARY: %d files loaded", proc_label, len(entries))
+            else:
+                logging.warning("[%s] NO FILES LOADED", proc_label)
             if proc_cf:
                 evtsel_cutflow_per_proc[proc_label] = proc_cf
 
-        logging.debug("evtsel_cutflow_per_proc: %d processes, %s",
-                      len(evtsel_cutflow_per_proc),
-                      {k: len(v) for k, v in evtsel_cutflow_per_proc.items()})
+        logging.info("evtsel_cutflow_per_proc: %d processes, %s",
+                     len(evtsel_cutflow_per_proc),
+                     {k: len(v) for k, v in evtsel_cutflow_per_proc.items()})
 
         # Data groups (no xsec)
+        logging.info("=== Loading data files for region-from-events ===")
         raw_data_cfg = self.config.get("process_groups", {})
         data_entries: Dict[str, Dict[str, Any]] = {}
         for label, patterns in data_groups.items():
             grp_cfg = raw_data_cfg.get(label, {})
             region_patterns: List[str] = grp_cfg.get("regions", []) if isinstance(grp_cfg, dict) else []
             paths = self._resolve_group_files(input_folder, patterns)
-            loaded_list = [e for p in paths for e in [_load_file(p)] if e is not None]
+            loaded_list = [e for p in paths for e in [_load_file(p, variables)] if e is not None]
             if loaded_list:
                 data_entries[label] = {"entries": loaded_list, "region_patterns": region_patterns}
+                logging.info("[Data:%s] loaded %d files, region_patterns=%s",
+                             label, len(loaded_list), region_patterns if region_patterns else "(all)")
+            else:
+                logging.warning("[Data:%s] NO FILES LOADED", label)
 
         if not bkg_entries:
             logging.warning("region-from-events: no background files loaded — nothing to plot")
@@ -1725,6 +1998,9 @@ class PlotManager:
 
         # ---- per-region processing ----
         created: List[str] = []
+        skipped_region_var = []
+        logging.info("Regions to process: %d (%s)", len(target_regions),
+                     ', '.join(target_regions[:5]) + ('...' if len(target_regions) > 5 else ''))
 
         for region_name in target_regions:
             region_obj = region_manager.regions.get(region_name)
@@ -1753,6 +2029,8 @@ class PlotManager:
                                  next((v for k, v in self.region_variables.items() if k in region_name), []) or []))
             candidate_vars = list(dict.fromkeys(list(candidate_vars) + _whitelist))
             var_list = self._get_allowed_variables_for_region(region_name, candidate_vars)
+            logging.info("Region '%s': candidate_vars=%d, after filtering=%d",
+                         region_name, len(candidate_vars), len(var_list))
 
             for var in var_list:
                 bins_ref: Optional[np.ndarray] = self._build_bins_from_config(var)
@@ -1863,9 +2141,18 @@ class PlotManager:
 
                     if group_hv is not None and group_hv.size > 0:
                         bkg_rows.append((proc_label, group_hv, group_hs))
+                        logging.debug("  %s/%s/%s: integral=%.4f", region_name, proc_label, var, float(np.sum(group_hv)))
 
+                total_mc = sum(h for _, h, _ in bkg_rows)
                 if bins_ref is None:
+                    logging.warning("Skipping %s/%s: bins_ref is None (no valid data for binning)", region_name, var)
+                    skipped_region_var.append((region_name, var, "no_bins"))
                     continue
+                if np.allclose(total_mc, 0.0):
+                    logging.warning("Skipping %s/%s: total MC yield is zero (rows=%d)", region_name, var, len(bkg_rows))
+                    skipped_region_var.append((region_name, var, "zero_yield"))
+                    continue
+
                 # Ensure every process group has a row (zero if no events pass) — always plot all groups
                 loaded_labels = {label for label, _, _ in bkg_rows}
                 for proc_label in bkg_entries:
@@ -1882,10 +2169,12 @@ class PlotManager:
                     # Blinded SR: use total bkg-sum as pseudo-data points
                     bkg_total = sum(h for _, h, _ in bkg_rows)
                     data_hist = bkg_total
+                    logging.debug("  %s/%s: blinded SR, using bkg-sum as pseudo-data (sum=%.3f)", region_name, var, float(np.sum(bkg_total)))
                 else:
                     for label, info in data_entries.items():
                         rp = info["region_patterns"]
                         if rp and not any(pat in region_name for pat in rp):
+                            logging.debug("  %s/%s: data group %s skipped (region_patterns mismatch)", region_name, var, label)
                             continue
                         for e in info["entries"]:
                             import awkward as _ak
@@ -1929,8 +2218,15 @@ class PlotManager:
                                 continue
                             dh, _ = np.histogram(dv, bins=bins_ref)
                             data_hist = dh if data_hist is None else data_hist + dh
+                    if data_hist is not None:
+                        logging.debug("  %s/%s: data sum=%.1f", region_name, var, float(np.sum(data_hist)))
 
                 syst_label = f" [{weight_systematic}]" if weight_systematic else ""
+                logging.info("Plotting %s/%s%s: bins=%d, bkg_rows=%d, total_mc=%.3f, data=%s",
+                             region_name, var, syst_label, len(bins_ref) - 1, len(bkg_rows),
+                             float(np.sum(total_mc)),
+                             "blinded" if (_is_sr and not show_data) else (f"sum={float(np.sum(data_hist)):.1f}" if data_hist is not None else "none"))
+
                 files = self._plot_stacked_variable(
                     variable=var, bins=bins_ref,
                     background_rows=bkg_rows, data_ndarray=data_hist,
@@ -1938,10 +2234,8 @@ class PlotManager:
                     region=region_name, version=version, save_root=False,
                 )
                 created.extend(files)
-                logging.debug(
-                    "region-from-events: %s / %s%s (%d files)",
-                    region_name, var, syst_label, len(files),
-                )
+                logging.info("Created region-from-events plot: %s / %s%s -> %d files",
+                             region_name, var, syst_label, len(files))
 
         # ---- per-region cutflow plots ----
         if evtsel_cutflow_per_proc:
@@ -2052,6 +2346,12 @@ class PlotManager:
                         logging.error("Cutflow plot failed for %s: %s",
                                       region_name, _cf_exc, exc_info=True)
 
+        if skipped_region_var:
+            logging.warning("Skipped %d region/var combos in region-from-events: %s",
+                            len(skipped_region_var),
+                            ', '.join(f"{r}/{v}({why})" for r, v, why in skipped_region_var[:10])
+                            + ('...' if len(skipped_region_var) > 10 else ''))
+        logging.info("Region-from-events plots complete: %d plots created", len(created))
         return created
 
     @staticmethod
