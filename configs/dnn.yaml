@@ -29,6 +29,8 @@ training:
   balance_classes: true
   balance_strength: 1.0  # [0,1]: 0=off, 1=full 50/50 equalization
   weight_clip: 100.0     # Maximum event weight
+  # Fractional systematic uncertainty on background for syst-aware Asimov Z (0 = pure stat)
+  sig_syst: 0.20
 
 # Feature selection
 feature_selection:
