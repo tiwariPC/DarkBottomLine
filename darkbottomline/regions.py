@@ -74,11 +74,8 @@ class Region:
 
         return parsed
 
-    def apply_cuts(self, events: ak.Array, objects: Dict[str, Any]) -> ak.Array:
-        """
-        Apply region cuts to events. Logs initial count and one line with events after each cut.
-        """
-        # Use any available field to initialise the per-event boolean mask
+    def _evaluate_cut_sequence(self, events: ak.Array, objects: Dict[str, Any]) -> tuple[ak.Array, Dict[str, int]]:
+        """Return the final mask and ordered cumulative cutflow counts for this region."""
         _ref_field = "event" if "event" in events.fields else (events.fields[0] if events.fields else None)
         if _ref_field is not None:
             mask = ak.ones_like(events[_ref_field], dtype=bool)
@@ -87,19 +84,17 @@ class Region:
         n_initial = int(ak.sum(mask))
         logging.debug(f"Region {self.name}: initial (preselected) events: {n_initial}")
 
+        cutflow: Dict[str, int] = {"Total events": n_initial}
         after_cuts = []
         for var, cut_info in self.parsed_cuts.items():
             operator = cut_info["operator"]
             value = cut_info["value"]
 
-            # Get variable value
             var_value = self._get_variable_value(events, objects, var)
-
             if var_value is None:
                 logging.warning(f"Variable {var} not found, skipping cut")
                 continue
 
-            # Apply cut
             if operator == ">":
                 cut_mask = var_value > value
             elif operator == ">=":
@@ -118,11 +113,22 @@ class Region:
 
             mask = mask & ak.fill_none(cut_mask, False, axis=0)
             n_pass = int(ak.sum(mask))
+            cutflow[f"After {var}"] = n_pass
             after_cuts.append(f"{var}: {n_pass}")
 
         if after_cuts:
             logging.debug(" %s", ", ".join(after_cuts))
 
+        return mask, cutflow
+
+    def evaluate_cutflow(self, events: ak.Array, objects: Dict[str, Any]) -> Dict[str, int]:
+        """Public helper returning the cumulative cutflow for this region."""
+        _, cutflow = self._evaluate_cut_sequence(events, objects)
+        return cutflow
+
+    def apply_cuts(self, events: ak.Array, objects: Dict[str, Any]) -> ak.Array:
+        """Apply region cuts to events and return the final mask."""
+        mask, _ = self._evaluate_cut_sequence(events, objects)
         return mask
 
     def apply_cuts_with_yields(
@@ -497,6 +503,15 @@ class RegionManager:
             mask = region.apply_cuts(events, objects)
             region_masks[region_name] = ak.fill_none(mask, False, axis=0)
         return region_masks
+
+    def get_region_cutflows(self, events: ak.Array, objects: Dict[str, Any], only_control_regions: bool = True) -> Dict[str, Dict[str, int]]:
+        """Collect ordered cumulative cutflows for regions."""
+        cutflows: Dict[str, Dict[str, int]] = {}
+        for region_name, region in self.regions.items():
+            if only_control_regions and "CR_" not in region_name:
+                continue
+            cutflows[region_name] = region.evaluate_cutflow(events, objects)
+        return cutflows
 
     def validate_regions(self, events: ak.Array, objects: Dict[str, Any]) -> Dict[str, Any]:
         if not self.validation.get("check_orthogonality", True):

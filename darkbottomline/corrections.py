@@ -111,6 +111,14 @@ def _fix_binning_edges(node: Any) -> None:
     if not isinstance(node, dict):
         return
     nodetype = node.get("nodetype")
+    # Some correction JSONs use 'category' nodes that are structurally
+    # equivalent to binning nodes for the purposes of edges/content fixing.
+    # Treat 'category' as 'binning' here so we can repair non-monotonic edges
+    # and make the JSON acceptable to correctionlib.from_string.
+    if nodetype == "category":
+        node["nodetype"] = "binning"
+        nodetype = "binning"
+
     if nodetype == "binning":
         edges = node.get("edges")
         content = node.get("content")
@@ -742,8 +750,28 @@ class CorrectionManager:
         cs = self.corrections["jetJEC"]
         corr_cfg = self.config.get("corrections", {})
         tag = corr_cfg.get("jetJEC_tag", "")
+        level = corr_cfg.get("jetJEC_level", "L1L2L3Res")
         algo = corr_cfg.get("jetJEC_algo", "AK4PFPuppi")
         unc_name = corr_cfg.get("jetJEC_unc", "Total")
+        is_data = bool(self.config.get("data", {}).get("is_data", False))
+        compound_keys = list(cs.compound.keys()) if hasattr(cs, "compound") else []
+        correction_keys = list(cs.keys())
+
+        def _pick_compound_key(name: str) -> Optional[str]:
+            exact_key = f"{tag}_{name}_{algo}" if tag else None
+            if exact_key and exact_key in cs.compound:
+                return exact_key
+
+            preferred_flavor = "_DATA_" if is_data else "_MC_"
+            for candidate in compound_keys:
+                if preferred_flavor in candidate and candidate.endswith(f"{name}_{algo}"):
+                    return candidate
+
+            for candidate in compound_keys:
+                if candidate.endswith(f"{name}_{algo}"):
+                    return candidate
+
+            return exact_key
 
         n_flat = len(ak.ravel(jets.pt))
         if n_flat == 0:
@@ -765,18 +793,17 @@ class CorrectionManager:
 
         # Compound JEC correction (central)
         jec_central = np.ones(n_flat, dtype=float)
-        compound_key = f"{tag}_L1L2L3Res_{algo}" if tag else None
+        compound_key = _pick_compound_key(level)
         try:
-            if compound_key:
+            if compound_key and compound_key in cs.compound:
                 sf_obj = cs.compound[compound_key]
             else:
-                keys = list(cs.compound.keys()) if hasattr(cs, "compound") else []
-                sf_obj = cs.compound[keys[0]] if keys else None
+                sf_obj = cs.compound[compound_keys[0]] if compound_keys else None
             if sf_obj is not None:
                 if isinstance(sf_obj, str):
                     sf_obj = cs.compound[sf_obj]
                 jec_central = np.asarray(
-                    sf_obj.evaluate(flat_pt, flat_eta, flat_area, flat_phi, flat_rho), dtype=float
+                    sf_obj.evaluate(flat_area, flat_eta, flat_pt, flat_rho), dtype=float
                 )
         except Exception as e:
             logging.warning(f"JEC compound correction evaluation failed: {e}")
@@ -784,11 +811,22 @@ class CorrectionManager:
         # JEC Total uncertainty (for up/down)
         jec_unc = np.zeros(n_flat, dtype=float)
         unc_key_full = f"{tag}_{unc_name}_{algo}" if tag else None
+        if not unc_key_full or unc_key_full not in correction_keys:
+            preferred_flavor = "_DATA_" if is_data else "_MC_"
+            for candidate in correction_keys:
+                if preferred_flavor in candidate and candidate.endswith(f"{unc_name}_{algo}"):
+                    unc_key_full = candidate
+                    break
+            else:
+                for candidate in correction_keys:
+                    if candidate.endswith(f"{unc_name}_{algo}"):
+                        unc_key_full = candidate
+                        break
         try:
-            unc_obj = cs[unc_key_full] if unc_key_full else None
+            unc_obj = cs[unc_key_full] if unc_key_full and unc_key_full in correction_keys else None
             if unc_obj is not None:
                 jec_unc = np.asarray(
-                    unc_obj.evaluate(flat_pt * jec_central, flat_eta), dtype=float
+                    unc_obj.evaluate(flat_eta, flat_pt * jec_central), dtype=float
                 )
         except Exception as e:
             logging.warning(f"JEC uncertainty evaluation failed: {e}")
@@ -990,14 +1028,32 @@ class CorrectionManager:
         else:
             w_jec = w_jec_up = w_jec_down = ones
 
-        full_event_weight = genweight * w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_jec
+        sf_weight = w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_jec
+        full_event_weight = genweight * sf_weight
 
+        # Debug print: show only the SF-induced weight factor for manual verification
+        try:
+            sample_n = min(10, int(len(full_event_weight)))
+            print("DEBUG SF weight samples (first {} events):".format(sample_n))
+            def _sample(arr):
+                try:
+                    return np.asarray(ak.to_numpy(arr))[:sample_n]
+                except Exception:
+                    try:
+                        return np.asarray(arr)[:sample_n]
+                    except Exception:
+                        return str(type(arr))
+
+            print(f"  sf_weight: {_sample(sf_weight)}")
+        except Exception:
+            pass
         def _vary(total, central, variation):
             """Replace central component with variation: (total / central) * variation."""
             safe = ak.where(central != 0.0, central, ak.ones_like(central))
             return (total / safe) * variation
 
         return {
+            "sf_weight": sf_weight,
             "full_event_weight": full_event_weight,
             "weight_pileupUP": _vary(full_event_weight, w_pu, w_pu_up),
             "weight_pileupDOWN": _vary(full_event_weight, w_pu, w_pu_down),
