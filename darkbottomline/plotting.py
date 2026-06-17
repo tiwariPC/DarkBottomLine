@@ -4,6 +4,7 @@ Data/MC plotting module for DarkBottomLine framework.
 
 import copy
 import math
+from collections import Counter
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend for batch mode
 import matplotlib.pyplot as plt
@@ -1874,7 +1875,12 @@ class PlotManager:
             return None
 
         def _load_events_root(path: Path, variables: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
-            """Return {"branches": {name: np.ndarray}, "wte": float} or None on failure."""
+            """Return {"branches": {name: np.ndarray}, "wte": float} or None on failure.
+            
+            All branches are read individually; any branch that throws is skipped.
+            After loading, branches with lengths different from the majority are
+            dropped to ensure consistent lengths for ak.Array construction.
+            """
             try:
                 with _uproot.open(str(path)) as f:
                     # weighted_total_events stored as 1-bin TH1
@@ -1891,13 +1897,35 @@ class PlotManager:
                         return None
                     tree = f["Events"]
                     branches: dict = {}
+                    skipped_branches = []
                     for bname in tree.keys():
                         if variables is not None and not _should_load_key(str(bname), variables):
                             continue
                         try:
                             branches[bname] = tree[bname].array(library="np")
                         except Exception as _berr:
-                            logging.debug("Skipping corrupt branch %s in %s: %s", bname, path.name, _berr)
+                            skipped_branches.append((bname, str(_berr)))
+                    # Enforce consistent length: drop branches whose length != the mode length
+                    if branches:
+                        _lens = [len(v) for v in branches.values()]
+                        _mode_len = Counter(_lens).most_common(1)[0][0]
+                        _bad = [k for k, v in branches.items() if len(v) != _mode_len]
+                        for k in _bad:
+                            skipped_branches.append((k, f"length {len(branches[k])} != mode {_mode_len}"))
+                            del branches[k]
+                        if _bad:
+                            logging.warning(
+                                "Dropped %d branches with non-modal length in %s (mode=%d): %s",
+                                len(_bad), path.name, _mode_len,
+                                ', '.join(_bad[:10]) + ('...' if len(_bad) > 10 else '')
+                            )
+                    if skipped_branches:
+                        logging.debug(
+                            "Skipped %d branches in %s: %s",
+                            len(skipped_branches), path.name,
+                            ', '.join(f"{n}({r[:40]})" for n, r in skipped_branches[:5])
+                            + ('...' if len(skipped_branches) > 5 else '')
+                        )
                     return {"branches": branches, "wte": wte}
             except Exception as exc:
                 logging.warning("Could not load %s: %s", path.name, exc)
@@ -2193,9 +2221,17 @@ class PlotManager:
                                         ak_dict_d[k] = v
                                 events_ak = _ak.Array(ak_dict_d)
                                 mask_d = region_obj.apply_cuts(events_ak, objects={})
-                                mask_d_np = np.asarray(mask_d, dtype=bool)
-                            except Exception:
-                                mask_d_np = np.ones(len(next(iter(br.values()))), dtype=bool)
+                            except Exception as _data_mask_exc:
+                                n_ev = len(next(iter(br.values())))
+                                logging.error(
+                                    "[Data:%s] apply_cuts FAILED for region '%s': %s. "
+                                    "Skipping this data entry (%d events). "
+                                    "events_ak fields: %s",
+                                    label, region_name, _data_mask_exc, n_ev,
+                                    list(ak_dict_d.keys())[:20] if 'ak_dict_d' in dir() else "N/A"
+                                )
+                                continue
+                            mask_d_np = np.asarray(mask_d, dtype=bool)
                             _dvals_raw = br.get(var)
                             if _dvals_raw is None:
                                 _var_map = {"mt": "MT", "z_mass": "Mll", "z_pt": "Zpt", "mll": "Mll"}
