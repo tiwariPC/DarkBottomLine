@@ -413,7 +413,7 @@ class DarkBottomLineAnalyzer:
         validation_results = self.region_manager.validate_regions(events, objects)
 
         # Build cutflow histograms for control regions only (8 CRs)
-        region_cutflows = self.region_manager.get_region_cutflows(events, objects, only_control_regions=True)
+        region_cutflows = self.region_manager.get_region_cutflows(events, objects, only_control_regions=False)
         region_cutflow_histograms = {
             region_name: self._create_cutflow_histogram(cutflow)
             for region_name, cutflow in region_cutflows.items()

@@ -237,6 +237,64 @@ def _jagged_variables(objects: Dict[str, Any]) -> Dict[str, ak.Array]:
 
 
 # ---------------------------------------------------------------------------
+# Empty-schema helper (for zero-event ROOT files)
+# ---------------------------------------------------------------------------
+
+# Scalar branches: name → numpy dtype
+_SCALAR_BRANCHES: Dict[str, Any] = {
+    'event': np.int64, 'run': np.int64, 'luminosityBlock': np.int64,
+    'PFMET_pt': np.float32, 'PFMET_phi': np.float32, 'pfMetCorrSig': np.float32,
+    'Recoil': np.float32, 'RecoilPhi': np.float32,
+    'costheta_star': np.float32,
+    'Njets_PassID': np.int32, 'n_bjets': np.int32, 'n_muons': np.int32,
+    'n_electrons': np.int32, 'n_taus': np.int32, 'b_flavor_count': np.int32,
+    'Jet1Pt': np.float32, 'Jet1Eta': np.float32, 'Jet1Phi': np.float32,
+    'Jet2Pt': np.float32, 'Jet2Eta': np.float32, 'Jet2Phi': np.float32,
+    'Jet3Pt': np.float32, 'Jet3Eta': np.float32, 'Jet3Phi': np.float32,
+    'JetHT': np.float32,
+    'ratioJet1PtMET': np.float32, 'ratioPtJet21': np.float32,
+    'dEtaJet12': np.float32, 'dPhiJet12': np.float32, 'dRJet12': np.float32,
+    'dPhiJet13': np.float32,
+    'M_Jet1Jet2': np.float32, 'pT_Jet1Jet2': np.float32,
+    'eta_Jet1Jet2': np.float32, 'phi_Jet1Jet2': np.float32,
+    'M_Jet1Jet3': np.float32,
+    'dPhi_jetMET': np.float32,
+    'muon_lep1_pt': np.float32, 'muon_lep1_phi': np.float32, 'muon_lep1_eta': np.float32,
+    'muon_lep2_pt': np.float32, 'muon_lep2_phi': np.float32, 'muon_lep2_eta': np.float32,
+    'electron_lep1_pt': np.float32, 'electron_lep1_phi': np.float32, 'electron_lep1_eta': np.float32,
+    'electron_lep2_pt': np.float32, 'electron_lep2_phi': np.float32, 'electron_lep2_eta': np.float32,
+    'full_event_weight': np.float32,
+}
+
+# Jagged branches: name → numpy dtype of elements
+_JAGGED_BRANCHES: Dict[str, Any] = {
+    'muon_pt': np.float32, 'muon_eta': np.float32, 'muon_phi': np.float32,
+    'electron_pt': np.float32, 'electron_eta': np.float32, 'electron_phi': np.float32,
+    'jet_pt': np.float32, 'jet_eta': np.float32, 'jet_phi': np.float32,
+    'jet_btag': np.float32,
+    'bjet_pt': np.float32, 'bjet_eta': np.float32, 'bjet_phi': np.float32,
+}
+
+
+def get_empty_branch_types(config: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Return uproot mktree-compatible branch type dict for an empty Events TTree.
+
+    Used to write an empty Events TTree when no events pass selection, so that
+    hadd can merge files regardless of whether any chunk had selected events.
+    The btag branch name is config-driven; all other names are fixed.
+    """
+    btag_algo = (config or {}).get('btagging', {}).get('algorithm', 'deepJet')
+    types: Dict[str, Any] = {}
+    for name, dtype in _SCALAR_BRANCHES.items():
+        types[name] = np.dtype(dtype)
+    for name in _JAGGED_BRANCHES:
+        types[name] = 'var * float32'
+    for idx in (1, 2, 3):
+        types[f'Jet{idx}{btag_algo}'] = np.dtype(np.float32)
+    return types
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 

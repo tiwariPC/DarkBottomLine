@@ -2,6 +2,7 @@
 Event selection functions for DarkBottomLine framework.
 """
 
+import logging
 import awkward as ak
 import numpy as np
 from typing import Dict, Any, List, Tuple
@@ -295,23 +296,21 @@ def apply_selection(
     """
     Apply complete event selection including triggers, filters, and cuts.
 
-    Args:
-        events: Awkward Array of events
-        objects: Dictionary containing selected objects
-        config: Configuration dictionary
-
     Returns:
         Tuple of (selected_events, selected_objects, cutflow)
     """
-    print("  Applying full selection (trigger → filters → object cuts)...")
+    logging.info("Applying full selection (trigger → filters → object cuts)...")
     all_masks, _ = _build_event_cut_masks(events, objects, config)
+
+    cutflow: Dict[str, int] = {"Total": int(len(events))}
     final_mask = ak.ones_like(events["event"], dtype=bool)
     for step_name, step_mask in all_masks.items():
         final_mask = final_mask & step_mask
-        print(f"    After {step_name}: {ak.sum(final_mask)}")
-    print(f"    Events passing all selections: {ak.sum(final_mask)}")
+        n = int(ak.sum(final_mask))
+        cutflow[step_name] = n
+        logging.info("    After %s: %d", step_name, n)
+    logging.info("    Events passing all selections: %d", int(ak.sum(final_mask)))
 
-    # Apply selection to events and objects
     selected_events = events[final_mask]
     selected_objects = {}
     for key, obj in objects.items():
@@ -319,8 +318,5 @@ def apply_selection(
             selected_objects[key] = obj[final_mask]
         else:
             selected_objects[key] = obj
-
-    # Calculate cutflow
-    cutflow = get_cutflow(events, objects, config)
 
     return selected_events, selected_objects, cutflow

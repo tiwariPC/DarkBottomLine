@@ -453,6 +453,8 @@ class DarkBottomLineProcessor:
 
                 logging.info(f"Creating ROOT file: {output_file_root}")
 
+                from .variables import get_empty_branch_types
+
                 # Compute all output branches via variables module
                 branches = {}
                 if not no_events:
@@ -472,7 +474,6 @@ class DarkBottomLineProcessor:
                         write_branches = {}
                         for k, v in branches.items():
                             if isinstance(v, list):
-                                # materialised jagged (ak.to_list()) — uproot handles via awkward
                                 write_branches[k] = v
                             elif isinstance(v, ak.Array):
                                 write_branches[k] = v
@@ -483,11 +484,12 @@ class DarkBottomLineProcessor:
                                 elif a.dtype.kind not in ('i', 'f'):
                                     a = a.astype(np.float64)
                                 write_branches[k] = a
-                        # Single assignment: uproot infers TTree schema automatically,
-                        # handling both flat numpy and jagged list-of-lists correctly.
                         f["Events"] = write_branches
                     else:
-                        logging.info("No selected events — writing ROOT file with Metadata only")
+                        # Always write an empty Events tree with the correct schema so
+                        # hadd can merge this file with chunks that have selected events.
+                        logging.info("No selected events — writing empty Events tree for hadd compatibility")
+                        f.mktree("Events", get_empty_branch_types(self.config))
 
                     # Flat 1-bin TH1 per scalar — hadd sums bin contents correctly
                     edges_1bin = np.array([0.0, 1.0])

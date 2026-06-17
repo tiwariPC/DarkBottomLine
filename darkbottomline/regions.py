@@ -92,7 +92,8 @@ class Region:
 
             var_value = self._get_variable_value(events, objects, var)
             if var_value is None:
-                logging.warning(f"Variable {var} not found, skipping cut")
+                logging.warning(f"Variable {var} not found in region {self.name}, skipping cut")
+                cutflow[f"SKIPPED {var}"] = int(ak.sum(mask))
                 continue
 
             if operator == ">":
@@ -108,7 +109,8 @@ class Region:
             elif operator == "!=":
                 cut_mask = var_value != value
             else:
-                logging.warning(f"Unknown operator: {operator}")
+                logging.warning(f"Unknown operator {operator!r} for {var} in region {self.name}")
+                cutflow[f"SKIPPED {var}"] = int(ak.sum(mask))
                 continue
 
             mask = mask & ak.fill_none(cut_mask, False, axis=0)
