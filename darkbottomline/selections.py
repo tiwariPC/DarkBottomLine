@@ -84,7 +84,7 @@ def _build_event_cut_masks(
 
     # Canonical order — trigger & filters first, then object cuts
     masks = {
-        "Trigger":          trigger_cut,
+        "OR Trigger":       trigger_cut,
         "MET filters":      filter_cut,
         "Recoil":           recoil_cut,
         "N_{#mu}":          muon_cut,

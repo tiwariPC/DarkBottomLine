@@ -377,6 +377,7 @@ def _run_analyzer_from_eventselection(args):
             os.makedirs(outdir, exist_ok=True)
 
     merged_result: Optional[Dict] = None
+    analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
 
     for file_path in input_files:
         stem = Path(file_path).stem
@@ -402,8 +403,6 @@ def _run_analyzer_from_eventselection(args):
 
         # Scale wte by xsec if provided (consistent with make-event-plots normalisation)
         effective_wte = wte if wte > 0 else 1.0
-
-        analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
         try:
             result = analyzer.process_from_eventselection(
                 branches=branches,
@@ -431,7 +430,6 @@ def _run_analyzer_from_eventselection(args):
         return
 
     if args.output:
-        analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
         analyzer.accumulator = merged_result
         analyzer.save_results(args.output, output_format=args.output_format)
         logging.info("Region analysis from event-selection saved to %s", args.output)

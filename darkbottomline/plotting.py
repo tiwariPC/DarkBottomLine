@@ -202,9 +202,32 @@ def _apply_variable_plot_filter(variable: str, values: np.ndarray,
     if values.size == 0:
         return np.ones(0, dtype=bool) if return_mask else values
     mask = values != _SENTINEL
-    if variable.lower().endswith("met_pt"):
-        mask &= values >= 100.0
     return mask if return_mask else values[mask]
+
+
+_REGION_LABELS: Dict[str, str] = {
+    # Signal regions
+    "1b:SR":          "SR, 1b",
+    "2b:SR":          "SR, 2b",
+    # W CRs
+    "1b:CR_Wmunu":    r"W($\mu\nu$) CR, 1b",
+    "1b:CR_Wenu":     r"W(e$\nu$) CR, 1b",
+    "2b:CR_Wmunu":    r"W($\mu\nu$) CR, 2b",
+    "2b:CR_Wenu":     r"W(e$\nu$) CR, 2b",
+    # Z CRs
+    "1b:CR_Zmumu":    r"Z($\mu\mu$) CR, 1b",
+    "1b:CR_Zee":      r"Z(ee) CR, 1b",
+    "2b:CR_Zmumu":    r"Z($\mu\mu$) CR, 2b",
+    "2b:CR_Zee":      r"Z(ee) CR, 2b",
+    # Top CRs
+    "2b:CR_Topmunu":  r"Top($\mu\nu$) CR, 2b",
+    "2b:CR_Topenu":   r"Top(e$\nu$) CR, 2b",
+}
+
+
+def _pretty_region_label(region: str) -> str:
+    """Return a human-readable region label for plot annotation."""
+    return _REGION_LABELS.get(region, "")
 
 
 def _make_bins(
@@ -457,7 +480,7 @@ class PlotManager:
                     hist_obj = res.get('region_histograms', {}).get(reg, {}).get(var, None)
                     if hist_obj is None:
                         logging.warning(f"Could not find histogram '{var}' for region '{reg}' in 'region_histograms' of {path}")
-                
+
                 if hist_obj is None: # If not found in region_histograms or no region specified, look in top-level 'histograms'
                     hist_obj = res.get('histograms', {}).get(var, None)
                     if hist_obj is None:
@@ -498,14 +521,14 @@ class PlotManager:
         for bkg_file in background_files:
             proc_name_from_file = Path(bkg_file).stem
             proc_name = proc_name_from_file.split('_')[0]
-            
+
             h = load_hist_from_file(bkg_file, variable, region)
             if h:
                 if proc_name in bkg_hists_by_proc:
                     bkg_hists_by_proc[proc_name] += h
                 else:
                     bkg_hists_by_proc[proc_name] = h
-        
+
         if not bkg_hists_by_proc:
             logging.error(f"No background histograms found for variable '{variable}' in region '{region}'.")
             return ""
@@ -518,20 +541,20 @@ class PlotManager:
         scale_factor = 1.0
         if mc_integral > 0 and data_integral > 0:
             scale_factor = data_integral / mc_integral
-        
+
         logging.info(f"Data integral: {data_integral}, MC integral: {mc_integral}, Scale factor: {scale_factor}")
 
         # Apply scale factor
         bkg_hists_scaled = {proc: h * scale_factor for proc, h in bkg_hists_by_proc.items()}
-        
+
         # --- Sorting for stacking ---
         # Sort backgrounds by their integral in ascending order
         sorted_procs = sorted(bkg_hists_scaled.keys(), key=lambda p: bkg_hists_scaled[p].sum().value)
-        
+
         sorted_hists = [bkg_hists_scaled[p] for p in sorted_procs]
         sorted_labels = [self.labels.get(p, p) for p in sorted_procs]
         sorted_colors = [self.colors.get(p, '#a6cee3') for p in sorted_procs]
-        
+
         mc_total_hist_scaled = sum(sorted_hists)
 
         # --- Plotting ---
@@ -563,7 +586,7 @@ class PlotManager:
                 facecolor='none',
                 linewidth=0
             )
-        
+
         ax.set_ylabel('Events/bin')
         ax.set_xlabel('') # Remove redundant x-label from top plot
         ax.set_yscale('log')
@@ -576,20 +599,20 @@ class PlotManager:
             data_vars = data_hist.variances()
             mc_vals = mc_total_hist_scaled.values()
             mc_vars = mc_total_hist_scaled.variances()
-            
+
             # Avoid division by zero
             mc_vals_safe = np.where(mc_vals > 0, mc_vals, 1)
-            
+
             ratio_vals = data_vals / mc_vals_safe
-            
+
             # Error propagation for ratio: sqrt((err_data/mc)**2 + (data*err_mc/mc**2)**2)
             # Simplified: err_ratio = err_data / mc
             err_data_sq = data_vars / mc_vals_safe**2
             err_mc_sq = (data_vals**2 * mc_vars) / mc_vals_safe**4
             ratio_err = np.sqrt(err_data_sq + err_mc_sq)
-            
+
             centers = data_hist.axes[0].centers
-            
+
             rax.errorbar(centers, ratio_vals, yerr=ratio_err, fmt='o', color='black')
 
         rax.axhline(1, ls='--', color='gray')
@@ -599,7 +622,7 @@ class PlotManager:
 
         # CMS label
         hep.cms.label(ax=ax, data=True, year=title_tag.split(',')[1].strip() if ',' in title_tag else '2023', lumi=59.7)
-        
+
         # Save
         out_path = Path(output_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1125,13 +1148,26 @@ class PlotManager:
             ax_ratio.grid(False)
 
         hep.cms.label(
-            "Work in progress",
+            llabel="Work in progress",
             data=data_ndarray is not None,
             lumi=round(luminosity, 2),
             com=13.6,
             loc=0,
             ax=ax,
         )
+
+        # Region label text box (upper left, no border, bold)
+        _region_pretty = _pretty_region_label(region)
+        if _region_pretty:
+            ax.text(
+                0.05, 0.88, _region_pretty,
+                transform=ax.transAxes,
+                ha="left", va="top",
+                fontsize=self.fontsize_legend,
+                fontweight="bold",
+                bbox=dict(boxstyle="square,pad=0.1", facecolor="none",
+                          edgecolor="none", alpha=1.0),
+            )
 
         handles, labels_leg = ax.get_legend_handles_labels()
         if handles:
@@ -1368,13 +1404,10 @@ class PlotManager:
                 logging.info("Pattern '%s' matched %d file(s)", pattern, pattern_hits)
             else:
                 logging.warning("Pattern '%s' matched 0 files in %s", pattern, input_folder)
-        unmatched = [p.name for p in all_files if p not in matched_paths]
-        if unmatched:
-            logging.info("Unmatched files (%d): %s", len(unmatched), ', '.join(unmatched[:10]) + ('...' if len(unmatched) > 10 else ''))
         if not resolved:
             logging.warning("No files matched ANY patterns %s in %s (total files: %d)", patterns, input_folder, len(all_files))
         else:
-            logging.info("Resolved %d/%d files for patterns %s", len(resolved), len(all_files), patterns)
+            logging.info("Resolved %d file(s) for group patterns %s", len(resolved), patterns)
         return resolved
 
     def _load_group_entries(
@@ -1427,6 +1460,16 @@ class PlotManager:
                 logging.warning("[%s] NO FILES LOADED — group will be missing from plots!", label)
             for name, err in skipped_paths:
                 logging.debug("  [%s] skipped detail: %s -> %s", label, name, err)
+        # Warn about files in the folder that were not claimed by any group
+        base = Path(input_folder)
+        all_files = sorted(p.name for p in base.iterdir() if p.is_file() and p.suffix in (".root", ".pkl"))
+        all_patterns = [pat for pats in groups.values() for pat in pats]
+        truly_unmatched = [f for f in all_files if not any(pat in f for pat in all_patterns)]
+        if truly_unmatched:
+            logging.warning("Files not matched by any process group (%d): %s",
+                            len(truly_unmatched),
+                            ', '.join(truly_unmatched[:10]) + ('...' if len(truly_unmatched) > 10 else ''))
+
         loaded_labels = list(result.keys())
         logging.info("=== Group loading complete: %d/%d groups with data (%s) ===",
                      len(loaded_labels), len(groups), ', '.join(loaded_labels) if loaded_labels else "NONE")
@@ -1876,7 +1919,7 @@ class PlotManager:
 
         def _load_events_root(path: Path, variables: Optional[List[str]] = None) -> Optional[Dict[str, Any]]:
             """Return {"branches": {name: np.ndarray}, "wte": float} or None on failure.
-            
+
             All branches are read individually; any branch that throws is skipped.
             After loading, branches with lengths different from the majority are
             dropped to ensure consistent lengths for ak.Array construction.
@@ -2060,6 +2103,45 @@ class PlotManager:
             logging.info("Region '%s': candidate_vars=%d, after filtering=%d",
                          region_name, len(candidate_vars), len(var_list))
 
+            # Pre-compute region mask + events_ak once per entry (reused across all variables)
+            import awkward as _ak
+
+            def _build_entry_cache(entries_iter):
+                cache: Dict[int, Dict] = {}
+                for proc_label, entries in entries_iter:
+                    for e in entries:
+                        eid = id(e)
+                        if eid in cache:
+                            continue
+                        br = e["branches"]
+                        try:
+                            ak_dict = {}
+                            for k, v in br.items():
+                                if not isinstance(v, np.ndarray) or v.ndim != 1:
+                                    continue
+                                if v.dtype == object:
+                                    try:
+                                        ak_dict[k] = _ak.Array(list(v))
+                                    except Exception:
+                                        pass
+                                else:
+                                    ak_dict[k] = v
+                            ev_ak = _ak.Array(ak_dict)
+                            msk = region_obj.apply_cuts(ev_ak, objects={})
+                            cache[eid] = {"mask_np": np.asarray(msk, dtype=bool),
+                                          "events_ak": ev_ak, "skip": False}
+                        except Exception as _exc:
+                            logging.warning("Region mask failed for %s / %s: %s",
+                                            region_name, proc_label, _exc)
+                            cache[eid] = {"skip": True}
+                return cache
+
+            _entry_cache: Dict[int, Dict] = _build_entry_cache(bkg_entries.items())
+            # Also cache data entries
+            _data_entry_cache: Dict[int, Dict] = _build_entry_cache(
+                (label, info["entries"]) for label, info in data_entries.items()
+            )
+
             for var in var_list:
                 bins_ref: Optional[np.ndarray] = self._build_bins_from_config(var)
                 bkg_rows: List[Tuple[str, np.ndarray, np.ndarray]] = []
@@ -2073,31 +2155,11 @@ class PlotManager:
                         wte = e["wte"]
                         xsec = e["xsec"]
 
-                        # Apply region mask using RegionManager
-                        try:
-                            import awkward as _ak
-                            # Flat branches go in directly; object-dtype (jagged) branches
-                            # are converted individually via ak.Array so CR lepton cuts work
-                            ak_dict = {}
-                            for k, v in br.items():
-                                if not isinstance(v, np.ndarray) or v.ndim != 1:
-                                    continue
-                                if v.dtype == object:
-                                    try:
-                                        ak_dict[k] = _ak.Array(list(v))
-                                    except Exception:
-                                        pass
-                                else:
-                                    ak_dict[k] = v
-                            events_ak = _ak.Array(ak_dict)
-                            mask = region_obj.apply_cuts(events_ak, objects={})
-                        except Exception as _mask_exc:
-                            logging.warning(
-                                "Region mask failed for %s / %s: %s", region_name, proc_label, _mask_exc
-                            )
+                        _cached = _entry_cache.get(id(e), {"skip": True})
+                        if _cached.get("skip"):
                             continue
-
-                        mask_np = np.asarray(mask, dtype=bool)
+                        mask_np = _cached["mask_np"]
+                        events_ak = _cached["events_ak"]
                         vals_raw = br.get(var)
                         if vals_raw is None:
                             # Try computing derived variable (mt, z_mass, z_pt, etc.)
@@ -2161,8 +2223,9 @@ class PlotManager:
                             if bins_ref is None or len(bins_ref) < 2:
                                 break
 
-                        hv, _ = np.histogram(vals, bins=bins_ref, weights=w * scale)
-                        hs, _ = np.histogram(vals, bins=bins_ref, weights=(w * scale) ** 2)
+                        vals_clipped = _clip_overflow(vals, bins_ref)
+                        hv, _ = np.histogram(vals_clipped, bins=bins_ref, weights=w * scale)
+                        hs, _ = np.histogram(vals_clipped, bins=bins_ref, weights=(w * scale) ** 2)
 
                         group_hv = hv if group_hv is None else group_hv + hv
                         group_hs = hs if group_hs is None else group_hs + hs
@@ -2205,39 +2268,18 @@ class PlotManager:
                             logging.debug("  %s/%s: data group %s skipped (region_patterns mismatch)", region_name, var, label)
                             continue
                         for e in info["entries"]:
-                            import awkward as _ak
                             br = e["branches"]
-                            try:
-                                ak_dict_d = {}
-                                for k, v in br.items():
-                                    if not isinstance(v, np.ndarray) or v.ndim != 1:
-                                        continue
-                                    if v.dtype == object:
-                                        try:
-                                            ak_dict_d[k] = _ak.Array(list(v))
-                                        except Exception:
-                                            pass
-                                    else:
-                                        ak_dict_d[k] = v
-                                events_ak = _ak.Array(ak_dict_d)
-                                mask_d = region_obj.apply_cuts(events_ak, objects={})
-                            except Exception as _data_mask_exc:
-                                n_ev = len(next(iter(br.values())))
-                                logging.error(
-                                    "[Data:%s] apply_cuts FAILED for region '%s': %s. "
-                                    "Skipping this data entry (%d events). "
-                                    "events_ak fields: %s",
-                                    label, region_name, _data_mask_exc, n_ev,
-                                    list(ak_dict_d.keys())[:20] if 'ak_dict_d' in dir() else "N/A"
-                                )
+                            _dcached = _data_entry_cache.get(id(e), {"skip": True})
+                            if _dcached.get("skip"):
                                 continue
-                            mask_d_np = np.asarray(mask_d, dtype=bool)
+                            mask_d_np = _dcached["mask_np"]
+                            _devents_ak = _dcached["events_ak"]
                             _dvals_raw = br.get(var)
                             if _dvals_raw is None:
                                 _var_map = {"mt": "MT", "z_mass": "Mll", "z_pt": "Zpt", "mll": "Mll"}
                                 _canon = _var_map.get(var, var)
                                 try:
-                                    _derived = region_obj._get_variable_value(events_ak, objects={}, var=_canon)
+                                    _derived = region_obj._get_variable_value(_devents_ak, objects={}, var=_canon)
                                     if _derived is not None:
                                         _dvals_raw = np.asarray(_ak.to_numpy(
                                             _ak.fill_none(_derived if isinstance(_derived, _ak.Array)
@@ -2252,7 +2294,7 @@ class PlotManager:
                             dv = _apply_variable_plot_filter(var, np.asarray(_dvals_raw, dtype=float)[mask_d_np])
                             if dv.size == 0:
                                 continue
-                            dh, _ = np.histogram(dv, bins=bins_ref)
+                            dh, _ = np.histogram(_clip_overflow(dv, bins_ref), bins=bins_ref)
                             data_hist = dh if data_hist is None else data_hist + dh
                     if data_hist is not None:
                         logging.debug("  %s/%s: data sum=%.1f", region_name, var, float(np.sum(data_hist)))
@@ -2516,11 +2558,23 @@ class PlotManager:
         ymin = max(1e-3, min(float(np.min(pos)), 1e2)) if pos.size else 1e-3
         ymax = max(1.0, float(np.max(cumulative)),
                    float(np.max(_dc)) if data_cutflow is not None else 1.0)
-        ax1.set_ylim(ymin, ymax * 10.0)
+        ax1.set_ylim(ymin, 10 ** (np.ceil(np.log10(ymax)) + 2))
         ax1.grid(False)
 
-        hep.cms.label("Work in progress", data=has_data,
+        hep.cms.label(llabel="Work in progress", data=has_data,
                       lumi=round(luminosity, 2), com=13.6, loc=0, ax=ax1)
+
+        _region_pretty = _pretty_region_label(region_name)
+        if _region_pretty:
+            ax1.text(
+                0.05, 0.88, _region_pretty,
+                transform=ax1.transAxes,
+                ha="left", va="top",
+                fontsize=20,
+                fontweight="bold",
+                bbox=dict(boxstyle="square,pad=0.1", facecolor="none",
+                          edgecolor="none", alpha=1.0),
+            )
 
         handles, leg_labels = ax1.get_legend_handles_labels()
         if handles:

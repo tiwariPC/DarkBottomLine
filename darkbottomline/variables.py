@@ -108,7 +108,16 @@ def _multiplicity_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
         n = ak.to_numpy(ak.num(jets, axis=1)).size if hasattr(jets, '__len__') else 0
         b_flavor_count = np.zeros(n, dtype=np.int32)
 
-    return {
+    def _scalar_int(key):
+        arr = objects.get(key)
+        if arr is None:
+            return None
+        try:
+            return ak.to_numpy(ak.fill_none(ak.values_astype(arr, np.int32), np.int32(0)))
+        except Exception:
+            return None
+
+    out = {
         'Njets_PassID':   _num('jets'),
         'n_bjets':        _num('bjets'),
         'n_muons':        _num('muons'),
@@ -116,6 +125,26 @@ def _multiplicity_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
         'n_taus':         _num('taus'),
         'b_flavor_count': b_flavor_count,
     }
+    # Z-candidate lepton counts and mass — required for CR_Zee/CR_Zmumu region cuts
+    for key, branch in (('n_z_muons', 'n_z_muons'), ('n_z_electrons', 'n_z_electrons')):
+        v = _scalar_int(key)
+        if v is not None:
+            out[branch] = v
+    # Z dilepton mass: muon pair if NmuonsZ==2 else electron pair
+    mll_mu = objects.get('mll_mu')
+    mll_el = objects.get('mll_el')
+    nzm = objects.get('n_z_muons')
+    nze = objects.get('n_z_electrons')
+    if mll_mu is not None and mll_el is not None and nzm is not None and nze is not None:
+        try:
+            mll = ak.where(
+                ak.fill_none(ak.values_astype(nzm, np.int32), 0) == 2, mll_mu,
+                ak.where(ak.fill_none(ak.values_astype(nze, np.int32), 0) == 2, mll_el, 0.0)
+            )
+            out['mll'] = ak.to_numpy(ak.fill_none(ak.values_astype(mll, np.float32), np.float32(0.0)))
+        except Exception:
+            pass
+    return out
 
 
 def _jet_lead_variables(objects: Dict[str, Any], btag_algo: str) -> Dict[str, np.ndarray]:
@@ -248,6 +277,7 @@ _SCALAR_BRANCHES: Dict[str, Any] = {
     'costheta_star': np.float32,
     'Njets_PassID': np.int32, 'n_bjets': np.int32, 'n_muons': np.int32,
     'n_electrons': np.int32, 'n_taus': np.int32, 'b_flavor_count': np.int32,
+    'n_z_muons': np.int32, 'n_z_electrons': np.int32, 'mll': np.float32,
     'Jet1Pt': np.float32, 'Jet1Eta': np.float32, 'Jet1Phi': np.float32,
     'Jet2Pt': np.float32, 'Jet2Eta': np.float32, 'Jet2Phi': np.float32,
     'Jet3Pt': np.float32, 'Jet3Eta': np.float32, 'Jet3Phi': np.float32,
@@ -264,6 +294,8 @@ _SCALAR_BRANCHES: Dict[str, Any] = {
     'electron_lep1_pt': np.float32, 'electron_lep1_phi': np.float32, 'electron_lep1_eta': np.float32,
     'electron_lep2_pt': np.float32, 'electron_lep2_phi': np.float32, 'electron_lep2_eta': np.float32,
     'full_event_weight': np.float32,
+    'pass_met_trigger': np.int32,
+    'pass_ele_trigger': np.int32,
 }
 
 # Jagged branches: name → numpy dtype of elements
@@ -320,6 +352,24 @@ def compute_event_variables(
             out[field] = ak.to_numpy(events[field]).astype(np.int64)
         except Exception:
             out[field] = np.zeros(n_ev, dtype=np.int64)
+
+    # --- Per-trigger-group decisions (stored for per-region trigger requirement) ---
+    # MET trigger group: MET + SingleMuon (used for SR, muon CRs)
+    # EGamma trigger group: EGamma (used for electron CRs)
+    _met_trig_paths  = (config.get('triggers', {}).get('MET', [])
+                        + config.get('triggers', {}).get('SingleMuon', []))
+    _ele_trig_paths  = config.get('triggers', {}).get('EGamma', [])
+    def _trig_decision(paths):
+        mask = np.zeros(n_ev, dtype=np.int32)
+        for p in paths:
+            if p in events.fields:
+                try:
+                    mask = np.maximum(mask, ak.to_numpy(events[p]).astype(np.int32))
+                except Exception:
+                    pass
+        return mask
+    out['pass_met_trigger'] = _trig_decision(_met_trig_paths)
+    out['pass_ele_trigger'] = _trig_decision(_ele_trig_paths)
 
     # --- MET ---
     met_vars = _met_variables(events)

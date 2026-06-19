@@ -474,7 +474,18 @@ class DarkBottomLineProcessor:
                         write_branches = {}
                         for k, v in branches.items():
                             if isinstance(v, list):
-                                write_branches[k] = v
+                                # Materialised jagged (ak.to_list()) — convert back to
+                                # ak.Array with explicit float32 dtype so uproot writes
+                                # the correct basket dtype even when all sub-lists are empty.
+                                try:
+                                    arr = ak.Array(v)
+                                    if arr.ndim > 1:
+                                        write_branches[k] = ak.values_astype(arr, np.float32)
+                                    else:
+                                        a = np.asarray(arr)
+                                        write_branches[k] = a.astype(np.float32) if a.dtype.kind == 'f' else a
+                                except Exception:
+                                    write_branches[k] = v
                             elif isinstance(v, ak.Array):
                                 write_branches[k] = v
                             else:

@@ -1031,22 +1031,6 @@ class CorrectionManager:
         sf_weight = w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_jec
         full_event_weight = genweight * sf_weight
 
-        # Debug print: show only the SF-induced weight factor for manual verification
-        try:
-            sample_n = min(10, int(len(full_event_weight)))
-            print("DEBUG SF weight samples (first {} events):".format(sample_n))
-            def _sample(arr):
-                try:
-                    return np.asarray(ak.to_numpy(arr))[:sample_n]
-                except Exception:
-                    try:
-                        return np.asarray(arr)[:sample_n]
-                    except Exception:
-                        return str(type(arr))
-
-            print(f"  sf_weight: {_sample(sf_weight)}")
-        except Exception:
-            pass
         def _vary(total, central, variation):
             """Replace central component with variation: (total / central) * variation."""
             safe = ak.where(central != 0.0, central, ak.ones_like(central))

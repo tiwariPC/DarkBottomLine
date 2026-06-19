@@ -10,8 +10,10 @@ DarkBottomLine processes NanoAOD datasets through event selection, region analys
 
 - Config-driven object selection, triggers, corrections (no hardcoded cuts)
 - Multi-region analysis: 1b/2b categories, SR + W/Top/Z CRs
+- Per-region trigger routing: MET/SingleMuon trigger for SR and muon CRs; EGamma trigger for electron CRs
 - Three analysis modes: `event-selection`, `region-analysis`, `full`
-- Stacked MC+data plots: PDF, PNG, ROOT TH1, TXT yield tables
+- Stacked MC+data plots: PDF, PNG, ROOT TH1, TXT yield tables, TEX yield tables (5 formats)
+- Cutflow plots per region with event-selection and region-cut steps on log scale
 - SR blinding by default (bkg-sum as pseudo-data); `--show-data` to unblind
 - DNN scoring integration (train or apply)
 - Executors: iterative, futures, Dask
@@ -336,14 +338,14 @@ darkbottomline analyze \
 ## Framework Components
 
 | File | Role |
-|------|------|
+| ---- | ---- |
 | `analyzer.py` | `DarkBottomLineAnalyzer`: full pipeline, `process()`, `process_from_eventselection()` |
 | `objects.py` | `build_objects()`, object selection functions |
 | `selections.py` | `apply_selection()`: trigger → filters → recoil → multiplicities → jet → dphi |
 | `regions.py` | `RegionManager`, `Region.apply_cuts()`, flat-branch fallbacks for CR variables |
 | `variables.py` | `compute_event_variables()`: all output branch computation |
 | `histograms.py` | `HistogramManager`: ~40+ histogram definitions |
-| `plotting.py` | `PlotManager`: stacked plots, 4 formats, SR blinding, process group routing |
+| `plotting.py` | `PlotManager`: stacked plots, 5 formats (PDF/PNG/ROOT/TXT/TEX), SR blinding, process group routing |
 | `corrections.py` | `CorrectionManager`: correctionlib scale factors |
 | `weights.py` | `WeightCalculator` |
 | `cli.py` | CLI: `analyze` (all modes), `make-plots`, `make-stacked-plots` |
@@ -352,7 +354,7 @@ darkbottomline analyze \
 
 ## Configuration
 
-```
+```text
 configs/
   2022.yaml / 2022EE.yaml / 2023.yaml / 2024.yaml   # year-specific
   regions.yaml      # region definitions and cuts
@@ -367,7 +369,7 @@ All thresholds in YAML — no hardcoded cuts in Python. Missing key → loud `Ke
 
 `--output out.pkl` saves (used by `make-plots`):
 
-```
+```text
 pkl
 ├── region_histograms   {region: {var: hist.Hist}}
 ├── regions             {region: {n_events, variables, dnn_scores}}
@@ -392,7 +394,7 @@ scripts/tag_version.sh   # bumps _version.py, commits, tags, gh release
 ## Troubleshooting
 
 | Problem | Fix |
-|---------|-----|
+| ------- | --- |
 | Corrupt EVENTSELECTION.root | Re-run `--mode event-selection` for that sample |
 | 0 plots for CRs | Check `plotting.yaml` process group patterns match filenames |
 | `--output` required error | Add `--output` or `--make-region-plots` to `--mode full` |
