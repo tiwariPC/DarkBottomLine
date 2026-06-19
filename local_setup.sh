@@ -13,5 +13,5 @@ fi
 conda activate darkbottomline
 # Install the local package in editable mode
 echo "Installing local package..."
-pip install -e "$(dirname "$0")" || { echo "pip install -e failed!"; return 1; }
+pip install -e "$(dirname "$0")" || { echo "pip install -e failed!"; exit 1; }
 echo "Environment ready! Python: $(python --version)"

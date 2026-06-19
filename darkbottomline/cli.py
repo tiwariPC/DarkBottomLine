@@ -6,8 +6,24 @@ import argparse
 import logging
 import sys
 import yaml
+import numpy as np
+import uproot
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
+
+try:
+    from darkbottomline._version import __version__ as _fw_version
+except Exception:
+    _fw_version = None
+
+def _default_version() -> str:
+    """YYYYMMDD_<sha7> — today's date + commit SHA from framework version."""
+    from datetime import datetime
+    today = datetime.now().strftime("%Y%m%d")
+    if _fw_version and "+" in _fw_version:
+        sha = _fw_version.split("+", 1)[1]
+        return f"{today}_{sha}"
+    return today
 
 from .processor import DarkBottomLineProcessor
 from .analyzer import DarkBottomLineAnalyzer
@@ -15,7 +31,7 @@ from .dnn_trainer import DNNTrainer
 from .dnn_inference import DNNInference
 from .plotting import PlotManager
 from .regions import RegionManager
-from .utils.chunk_optimizer import (
+from utils.chunk_optimizer import (
     optimize_chunk_size_for_files,
     parse_chunk_size_arg,
 )
@@ -23,7 +39,8 @@ from .utils.chunk_optimizer import (
 # Try to import Coffea for chunk-size support
 try:
     from coffea import processor
-    from coffea.processor import run_uproot_job, FuturesExecutor
+    from coffea.processor import Runner, FuturesExecutor
+    from coffea.nanoevents import BaseSchema
     try:
         from dask.distributed import Client
         from coffea.processor import DaskExecutor
@@ -82,10 +99,13 @@ def run_analysis(args):
         input_files = _get_input_files(args.input)
         logging.info(f"Loading events from {str(input_files)} files")
 
+        if args.max_events is not None and args.max_events < 0:
+            args.max_events = None
+
         events = uproot.concatenate([f"{path}:Events" for path in input_files])
 
         # Limit events if specified
-        if args.max_events and len(events) > args.max_events:
+        if args.max_events and args.max_events > 0 and len(events) > args.max_events:
             events = events[:args.max_events]
             logging.info(f"Limited to {args.max_events} events")
 
@@ -168,22 +188,388 @@ def _merge_pickle_outputs(files: List[str], output_path: str):
                 logging.error(f"Error removing temporary file {file_path}: {e}")
 
 
-def run_analyzer(args):
-    """Run multi-region analysis."""
-    logging.info("Running multi-region analysis...")
+def _add_dnn_scores_to_events(events, model_path: str, config_path: Optional[str], score_branch: str = "ml_score"):
+    """Score all events with trained DNN; return ak.Array with ml_score field added."""
+    import awkward as ak
+    from dnn.feature_engineering import build_feature_frame_from_tree, REQUESTED_FEATURES_25
+    from dnn.common import sanitize_feature_frame
 
-    # Convert string boolean to actual boolean
-    event_selection_only = args.event_selection_only.lower() == "true"
+    inference = DNNInference(model_path, config_path=config_path)
+    model_info = inference.get_model_info()
+    features = model_info.get("features") or list(REQUESTED_FEATURES_25)
+
+    # Build feature DataFrame from the ak.Array event record
+    # Treat events like a flat tree: extract each feature branch directly
+    n = len(events)
+    X_parts = {}
+    for feat in features:
+        if feat in events.fields:
+            X_parts[feat] = np.asarray(ak.to_numpy(events[feat]), dtype="f8")
+        else:
+            X_parts[feat] = np.full(n, -9999.0, dtype="f8")
+
+    import pandas as pd
+    df = pd.DataFrame(X_parts)
+    from dnn.common import sanitize_feature_frame
+    df = sanitize_feature_frame(df)
+
+    X = df.to_numpy(dtype="f8")
+    masses = np.zeros(n, dtype="f8")
+    scores = inference.predict(X, masses).ravel().astype("float32")
+
+    # Append ml_score to events ak.Array
+    events_with_score = ak.with_field(events, ak.Array(scores), score_branch)
+    logging.info("DNN scoring complete: n=%d score_branch=%s", n, score_branch)
+    return events_with_score
+
+
+def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args) -> Tuple[np.ndarray, str]:
+    """Train DNN on selected events (in-memory); return (scores, model_path).
+
+    Scores array aligns 1:1 with events — same length, float32.
+    All training plots (AUC, ranking, score distributions, loss curves) are
+    written to dnn_outdir/plots/ by train_from_arrays.
+    """
+    import awkward as ak
+    import pandas as pd
+    from dnn.feature_engineering import REQUESTED_FEATURES_25
+    from dnn.common import sanitize_feature_frame
+    from dnn.make_trees import _is_data, _is_signal_heuristic
+
+    n = len(events)
+    sig_patterns = tuple(getattr(args, "signal_pattern", None) or ())
+    sig_prefix = getattr(args, "signal_prefix", None)
+    label_csv_path = getattr(args, "label_csv", None)
+
+    # Build label array from input file heuristics
+    # For in-memory events we need a per-event signal label.
+    # Use the first input file's classification applied to all events
+    # (single-sample mode) or per-file if multiple files loaded separately.
+    # Here events are already concatenated — label from args.signal_prefix/pattern
+    # applied to the first input file name as proxy.
+    input_files = _get_input_files(args.input)
+    if label_csv_path:
+        import csv as _csv
+        label_map = {}
+        with open(label_csv_path, "r", newline="") as fp:
+            for row in _csv.DictReader(fp):
+                label_map[str(row["path"]).strip()] = int(row["label"])
+        # Can't map per-event without per-file info; fall back to file-level
+        y_parts = []
+        for fpath in input_files:
+            import os as _os
+            key = fpath if fpath in label_map else _os.path.basename(fpath)
+            lbl = label_map.get(key, 0)
+            with uproot.open(fpath) as f:
+                y_parts.append(np.full(int(f["Events"].num_entries), lbl, dtype="i4"))
+        y = np.concatenate(y_parts)[:n]
+    else:
+        # Build per-file labels then concatenate to match events length
+        y_parts = []
+        for fpath in input_files:
+            is_data = _is_data(fpath)
+            if is_data:
+                sig = 0
+            else:
+                sig = 1 if _is_signal_heuristic(fpath, sig_patterns, sig_prefix) else 0
+            with uproot.open(fpath) as f:
+                cnt = int(f["Events"].num_entries)
+            y_parts.append(np.full(cnt, sig, dtype="i4"))
+        y = np.concatenate(y_parts)[:n]
+
+    if np.unique(y).size < 2:
+        logging.warning("Only one class present — skipping DNN training, scores set to 0.5")
+        return np.full(n, 0.5, dtype="float32"), ""
+
+    # Build feature DataFrame from events ak.Array
+    feat_list = list(REQUESTED_FEATURES_25)
+    X_dict = {}
+    for feat in feat_list:
+        if feat in events.fields:
+            X_dict[feat] = np.asarray(ak.to_numpy(events[feat]), dtype="f8")
+        else:
+            X_dict[feat] = np.full(n, -9999.0, dtype="f8")
+    X_df = pd.DataFrame(X_dict)
+    X_df = sanitize_feature_frame(X_df)
+
+    # Weights
+    if "full_event_weight" in events.fields:
+        w = np.asarray(ak.to_numpy(events["full_event_weight"]), dtype="f8")
+        w = np.where(np.isfinite(w), np.maximum(w, 0.0), 0.0)
+    else:
+        w = np.ones(n, dtype="f8")
+
+    trainer = DNNTrainer(train_dnn_config)
+    metrics = trainer.train_from_arrays(
+        X=X_df, y=y, w=w,
+        feature_sources={},
+        outdir=dnn_outdir,
+        plot_dir=str(Path(dnn_outdir) / "plots"),
+    )
+    model_path = str(Path(dnn_outdir) / "dnn_model.pt")
+    logging.info("DNN trained — AUC(val)=%.4f  model=%s", metrics.get("auc_val", float("nan")), model_path)
+
+    # Score all events with the just-trained model
+    scores = trainer.predict(X_df.to_numpy(dtype="f8"), np.zeros(n, dtype="f8")).ravel().astype("float32")
+    return scores, model_path
+
+
+def _plot_dnn_score_only(scores: np.ndarray, plot_dir: str) -> None:
+    """Write a simple DNN score distribution plot when --dnn-only is set."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    Path(plot_dir).mkdir(parents=True, exist_ok=True)
+    s = np.clip(scores, 0.0, 1.0)
+    plt.figure(figsize=(7, 5))
+    plt.hist(s, bins=50, range=(0, 1), color="#3f90da", edgecolor="black", linewidth=0.6)
+    plt.xlabel("DNN score (ml_score)")
+    plt.ylabel("Events")
+    plt.title("DNN score distribution (all passing events)")
+    plt.grid(alpha=0.25)
+    plt.tight_layout()
+    out = Path(plot_dir) / "dnn_score_distribution.png"
+    plt.savefig(out, dpi=160)
+    plt.close()
+    logging.info("DNN score plot saved to %s", out)
+
+
+def _run_analyzer_from_eventselection(args):
+    """
+    Path 2b: load per-sample EVENTSELECTION.root files, run region analysis, save PKL output.
+
+    Reads all ROOT files matching process_groups patterns from --input (folder or list of files),
+    runs region cuts via RegionManager, fills histograms, and saves a merged PKL identical in
+    structure to the output of Path 1 analyze.
+    """
+    import json
+    import os
+    import uproot
+    import pickle
+
+    config = load_config(args.config)
+    if args.data:
+        config.setdefault("data", {})["is_data"] = True
+    is_data = config.get("data", {}).get("is_data", False)
+
+    cross_sections: Dict[str, float] = {}
+    if getattr(args, "xsection_json", None):
+        with open(args.xsection_json) as f:
+            cross_sections = json.load(f)
+
+    dnn_model  = getattr(args, "dnn_model",  None)
+    dnn_config = getattr(args, "dnn_config", None)
+
+    raw_inputs = _get_input_files(args.input)
+    # Expand any directories to their ROOT files
+    input_files = []
+    for p in raw_inputs:
+        if os.path.isdir(p):
+            input_files.extend(sorted(str(f) for f in Path(p).iterdir()
+                                      if f.suffix in (".root", ".pkl")))
+        else:
+            input_files.append(p)
+
+    if args.output:
+        outdir = os.path.dirname(args.output)
+        if outdir:
+            os.makedirs(outdir, exist_ok=True)
+
+    merged_result: Optional[Dict] = None
+    analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
+
+    for file_path in input_files:
+        stem = Path(file_path).stem
+        xsec = cross_sections.get(stem) or cross_sections.get(Path(file_path).name)
+        try:
+            with uproot.open(str(file_path)) as f:
+                wte = 0.0
+                for key in ("weighted_total_events", "weighted_total_events;1"):
+                    if key in f:
+                        try:
+                            wte = float(f[key].values()[0])
+                            break
+                        except Exception:
+                            pass
+                if "Events" not in f:
+                    logging.warning("No Events tree in %s — skipping", stem)
+                    continue
+                raw = f["Events"].arrays(library="np")
+                branches = dict(raw)
+        except Exception as exc:
+            logging.warning("Could not load %s: %s — skipping", stem, exc)
+            continue
+
+        # Scale wte by xsec if provided (consistent with make-event-plots normalisation)
+        effective_wte = wte if wte > 0 else 1.0
+        try:
+            result = analyzer.process_from_eventselection(
+                branches=branches,
+                weighted_total_events=effective_wte,
+                is_data=is_data,
+                dnn_model=dnn_model,
+                dnn_config=dnn_config,
+            )
+        except Exception as exc:
+            logging.error("Region analysis failed for %s: %s", stem, exc, exc_info=True)
+            continue
+
+        # Tag result with xsec for downstream normalisation
+        result.setdefault("metadata", {})["xsec"] = xsec
+        result["metadata"]["sample"] = stem
+
+        if merged_result is None:
+            merged_result = result
+        else:
+            merged_result = _merge_region_results(merged_result, result)
+        logging.debug("Processed %s (wte=%.1f)", stem, effective_wte)
+
+    if merged_result is None:
+        logging.error("No files processed — nothing to save.")
+        return
+
+    if args.output:
+        analyzer.accumulator = merged_result
+        analyzer.save_results(args.output, output_format=args.output_format)
+        logging.info("Region analysis from event-selection saved to %s", args.output)
+
+
+def _merge_region_results(a: Dict, b: Dict) -> Dict:
+    """Shallow-merge two region-analysis result dicts (add histogram counts)."""
+    import copy
+    merged = copy.deepcopy(a)
+    for region, hists in b.get("region_histograms", {}).items():
+        if region not in merged.setdefault("region_histograms", {}):
+            merged["region_histograms"][region] = hists
+        else:
+            for hname, hdata in hists.items():
+                if hname not in merged["region_histograms"][region]:
+                    merged["region_histograms"][region][hname] = hdata
+                else:
+                    try:
+                        merged["region_histograms"][region][hname] = (
+                            merged["region_histograms"][region][hname] + hdata
+                        )
+                    except Exception:
+                        pass
+    for region, res in b.get("regions", {}).items():
+        merged.setdefault("regions", {})[region] = res
+    wte_a = merged.get("metadata", {}).get("weighted_total_events", 0.0)
+    wte_b = b.get("metadata", {}).get("weighted_total_events", 0.0)
+    merged.setdefault("metadata", {})["weighted_total_events"] = wte_a + wte_b
+    return merged
+
+
+def _trigger_plots(args):
+    """Call make_event_plots for --make-region-plots and/or --make-event-selection-plots."""
+    make_region_plots_flag    = getattr(args, "make_region_plots", False)
+    make_evsel_flag    = getattr(args, "make_event_selection_plots", False)
+    if not make_region_plots_flag and not make_evsel_flag:
+        return
+    # make_event_plots needs input_folder
+    if not getattr(args, "input_folder", None):
+        import os
+        # region-analysis/event-selection-plots: --input is the folder
+        raw = getattr(args, "input", None)
+        if raw:
+            candidate = raw[0] if isinstance(raw, list) else raw
+            if os.path.isdir(candidate):
+                args.input_folder = candidate
+        # full mode: derive from --event-selection-output
+        if not getattr(args, "input_folder", None):
+            evsel_out = getattr(args, "event_selection_output", None)
+            if evsel_out:
+                args.input_folder = os.path.dirname(evsel_out)
+        if not getattr(args, "input_folder", None):
+            logging.warning("--make-region-plots requested but no input_folder derivable from --input or --event-selection-output")
+            return
+    args.data_folder   = None
+    args.process_groups = getattr(args, "process_groups", None)
+    # map plot-specific args that may differ in name
+    if not getattr(args, "variables", None):
+        args.variables = getattr(args, "plot_variables", None)
+    if not getattr(args, "regions", None):
+        args.regions   = getattr(args, "plot_regions", None)
+    if make_region_plots_flag:
+        logging.info("Producing region plots...")
+        args.mode = "region-from-events"
+        make_event_plots(args)
+    if make_evsel_flag:
+        logging.info("Producing event-selection plots...")
+        args.mode = "event-selection"
+        make_event_plots(args)
+
+
+def run_analyzer(args):
+    """Run analysis pipeline."""
+    # Translate --mode into internal flags
+    mode = getattr(args, "mode", "full")
+    # backward compat: old --event-selection-only true still works
+    _old_esel = getattr(args, "event_selection_only", "false")
+    if isinstance(_old_esel, str) and _old_esel.lower() == "true":
+        mode = "event-selection"
+    # old --from-eventselection still works
+    if getattr(args, "from_eventselection", False):
+        mode = "region-analysis"
+
+    args.event_selection_only = "true" if mode == "event-selection" else "false"
+    args.from_eventselection   = (mode == "region-analysis")
+
+    make_evsel_plots = getattr(args, "make_event_selection_plots", False)
+
+    mode_labels = {
+        "event-selection": (
+            "Producing event-selection plots (EVENTSELECTION.root → stacked plots)..."
+            if make_evsel_plots else
+            "Running event selection (NanoAOD → EVENTSELECTION.root)..."
+        ),
+        "region-analysis": "Running region analysis (EVENTSELECTION.root → region plots)...",
+        "full":            "Running full pipeline (NanoAOD → event-selection + regions)...",
+    }
+    logging.info(mode_labels.get(mode, "Running analysis..."))
+
+    # event-selection + --make-event-selection-plots → plot only, no NanoAOD processing
+    if mode == "event-selection" and make_evsel_plots:
+        args.input_folder   = args.input[0]
+        args.data_folder    = None
+        args.process_groups = getattr(args, "process_groups", None)
+        args.variables      = getattr(args, "plot_variables", None)
+        args.regions        = getattr(args, "plot_regions", None)
+        args.mode           = "event-selection"
+        make_event_plots(args)
+        return
+
+    # region-analysis mode: delegate to _run_analyzer_from_eventselection then plot
+    if mode == "region-analysis":
+        _run_analyzer_from_eventselection(args)
+        _trigger_plots(args)
+        return
+
+    # Unified pipeline flags
+    dnn_model = getattr(args, "dnn_model", None)
+    dnn_config = getattr(args, "dnn_config", None)
+    train_dnn_config = getattr(args, "train_dnn", None)
+    dnn_outdir = getattr(args, "dnn_outdir", "outputs_dnn")
+    dnn_only = getattr(args, "dnn_only", False)
+
+    event_selection_only = (mode == "event-selection")
 
     # Validate arguments
     if event_selection_only:
         if not args.event_selection_output:
-            logging.error("--event-selection-output must be provided when using --event-selection-only")
+            logging.error("--event-selection-output required with --mode event-selection")
             sys.exit(1)
         logging.info("Event selection only mode: will stop after event selection (no region analysis)")
-    else:
-        if not args.regions_config or not args.output:
-            logging.error("--regions-config and --output are required when --event-selection-only is false")
+    elif not dnn_only:
+        # regions-config always required for full mode
+        if not args.regions_config:
+            logging.error("--regions-config required for --mode full")
+            sys.exit(1)
+        # --output required only when saving PKL (not needed if only making plots)
+        make_plots_any = getattr(args, "make_region_plots", False) or getattr(args, "make_event_selection_plots", False)
+        if not args.output and not make_plots_any:
+            logging.error("--output or --make-region-plots/--make-event-selection-plots required for --mode full")
             sys.exit(1)
 
     config = load_config(args.config)
@@ -198,19 +584,34 @@ def run_analyzer(args):
         is_txt_input = len(args.input) == 1 and args.input[0].endswith(".txt")
         input_files = _get_input_files(args.input)
 
+        input_total_events = None
+        try:
+            input_total_events = 0
+            for file_path in input_files:
+                tree = uproot.open(f"{file_path}:Events")
+                input_total_events += int(tree.num_entries)
+            logging.info(f"Computed input_total_events={input_total_events} from input files")
+        except Exception as e:
+            logging.warning(f"Could not compute input_total_events from input files: {e}")
+            input_total_events = None
+
+        # -1 (or any negative) means "no limit" — treat as None throughout
+        if args.max_events is not None and args.max_events < 0:
+            args.max_events = None
+
         # Total events before selection to be saved into event-selection-output metadata.
         # Rule: use --max-events when specified; otherwise use total events from input files.
-        n_events_total = args.max_events if args.max_events is not None else None
-        if n_events_total is None and args.event_selection_output:
+        total_events = args.max_events if args.max_events is not None else None
+        if total_events is None and args.event_selection_output:
             try:
-                n_events_total = 0
+                total_events = 0
                 for file_path in input_files:
                     tree = uproot.open(f"{file_path}:Events")
-                    n_events_total += int(tree.num_entries)
-                logging.info(f"Computed n_events_total={n_events_total} from input files")
+                    total_events += int(tree.num_entries)
+                logging.info(f"Computed total_events={total_events} from input files")
             except Exception as e:
-                logging.warning(f"Could not compute n_events_total from input files: {e}")
-                n_events_total = None
+                logging.warning(f"Could not compute total_events from input files: {e}")
+                total_events = None
 
         # Parse chunk size argument (can be "auto" or int)
         chunk_size = None
@@ -258,7 +659,7 @@ def run_analyzer(args):
 
             logging.info(f"Using Coffea {args.executor} executor with chunk-size={chunk_size}")
 
-            fileset = {"dataset": input_files}
+            fileset = {"dataset": {"treename": "Events", "files": input_files}}
             chunksize = chunk_size
             maxchunks = None
             if args.max_events is not None and chunksize > 0:
@@ -282,46 +683,40 @@ def run_analyzer(args):
             coffea_analyzer = DarkBottomLineAnalyzerCoffeaProcessor(
                 config, regions_config_for_coffea, event_selection_output=args.event_selection_output,
                 event_selection_only=event_selection_only, output_format=output_format_to_use,
-                max_events=args.max_events, n_events_total=n_events_total
+                max_events=args.max_events, total_events=total_events,
+                input_total_events=input_total_events
             )
 
             if args.executor == "futures":
-                result = run_uproot_job(
-                    fileset,
-                    "Events",
-                    coffea_analyzer,
-                    executor=FuturesExecutor,
-                    executor_args={"workers": args.workers},
+                runner = Runner(
+                    executor=FuturesExecutor(workers=args.workers),
                     chunksize=chunksize,
                     maxchunks=maxchunks,
+                    schema=BaseSchema,
                 )
+                result = runner(fileset, coffea_analyzer)
             elif args.executor == "dask" and DASK_AVAILABLE:
                 client = None
                 try:
-                    # Start Dask client
                     client = Client(n_workers=args.workers, timeout=120)
-
-                    # Wait for workers to be ready (with timeout)
                     try:
                         client.wait_for_workers(args.workers, timeout=60)
                         logging.info(f"Dask client ready with {len(client.scheduler_info()['workers'])} workers")
                     except Exception as e:
                         logging.warning(f"Timeout waiting for workers, continuing anyway: {e}")
 
-                    result = run_uproot_job(
-                        fileset,
-                        "Events",
-                        coffea_analyzer,
-                        executor=DaskExecutor,
-                        executor_args={"client": client},
-                        chunksize=chunksize if chunksize != 50000 else 200000,  # Default 200k for dask
+                    dask_chunksize = chunksize if chunksize != 50000 else 200000
+                    runner = Runner(
+                        executor=DaskExecutor(client=client),
+                        chunksize=dask_chunksize,
                         maxchunks=maxchunks,
+                        schema=BaseSchema,
                     )
+                    result = runner(fileset, coffea_analyzer)
                 except Exception as e:
                     logging.error(f"Dask execution error: {e}")
                     raise
                 finally:
-                    # Ensure client is properly closed
                     if client is not None:
                         try:
                             client.close()
@@ -330,19 +725,20 @@ def run_analyzer(args):
             else:
                 raise ValueError(f"Executor {args.executor} not available or not supported")
 
-            # Ensure postprocess is called (run_uproot_job should call it, but be explicit)
+            # Runner calls postprocess automatically; call again only as safety net
             if hasattr(coffea_analyzer, 'postprocess'):
                 logging.info("Calling postprocess to finalize event_selection_output if needed...")
                 result = coffea_analyzer.postprocess(result)
 
-            # Save results (only if not in event_selection_only mode)
+            # Save results (only if not in event_selection_only mode and --output given)
             if not event_selection_only:
-                analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
-                analyzer.accumulator = result
-                outdir = os.path.dirname(args.output)
-                if outdir:
-                    os.makedirs(outdir, exist_ok=True)
-                analyzer.save_results(args.output, output_format=args.output_format)
+                if args.output:
+                    analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
+                    analyzer.accumulator = result
+                    outdir = os.path.dirname(args.output)
+                    if outdir:
+                        os.makedirs(outdir, exist_ok=True)
+                    analyzer.save_results(args.output, output_format=args.output_format)
             else:
                 logging.info("Event selection only mode: skipping region analysis and main output save")
 
@@ -363,7 +759,7 @@ def run_analyzer(args):
 
                     events = uproot.open(f"{file_path}:Events")
 
-                    if args.max_events:
+                    if args.max_events and args.max_events > 0:
                         events = events.arrays(entry_stop=args.max_events)
                     else:
                         events = events.arrays()
@@ -383,7 +779,7 @@ def run_analyzer(args):
                 logging.info(f"Loading events from {len(input_files)} files")
                 events = uproot.concatenate([f"{path}:Events" for path in input_files])
 
-                if args.max_events and len(events) > args.max_events:
+                if args.max_events and args.max_events > 0 and len(events) > args.max_events:
                     events = events[:args.max_events]
                     logging.info(f"Limited to {args.max_events} events")
 
@@ -399,57 +795,277 @@ def run_analyzer(args):
                         output_format_to_use = 'parquet'
 
                 if event_selection_only:
-                    # Event selection only mode: create analyzer just to use its process method
+                    # Event selection only mode
                     logging.info("Event selection only mode: performing event selection...")
-                    analyzer = DarkBottomLineAnalyzer(config, None)  # No regions config needed for event selection only
+                    analyzer = DarkBottomLineAnalyzer(config, None)
                     results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                               event_selection_only=True, output_format=output_format_to_use,
-                                              n_events_total=n_events_total)
+                                              total_events=total_events, input_total_events=input_total_events)
                     logging.info(f"Event selection completed, saved to {args.event_selection_output}")
+
+                elif train_dnn_config:
+                    # Train DNN on selected events → inject ml_score in-memory → optionally region analysis
+                    logging.info("DNN training on %d events...", len(events))
+                    scores, model_path = _train_dnn_on_events(events, train_dnn_config, dnn_outdir, args)
+                    events = ak.with_field(events, ak.Array(scores), "ml_score")
+                    logging.info("ml_score injected in-memory (no disk write)")
+
+                    if dnn_only:
+                        _plot_dnn_score_only(scores, str(Path(dnn_outdir) / "plots"))
+                        logging.info("--dnn-only set: stopping after DNN scoring. Training plots in %s/plots/", dnn_outdir)
+                    else:
+                        results = analyzer.process(events, event_selection_output=args.event_selection_output,
+                                                   event_selection_only=False, output_format=output_format_to_use,
+                                                   total_events=total_events)
+                        if args.output:
+                            outdir = os.path.dirname(args.output)
+                            if outdir:
+                                os.makedirs(outdir, exist_ok=True)
+                            analyzer.accumulator = results
+                            analyzer.save_results(args.output, output_format=args.output_format)
+
+                elif dnn_model:
+                    # Score with existing model → inject ml_score in-memory → optionally region analysis
+                    logging.info("Scoring events with DNN model: %s", dnn_model)
+                    events = _add_dnn_scores_to_events(events, dnn_model, dnn_config)
+                    scores = np.asarray(ak.to_numpy(events["ml_score"]), dtype="f4")
+
+                    if dnn_only:
+                        _plot_dnn_score_only(scores, str(Path(dnn_outdir) / "plots"))
+                        logging.info("--dnn-only set: stopping after DNN scoring. Plot in %s/plots/", dnn_outdir)
+                    else:
+                        results = analyzer.process(events, event_selection_output=args.event_selection_output,
+                                                  event_selection_only=False, output_format=output_format_to_use,
+                                                  total_events=total_events)
+                        if args.output:
+                            outdir = os.path.dirname(args.output)
+                            if outdir:
+                                os.makedirs(outdir, exist_ok=True)
+                            analyzer.accumulator = results
+                            analyzer.save_results(args.output, output_format=args.output_format)
+
                 else:
                     results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                               event_selection_only=False, output_format=output_format_to_use,
-                                              n_events_total=n_events_total)
-                    outdir = os.path.dirname(args.output)
-                    if outdir:
-                        os.makedirs(outdir, exist_ok=True)
-                    analyzer.accumulator = results
-                    analyzer.save_results(args.output, output_format=args.output_format)
+                                              total_events=total_events, input_total_events=input_total_events)
+                    if args.output:
+                        outdir = os.path.dirname(args.output)
+                        if outdir:
+                            os.makedirs(outdir, exist_ok=True)
+                        analyzer.accumulator = results
+                        analyzer.save_results(args.output, output_format=args.output_format)
 
     except Exception as e:
         logging.error("Error in multi-region analysis: %s", e, exc_info=True)
         raise
 
     logging.info("Multi-region analysis completed!")
+    _trigger_plots(args)
+
+
+def make_trees(args):
+    """Convert per-sample event-selection ROOT files → ppbbchichi-trees.root."""
+    from dnn.make_trees import convert_files
+
+    input_files = _get_input_files(args.input)
+    summary = convert_files(
+        input_files=input_files,
+        output_path=args.output,
+        signal_patterns=(args.signal_pattern or None),
+        signal_prefix=args.signal_prefix,
+        label_csv=args.label_csv,
+        weight_branch=args.weight_branch,
+        region_name=args.region,
+        max_events_per_file=args.max_events,
+        verbose=True,
+    )
+    n_sig = sum(1 for v in summary.values() if v["signal"])
+    n_bkg = sum(1 for v in summary.values() if not v["signal"] and not v["isdata"])
+    n_data = sum(1 for v in summary.values() if v["isdata"])
+    logging.info(
+        "make-trees done: %d samples (%d signal, %d background, %d data) → %s",
+        len(summary), n_sig, n_bkg, n_data, args.output,
+    )
+
+
+def _load_training_data_from_eventsel(
+    input_files: list,
+    region: str,
+    signal_patterns,
+    signal_prefix,
+    label_csv,
+    weight_branch: str,
+    max_events_per_file,
+) -> tuple:
+    """In-memory conversion of flat Events ROOT files to labelled numpy arrays.
+
+    Returns (X_df, y, w, feature_sources) — same format train_from_root expects
+    after the data-loading phase, bypassing the intermediate ppbbchichi-trees.root.
+    """
+    import pandas as pd
+    from dnn.make_trees import convert_files
+    import tempfile, os
+
+    # Write to a temp file then read back via train_from_root's loader,
+    # OR build arrays directly here without touching disk.
+    # We build directly — no temp file.
+    import csv as _csv
+    import re as _re
+    from dnn.make_trees import _sample_name, _is_data, _is_signal_heuristic
+    from dnn.feature_engineering import build_feature_frame_from_tree, REQUESTED_FEATURES_25
+    from dnn.common import sanitize_feature_frame
+
+    sig_patterns = tuple(signal_patterns) if signal_patterns else ()
+
+    label_map: dict = {}
+    if label_csv:
+        with open(label_csv, "r", newline="") as fp:
+            reader = _csv.DictReader(fp)
+            for row in reader:
+                label_map[str(row["path"]).strip()] = int(row["label"])
+
+    X_parts, y_parts, w_parts = [], [], []
+    feature_sources: dict = {}
+
+    for fpath in input_files:
+        sample = _sample_name(fpath)
+
+        if label_map:
+            key = fpath if fpath in label_map else os.path.basename(fpath)
+            if key not in label_map:
+                raise KeyError(f"'{fpath}' not in label-csv")
+            sig_flag = bool(label_map[key] == 1)
+            data_flag = False
+        else:
+            data_flag = _is_data(fpath)
+            sig_flag = False if data_flag else _is_signal_heuristic(fpath, sig_patterns, signal_prefix)
+
+        if data_flag:
+            logging.info("Skipping data file for DNN training: %s", fpath)
+            continue
+
+        with uproot.open(fpath) as in_f:
+            if "Events" not in in_f:
+                raise KeyError(f"No 'Events' tree in {fpath}")
+            tree = in_f["Events"]
+            df, src, _ = build_feature_frame_from_tree(
+                tree, list(REQUESTED_FEATURES_25),
+                max_events=max_events_per_file,
+            )
+            df = sanitize_feature_frame(df)
+            n = len(df)
+
+            # weight
+            avail = set(tree.keys())
+            if weight_branch in avail:
+                w_arr = tree[weight_branch].array(entry_stop=n, library="np").astype("f8")
+                w_arr = np.where(np.isfinite(w_arr), np.maximum(w_arr, 0.0), 0.0)
+            else:
+                w_arr = np.ones(n, dtype="f8")
+
+            n = min(n, len(w_arr))
+
+        X_parts.append(df.iloc[:n])
+        y_parts.append(np.full(n, int(sig_flag), dtype="i4"))
+        w_parts.append(w_arr[:n])
+        for feat in df.columns:
+            if feat not in feature_sources:
+                feature_sources[feat] = src.get(feat, "unknown")
+
+        logging.info("Loaded %s: n=%d signal=%d", sample, n, int(sig_flag))
+
+    if not X_parts:
+        raise ValueError("No training events loaded — check input files and signal/background flags.")
+
+    import pandas as pd
+    X = pd.concat(X_parts, axis=0, ignore_index=True)
+    y = np.concatenate(y_parts)
+    w = np.concatenate(w_parts)
+    return X, y, w, feature_sources
 
 
 def train_dnn(args):
-    """Train DNN model."""
-    logging.info("Training DNN model...")
-
-    # Initialize trainer
+    """Train DNN from event-selection ROOT files (no intermediate file needed)."""
     trainer = DNNTrainer(args.config)
 
-    # Load data
-    signal_files = _get_input_files(args.signal)
-    background_files = _get_input_files(args.background)
+    input_files = _get_input_files(args.input)
+    logging.info("Training DNN from %d input file(s)", len(input_files))
 
-    features, labels, masses = trainer.load_data(signal_files, background_files)
+    # Load feature matrix directly from flat Events trees — no ppbbchichi-trees.root written
+    X, y, w, feature_sources = _load_training_data_from_eventsel(
+        input_files=input_files,
+        region=getattr(args, "region", "preselection"),
+        signal_patterns=(args.signal_pattern or None),
+        signal_prefix=args.signal_prefix,
+        label_csv=args.label_csv,
+        weight_branch=getattr(args, "weight_branch", "full_event_weight"),
+        max_events_per_file=args.max_events_per_sample,
+    )
 
-    # Preprocess data
-    train_features, train_labels, train_masses, val_features, val_labels, val_masses = trainer.preprocess(features, labels, masses)
+    metrics = trainer.train_from_arrays(
+        X=X,
+        y=y,
+        w=w,
+        feature_sources=feature_sources,
+        outdir=args.outdir,
+        plot_dir=args.plot_dir,
+    )
 
-    # Train model
-    results = trainer.train(train_features, train_labels, train_masses, val_features, val_labels, val_masses)
+    logging.info(
+        "DNN training complete — AUC(val)=%.4f  AUC(test)=%.4f",
+        metrics.get("auc_val", float("nan")),
+        metrics.get("auc_test", float("nan")),
+    )
 
-    # Save model
-    trainer.save_model(args.output)
 
-    # Plot training history
-    if args.plot_history:
-        trainer.plot_training_history(f"{args.output}_history.png")
+def apply_dnn(args):
+    """Score events in event-selection ROOT files with a trained DNN model.
 
-    logging.info("DNN training completed!")
+    Reads each flat Events ROOT file, applies the trained model, and writes
+    a new branch (default: ml_score) back to the file — or to a new output
+    ROOT file when --output-dir is given.
+    """
+    import pandas as pd
+    from dnn.feature_engineering import build_feature_frame_from_tree, REQUESTED_FEATURES_25
+    from dnn.common import sanitize_feature_frame
+
+    inference = DNNInference(args.model, config_path=args.config)
+    model_info = inference.get_model_info()
+    features = model_info.get("features") or list(REQUESTED_FEATURES_25)
+    score_branch = args.score_branch
+
+    input_files = _get_input_files(args.input)
+    output_dir = Path(args.output_dir) if args.output_dir else None
+    if output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+    for fpath in input_files:
+        with uproot.open(fpath) as in_f:
+            if "Events" not in in_f:
+                logging.warning("No 'Events' tree in %s, skipping", fpath)
+                continue
+            tree = in_f["Events"]
+            df, _, _ = build_feature_frame_from_tree(tree, features)
+            df = sanitize_feature_frame(df)
+            n = len(df)
+            X = df.to_numpy(dtype="f8")
+            masses = np.zeros(n, dtype="f8")
+            scores = inference.predict(X, masses).ravel()
+
+            # Collect all existing branches
+            arrays = tree.arrays(library="np")
+
+        arrays[score_branch] = scores.astype("f4")
+
+        if output_dir:
+            out_path = output_dir / Path(fpath).name
+        else:
+            out_path = fpath  # overwrite in-place
+
+        with uproot.recreate(str(out_path)) as out_f:
+            out_f["Events"] = arrays
+
+        logging.info("Scored %s: n=%d → %s (branch: %s)", Path(fpath).name, n, out_path, score_branch)
 
 
 def make_plots(args):
@@ -473,13 +1089,31 @@ def make_plots(args):
             plot_config = load_config(str(default_plot_config_path))
             logging.info(f"Loaded default plotting configuration from {default_plot_config_path}")
 
+    # Determine luminosity: prefer --config arg, fall back to metadata stored in pkl
+    luminosity = None
+    if getattr(args, "config", None):
+        year_cfg = load_config(args.config)
+        luminosity = float(year_cfg.get("lumi", 1.0))
+        logging.info(f"Luminosity from --config: {luminosity} fb-1")
+    if luminosity is None:
+        luminosity = float(results.get("metadata", {}).get("luminosity", 1.0))
+        if luminosity != 1.0:
+            logging.info(f"Luminosity from pkl metadata: {luminosity} fb-1")
+
+    # Load cross sections if provided
+    cross_sections = {}
+    if getattr(args, "xsection_json", None):
+        import json
+        with open(args.xsection_json) as _f:
+            cross_sections = json.load(_f)
+        logging.info(f"Loaded {len(cross_sections)} cross sections from {args.xsection_json}")
+
     # Initialize plot manager with config
     plot_manager = PlotManager(config=plot_config)
 
     # Generate version string if not provided (format: YYYYMMDD_HHMM)
     if not args.version:
-        from datetime import datetime
-        version = datetime.now().strftime("%Y%m%d_%H%M")
+        version = _default_version()
     else:
         version = args.version
 
@@ -489,7 +1123,8 @@ def make_plots(args):
 
     # Create plots with all formats automatically (PNG, PDF, ROOT, TXT)
     plot_files = plot_manager.create_all_plots(
-        results, args.save_dir, args.show_data, args.regions, version, formats=None
+        results, args.save_dir, args.show_data, args.regions, version,
+        formats=None, luminosity=luminosity, cross_sections=cross_sections,
     )
 
     logging.info(f"Plots saved to {args.save_dir}")
@@ -565,8 +1200,7 @@ def make_single_plots(args):
 
     # Generate version string if not provided (format: YYYYMMDD_HHMM)
     if not args.version:
-        from datetime import datetime
-        version = datetime.now().strftime("%Y%m%d_%H%M")
+        version = _default_version()
     else:
         version = args.version
 
@@ -603,8 +1237,7 @@ def make_stacked_plots(args):
 
     # Generate version string if not provided (format: YYYYMMDD_HHMM)
     if not args.version:
-        from datetime import datetime
-        version = datetime.now().strftime("%Y%m%d_%H%M")
+        version = _default_version()
     else:
         version = args.version
 
@@ -633,6 +1266,94 @@ def make_stacked_plots(args):
     )
 
     logging.info(f"Stacked plot saved to {out}")
+
+
+def make_event_plots(args):
+    """Create stacked event-selection or region plots."""
+    import json
+
+    config = load_config(args.config)
+    luminosity = float(config.get("lumi", config.get("luminosity", 1.0)))
+    year = str(config.get("year", ""))
+
+    plot_config = None
+    if args.plot_config:
+        plot_config = load_config(args.plot_config)
+    else:
+        default_cfg = Path(__file__).parent.parent / "configs" / "plotting.yaml"
+        if default_cfg.exists():
+            plot_config = load_config(str(default_cfg))
+
+    plot_manager = PlotManager(config=plot_config)
+
+    # Process groups: CLI JSON overrides plotting.yaml process_groups entirely
+    if args.process_groups:
+        with open(args.process_groups) as f:
+            raw_groups = json.load(f)
+        # Re-parse through PlotManager logic by injecting into a fresh config
+        from .plotting import PlotManager as _PM
+        _tmp = _PM(config={"process_groups": raw_groups})
+        process_groups = _tmp.process_groups
+        signal_groups  = _tmp.signal_groups
+        data_groups    = _tmp.data_groups
+    else:
+        process_groups = plot_manager.process_groups
+        signal_groups  = plot_manager.signal_groups
+        data_groups    = plot_manager.data_groups
+
+    if not process_groups:
+        raise SystemExit(
+            "No background process_groups defined. "
+            "Add process_groups to plotting.yaml or pass --process-groups JSON."
+        )
+
+    cross_sections: dict = {}
+    if args.xsection_json:
+        with open(args.xsection_json) as f:
+            _raw = json.load(f)
+        # Flatten nested format {category: [{full_dataset, xsection, year}]}
+        # into {full_dataset_stem: xsec_pb} for direct stem lookup.
+        # Also keep flat {stem: xsec} format if already flat.
+        year_str = str(config.get("year", ""))
+        for _cat, _entries in _raw.items():
+            if isinstance(_entries, list):
+                for _e in _entries:
+                    if not isinstance(_e, dict):
+                        continue
+                    _ds = _e.get("full_dataset") or _e.get("dataset")
+                    _xsec = _e.get("xsection")
+                    _yr = str(_e.get("year", ""))
+                    if _ds and _xsec is not None:
+                        # prefer matching year; always overwrite so last match wins
+                        if not year_str or _yr == year_str or _ds not in cross_sections:
+                            cross_sections[_ds] = float(_xsec)
+            elif isinstance(_entries, (int, float)):
+                # already flat: {stem: xsec}
+                cross_sections[_cat] = float(_entries)
+
+    version = args.version
+    if not version:
+        version = _default_version()
+
+    out_files = plot_manager.create_stacked_plots(
+        mode=args.mode,
+        input_folder=args.input_folder,
+        process_groups=process_groups,
+        signal_groups=signal_groups,
+        data_groups=data_groups,
+        output_dir=args.output_dir,
+        luminosity=luminosity,
+        year=year,
+        version=version,
+        cross_sections=cross_sections if cross_sections else None,
+        variables=args.variables or None,
+        regions=args.regions or None,
+        save_root=args.save_root,
+        regions_config=getattr(args, "regions_config", None),
+        weight_systematic=getattr(args, "weight_systematic", None),
+        show_data=getattr(args, "show_data", False),
+    )
+    logging.info(f"analyze-regions: {len(out_files)} plot(s) written to {args.output_dir}")
 
 
 def make_datacard(args):
@@ -754,36 +1475,199 @@ Examples:
     run_parser.set_defaults(func=run_analysis)
 
     # Analyze command
-    analyze_parser = subparsers.add_parser("analyze", help="Run multi-region analysis")
+    analyze_parser = subparsers.add_parser(
+        "analyze",
+        help="Run analysis pipeline (event-selection, region analysis, or both)",
+    )
     analyze_parser.add_argument("--config", required=True, help="Base configuration file")
-    analyze_parser.add_argument("--regions-config", required=False, help="Regions configuration file (not required if --event-selection-only is used)")
-    analyze_parser.add_argument("--input", nargs="+", required=True, help="Input file(s), can be a single .txt file listing paths")
-    analyze_parser.add_argument("--output", required=False, help="Output file (not required if --event-selection-only is used)")
-    analyze_parser.add_argument("--event-selection-output", help="Path to save events that pass event-level selection (optional)")
-    analyze_parser.add_argument("--event-selection-only", type=str.lower, default="false", 
-                               choices=["true", "false"], 
-                               help="If true, stop after event selection and don't perform region analysis (default: false)")
-    analyze_parser.add_argument("--output-format", default="pkl", 
+    analyze_parser.add_argument("--regions-config", required=False,
+                               help="Regions config YAML (required for full/region-analysis modes)")
+    analyze_parser.add_argument("--input", nargs="+", required=True,
+                               help="Input file(s): NanoAOD ROOT, EVENTSELECTION.root, folder, or .txt list")
+    analyze_parser.add_argument(
+        "--mode", default="full",
+        choices=["full", "event-selection", "region-analysis"],
+        help=(
+            "Pipeline mode: "
+            "'full' = NanoAOD → event-selection + region analysis (default); "
+            "'event-selection' = NanoAOD → EVENTSELECTION.root (add --make-event-selection-plots to plot instead); "
+            "'region-analysis' = EVENTSELECTION.root → region cuts + plots"
+        ),
+    )
+    analyze_parser.add_argument("--output", required=False,
+                               help="Output PKL file (full/region-analysis modes)")
+    analyze_parser.add_argument("--event-selection-output",
+                               help="Path to save EVENTSELECTION.root (full and event-selection modes)")
+    analyze_parser.add_argument("--output-format", default="pkl",
                                choices=["pkl", "root", "parquet"],
                                help="Output file format (default: pkl)")
     analyze_parser.add_argument("--executor", choices=["iterative", "futures", "dask"],
                                default="iterative", help="Execution backend")
     analyze_parser.add_argument("--workers", type=int, default=4, help="Number of workers")
     analyze_parser.add_argument("--chunk-size", type=str, default=None,
-                               help="Number of events per chunk for futures/dask executors. Use 'auto' for automatic optimization, or specify an integer (default: 50000 for futures, 200000 for dask). Only used with futures/dask executors.")
-    analyze_parser.add_argument("--max-events", type=int, help="Maximum events to process across all chunks")
+                               help="Events per chunk for futures/dask (default: auto)")
+    analyze_parser.add_argument("--max-events", type=int,
+                               help="Maximum events to process across all chunks")
     analyze_parser.add_argument("--data", action="store_true",
-                               help="Input is collision data: apply golden JSON lumi mask and skip MC-only weights")
+                               help="Collision data: apply golden JSON lumi mask, skip MC weights")
+    analyze_parser.add_argument("--xsection-json", default=None, metavar="JSON",
+                               help="JSON mapping filename stem → cross-section in pb (region-analysis mode)")
+    # Plotting flags
+    analyze_parser.add_argument("--make-region-plots", action="store_true", default=False,
+                               help="Produce stacked region plots (pdf/png/txt/root) — region-analysis and full modes")
+    analyze_parser.add_argument("--make-event-selection-plots", action="store_true", default=False,
+                               help="Produce stacked event-selection plots (before region cuts)")
+    analyze_parser.add_argument("--plot-config", default=None,
+                               help="Plotting YAML (default: configs/plotting.yaml)")
+    analyze_parser.add_argument("--output-dir", default="outputs",
+                               help="Output directory for plots (default: outputs)")
+    analyze_parser.add_argument("--show-data", action="store_true", default=False,
+                               help="Unblind SR: show real data in SR plots (default: bkg-sum as pseudo-data)")
+    analyze_parser.add_argument("--save-root", action="store_true",
+                               help="Also save ROOT TH1 files for plots")
+    analyze_parser.add_argument("--plot-variables", nargs="+", default=None, metavar="VAR",
+                               help="Variables to plot (default: all)")
+    analyze_parser.add_argument("--plot-regions", nargs="+", default=None, metavar="REGION",
+                               help="Regions to plot (default: all)")
+    analyze_parser.add_argument("--version", default=None,
+                               help="Version tag for plot output subdirectory (default: timestamp)")
+    analyze_parser.add_argument("--weight-systematic", default=None, metavar="BRANCH",
+                               help="Weight branch override for plots (e.g. weight_pileupUP)")
+    # DNN integration flags
+    analyze_parser.add_argument(
+        "--dnn-model", default=None,
+        help="Path to trained DNN checkpoint (.pt). Scores events before region analysis.",
+    )
+    analyze_parser.add_argument(
+        "--dnn-config", default=None,
+        help="DNN config YAML (e.g. configs/dnn.yaml).",
+    )
+    analyze_parser.add_argument(
+        "--train-dnn", default=None,
+        help="DNN config YAML path: train DNN on event-selection output before region analysis.",
+    )
+    analyze_parser.add_argument(
+        "--dnn-outdir", default="outputs_dnn",
+        help="Output directory for DNN model + metrics (default: outputs_dnn)",
+    )
+    analyze_parser.add_argument(
+        "--dnn-only", action="store_true",
+        help="Stop after DNN scoring — produce score plot, skip region analysis.",
+    )
+    analyze_parser.add_argument(
+        "--signal-pattern", action="append", default=None, dest="signal_pattern",
+        help="Regex to identify signal files for DNN training (repeatable)",
+    )
+    analyze_parser.add_argument("--signal-prefix", default=None,
+                               help="Filename prefix marking signal samples for DNN training")
+    analyze_parser.add_argument("--label-csv", default=None,
+                               help="CSV with columns path,label for DNN training label assignment")
     analyze_parser.set_defaults(func=run_analyzer)
 
+    # Make trees command
+    # Converts per-sample flat Events ROOT files → ppbbchichi-trees.root (sample/region structure)
+    # Run this between `analyze --event-selection-only` and `train-dnn`
+    make_trees_parser = subparsers.add_parser(
+        "make-trees",
+        help="Convert event-selection ROOT outputs to ppbbchichi-trees.root for DNN training",
+    )
+    make_trees_parser.add_argument(
+        "--input", nargs="+", required=True,
+        help="Event-selection ROOT files (one per sample), or a .txt file listing paths",
+    )
+    make_trees_parser.add_argument(
+        "--output", required=True,
+        help="Output ppbbchichi-trees.root path",
+    )
+    make_trees_parser.add_argument(
+        "--region", default="preselection",
+        help="Region name used as TTree name inside each sample dir (default: preselection)",
+    )
+    make_trees_parser.add_argument(
+        "--signal-pattern", action="append", default=None, dest="signal_pattern",
+        help="Regex to identify signal files (repeatable). Default: keyword heuristic",
+    )
+    make_trees_parser.add_argument(
+        "--signal-prefix", default=None,
+        help="Filename prefix that marks signal, e.g. 'bbDM'",
+    )
+    make_trees_parser.add_argument(
+        "--label-csv", default=None,
+        help="CSV with columns path,label (1=signal, 0=background) — overrides pattern/prefix",
+    )
+    make_trees_parser.add_argument(
+        "--weight-branch", default="full_event_weight",
+        help="Branch name to use as event weight (default: full_event_weight)",
+    )
+    make_trees_parser.add_argument(
+        "--max-events", type=int, default=None,
+        help="Max events per input file (default: all)",
+    )
+    make_trees_parser.set_defaults(func=make_trees)
+
     # Train DNN command
-    train_dnn_parser = subparsers.add_parser("train-dnn", help="Train DNN model")
-    train_dnn_parser.add_argument("--config", required=True, help="DNN configuration file")
-    train_dnn_parser.add_argument("--signal", nargs="+", required=True, help="Signal files, can be a single .txt file listing paths")
-    train_dnn_parser.add_argument("--background", nargs="+", required=True, help="Background files, can be a single .txt file listing paths")
-    train_dnn_parser.add_argument("--output", required=True, help="Output model file")
-    train_dnn_parser.add_argument("--plot-history", action="store_true", help="Plot training history")
+    # Input: flat per-sample ROOT files from `analyze --event-selection-only`
+    # (no intermediate ppbbchichi-trees.root needed)
+    train_dnn_parser = subparsers.add_parser(
+        "train-dnn",
+        help="Train DNN classifier from event-selection ROOT output files",
+    )
+    train_dnn_parser.add_argument("--config", required=True, help="DNN configuration YAML (configs/dnn.yaml)")
+    train_dnn_parser.add_argument(
+        "--input", nargs="+", required=True,
+        help="Event-selection ROOT files (one per sample), or a .txt file listing paths",
+    )
+    train_dnn_parser.add_argument("--region", default="preselection", help="Region label (default: preselection)")
+    train_dnn_parser.add_argument("--outdir", default="outputs_dnn", help="Output directory for model + metrics (default: outputs_dnn)")
+    train_dnn_parser.add_argument("--plot-dir", default="outputs_dnn/plots", help="Output directory for plots (default: outputs_dnn/plots)")
+    train_dnn_parser.add_argument(
+        "--signal-pattern", action="append", default=None, dest="signal_pattern",
+        help="Regex to identify signal files (repeatable). Default: keyword heuristic",
+    )
+    train_dnn_parser.add_argument(
+        "--signal-prefix", default=None,
+        help="Filename prefix that marks signal, e.g. 'bbDM'",
+    )
+    train_dnn_parser.add_argument(
+        "--label-csv", default=None,
+        help="CSV with columns path,label (1=signal, 0=background) — overrides pattern/prefix",
+    )
+    train_dnn_parser.add_argument(
+        "--weight-branch", default="full_event_weight",
+        help="Branch name to use as event weight (default: full_event_weight)",
+    )
+    train_dnn_parser.add_argument(
+        "--max-events-per-sample", type=int, default=200000,
+        help="Cap events loaded per sample (default: 200000)",
+    )
     train_dnn_parser.set_defaults(func=train_dnn)
+
+    # Apply DNN command — score events with a trained model, write ml_score branch
+    apply_dnn_parser = subparsers.add_parser(
+        "apply-dnn",
+        help="Apply trained DNN to event-selection ROOT files and write per-event score",
+    )
+    apply_dnn_parser.add_argument(
+        "--input", nargs="+", required=True,
+        help="Event-selection ROOT files (one per sample), or a .txt file listing paths",
+    )
+    apply_dnn_parser.add_argument(
+        "--model", required=True,
+        help="Path to trained model checkpoint (.pt file from train-dnn)",
+    )
+    apply_dnn_parser.add_argument(
+        "--config", default=None,
+        help="DNN config YAML (optional — used to resolve feature list if not in checkpoint)",
+    )
+    apply_dnn_parser.add_argument(
+        "--output-dir", default=None,
+        help="Write scored files here (default: overwrite input files in-place)",
+    )
+    apply_dnn_parser.add_argument(
+        "--score-branch", default="ml_score",
+        help="Name of the new score branch (default: ml_score)",
+    )
+    apply_dnn_parser.set_defaults(func=apply_dnn)
 
     # Make plots command
     plots_parser = subparsers.add_parser("make-plots", help="Create data/MC plots")
@@ -795,6 +1679,8 @@ Examples:
     plots_parser.add_argument("--regions", nargs="+", help="List of regions to plot")
     plots_parser.add_argument("--version", help="Version string (default: auto-generate timestamp)")
     plots_parser.add_argument("--plot-config", help="Path to plotting configuration YAML file (default: configs/plotting.yaml)")
+    plots_parser.add_argument("--config", help="Year config YAML (e.g. configs/2024.yaml) — provides luminosity for histogram normalisation")
+    plots_parser.add_argument("--xsection-json", help="JSON file mapping process names to cross sections in pb — applies lumi×xsec/wte normalisation to region histograms")
     # All formats (PNG, PDF, ROOT, TXT) are generated automatically in batch mode
     plots_parser.set_defaults(func=make_plots)
 

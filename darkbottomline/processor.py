@@ -20,9 +20,9 @@ except ImportError:
 
 from .objects import build_objects
 from .selections import apply_selection
-from .objects import calculate_recoil
 from .corrections import CorrectionManager
 from .histograms import HistogramManager
+from .variables import compute_event_variables
 
 
 def _compute_weight_statistics(weights: np.ndarray) -> Dict[str, float]:
@@ -128,7 +128,7 @@ class DarkBottomLineProcessor:
             "event_weights": {},
         }
 
-        logging.info(f"Initialized DarkBottomLine processor for year {config.get('year', 'unknown')} (is_data={self.is_data})")
+        logging.debug(f"Initialized DarkBottomLine processor for year {config.get('year', 'unknown')} (is_data={self.is_data})")
 
     def apply_lumi_mask(self, events: ak.Array) -> ak.Array:
         """
@@ -163,9 +163,9 @@ class DarkBottomLineProcessor:
             events = self.apply_lumi_mask(events)
             print(f"  Events after golden JSON filter: {len(events)}")
 
-        # h_total_weight: sum of sign(genWeight) over ALL events before any selection
-        h_total_weight = self.correction_manager.get_h_total_weight(events)
-        print(f"  h_total_weight (normalization): {h_total_weight}")
+        # weighted_total_events: sum of sign(genWeight) over ALL events before any selection
+        weighted_total_events = self.correction_manager.get_weighted_total_events(events)
+        print(f"  weighted_total_events (normalization): {weighted_total_events}")
 
         # Build physics objects
         print("Step 1: Building physics objects...")
@@ -193,10 +193,10 @@ class DarkBottomLineProcessor:
             try:
                 logging.info(f"Saving event-level selection to {event_selection_output} ({len(selected_events)} events)")
                 self._save_event_selection(event_selection_output, selected_events, selected_objects,
-                                           max_events=self.config.get("max_events"),
-                                           n_events_total=len(events),
-                                           h_total_weight=h_total_weight,
-                                           cutflow=cutflow)
+                                            max_events=self.config.get("max_events"),
+                                            total_events=len(events),
+                                            weighted_total_events=weighted_total_events,
+                                            cutflow=cutflow)
                 # Verify file was created
                 import os
                 if os.path.exists(event_selection_output):
@@ -216,7 +216,7 @@ class DarkBottomLineProcessor:
             weight_results = self.correction_manager.compute_event_weights(
                 selected_events, selected_objects
             )
-            event_weights = np.asarray(ak.to_numpy(weight_results["total_weight"]))
+            event_weights = np.asarray(ak.to_numpy(weight_results["full_event_weight"]))
             print(f"  Weights calculated successfully: {len(event_weights)} weights")
 
             event_weights_save = _build_event_weights_for_save(weight_results)
@@ -258,7 +258,7 @@ class DarkBottomLineProcessor:
         self.accumulator["metadata"] = {
             "n_events_processed": len(events),
             "n_events_selected": len(selected_events),
-            "h_total_weight": h_total_weight,
+            "weighted_total_events": weighted_total_events,
             "processing_time": processing_time,
             "weight_statistics": _compute_weight_statistics(event_weights),
         }
@@ -315,8 +315,8 @@ class DarkBottomLineProcessor:
         return skimmed
 
     def _save_event_selection(self, output_file: str, events: ak.Array, objects: Dict[str, Any],
-                              max_events: Optional[int] = None, n_events_total: Optional[int] = None,
-                              h_total_weight: Optional[float] = None,
+                              max_events: Optional[int] = None, total_events: Optional[int] = None,
+                              weighted_total_events: Optional[float] = None,
                               event_weights: Optional[Dict[str, Any]] = None,
                               cutflow: Optional[Dict[str, int]] = None,
                               output_format: str = "pkl"):
@@ -324,13 +324,13 @@ class DarkBottomLineProcessor:
         Save selected events and corresponding objects to a file.
 
         Currently supports pickle, ROOT formats.
-        
+
         Args:
             output_file: Path to save the output file
             events: Selected events (after event-level selection)
             objects: Selected objects (after event-level selection)
             max_events: Maximum events parameter from config (optional)
-            n_events_total: Total number of events BEFORE selection (optional)
+            total_events: Total number of events BEFORE selection (optional)
             event_weights: Event weights dictionary (optional, includes all corrections)
             cutflow: Event-selection cutflow dictionary (optional)
             output_format: Output format ("pkl", "root"). Default: "pkl" (saves both pkl and root)
@@ -348,50 +348,42 @@ class DarkBottomLineProcessor:
 
         no_events = events is None or len(events) == 0
 
+        # Compute all output variables once — used by every format
+        branches = {}
+        if not no_events:
+            branches = compute_event_variables(events, objects, self.config, event_weights)
+
         # Auto-detect strict output intent from file extension.
         # If user explicitly provides a .root target, enforce root-only output.
         output_file_lower = output_file.lower()
         if output_file_lower.endswith('.root'):
             output_format = 'root'
+        elif output_file_lower.endswith('.parquet') and output_format not in ('root',):
+            output_format = 'parquet'
         elif output_file_lower.endswith('.pkl') and output_format not in ('root',):
             output_format = 'pkl'
 
         # Determine actual output files based on format
-        # For backward compatibility, pkl format saves both pickle and ROOT files
-        save_pkl = output_format in ("pkl", "both")
-        save_root = output_format in ("root", "pkl", "both")  # pkl format also saves ROOT
-        
-        # Explicitly adjust extension if format is specified
-        if output_format == "root":
-            # Force root extension
-            if not output_file.endswith('.root'):
-                output_file_pkl = os.path.splitext(output_file)[0] + '.root'
-                output_file_root = output_file_pkl
-            else:
-                output_file_pkl = output_file
-                output_file_root = output_file
-            save_pkl = False  # Don't save pickle when root format is specified
-        elif output_format == "pkl":
-            if not output_file.endswith('.pkl'):
-                output_file_pkl = os.path.splitext(output_file)[0] + '.pkl'
-            else:
-                output_file_pkl = output_file
-            output_file_root = os.path.splitext(output_file)[0] + '.root'
-        else:
-            output_file_pkl = output_file + ".pkl" if not output_file.endswith('.pkl') else output_file
-            output_file_root = os.path.splitext(output_file)[0] + '.root'
+        base = os.path.splitext(output_file)[0]
+        save_root    = output_format in ("root", "pkl", "both")
+        save_pkl     = output_format in ("pkl",  "both")
+        save_parquet = output_format == "parquet"
+
+        output_file_root    = base + '.root'
+        output_file_pkl     = base + '.pkl'
+        output_file_parquet = base + '.parquet'
 
         # Save pickle file if specified
         if save_pkl:
             # Build serializable dict — always include metadata even when no events passed selection.
             serializable = {}
-            if n_events_total is not None:
-                serializable["n_events"] = n_events_total
+            if total_events is not None:
+                serializable["total_events"] = total_events
             if max_events is not None:
                 serializable["total_event"] = max_events
-            serializable["n_selected_events"] = 0 if no_events else len(events)
-            if h_total_weight is not None:
-                serializable["h_total_weight"] = h_total_weight
+            serializable["selected_events"] = 0 if no_events else len(events)
+            if weighted_total_events is not None:
+                serializable["weighted_total_events"] = weighted_total_events
 
             if not no_events:
                 try:
@@ -461,153 +453,109 @@ class DarkBottomLineProcessor:
 
                 logging.info(f"Creating ROOT file: {output_file_root}")
 
-                # Prepare flat scalar branches — only when there are events to write
+                from .variables import get_empty_branch_types
+
+                # Compute all output branches via variables module
                 branches = {}
                 if not no_events:
-                  # Standard event identifiers
-                  try:
-                      branches['event'] = ak.to_numpy(events['event'])
-                  except Exception:
-                      branches['event'] = np.asarray(ak.to_list(events.get('event', [])))
-                  try:
-                      branches['run'] = ak.to_numpy(events['run'])
-                  except Exception:
-                      branches['run'] = np.asarray(ak.to_list(events.get('run', [])))
-                  try:
-                      branches['luminosityBlock'] = ak.to_numpy(events['luminosityBlock'])
-                  except Exception:
-                      branches['luminosityBlock'] = np.asarray(ak.to_list(events.get('luminosityBlock', [])))
-
-                  # MET scalars
-                  def _get_met_field_array(field_name_v15, field_name_v12):
-                      if field_name_v15 in events.fields:
-                          return ak.to_numpy(events[field_name_v15])
-                      elif field_name_v12 in events.fields:
-                          return ak.to_numpy(events[field_name_v12])
-                      else:
-                          return np.zeros(len(events), dtype=float)
-
-                  branches['PFMET_pt'] = _get_met_field_array('PFMET_pt', 'MET_pt')
-                  branches['PFMET_phi'] = _get_met_field_array('PFMET_phi', 'MET_phi')
-                  branches['PFMET_significance'] = _get_met_field_array('PFMET_significance', 'MET_significance')
-
-                  # Recoil — use precomputed value from objects (loose leptons + MET)
-                  try:
-                      branches['recoil'] = ak.to_numpy(ak.fill_none(objects['recoil'], 0.0))
-                  except Exception:
-                      branches['recoil'] = np.zeros(len(events), dtype=float)
-
-                  # cos(theta*) — helicity angle of leading dijet; -2 sentinel when <2 jets
-                  try:
-                      branches['costheta_star'] = ak.to_numpy(ak.fill_none(objects['costheta_star'], -2.0))
-                  except Exception:
-                      branches['costheta_star'] = np.full(len(events), -2.0, dtype=float)
-
-                  # Object multiplicities
-                  def safe_num(obj_key):
-                      arr = objects.get(obj_key, ak.Array([]))
-                      try:
-                          return ak.to_numpy(ak.num(arr, axis=1))
-                      except Exception:
-                          return np.asarray([0] * len(branches.get('event', [])))
-
-                  branches['n_muons'] = safe_num('muons')
-                  branches['n_electrons'] = safe_num('electrons')
-                  branches['n_taus'] = safe_num('taus')
-                  branches['n_jets'] = safe_num('jets')
-                  branches['n_bjets'] = safe_num('bjets')
-
-                  # Add key object kinematics (jagged per-event branches where available)
-                  def _add_object_branch(obj_key, field, branch_name):
-                      obj_arr = objects.get(obj_key)
-                      if obj_arr is None:
-                          return
-                      try:
-                          if hasattr(obj_arr, 'fields') and field in obj_arr.fields:
-                              branches[branch_name] = obj_arr[field]
-                      except Exception:
-                          pass
-
-                  object_field_map = {
-                      'muons': {
-                          'pt': 'muon_pt',
-                          'eta': 'muon_eta',
-                          'phi': 'muon_phi',
-                      },
-                      'electrons': {
-                          'pt': 'electron_pt',
-                          'eta': 'electron_eta',
-                          'phi': 'electron_phi',
-                      },
-                      'jets': {
-                          'pt': 'jet_pt',
-                          'eta': 'jet_eta',
-                          'phi': 'jet_phi',
-                          'btagDeepFlavB': 'jet_btag',
-                      },
-                      'bjets': {
-                          'pt': 'bjet_pt',
-                          'eta': 'bjet_eta',
-                          'phi': 'bjet_phi',
-                      },
-                      'taus': {
-                          'pt': 'tau_pt',
-                          'eta': 'tau_eta',
-                          'phi': 'tau_phi',
-                      },
-                      'fatjets': {
-                          'pt': 'fatjet_pt',
-                          'eta': 'fatjet_eta',
-                          'phi': 'fatjet_phi',
-                          'mass': 'fatjet_mass',
-                      },
-                  }
-
-                  for object_key, field_map in object_field_map.items():
-                      for src_field, dst_branch in field_map.items():
-                          _add_object_branch(object_key, src_field, dst_branch)
-
-                  # Add event weights if provided
-                  if event_weights:
-                      for name, val in event_weights.items():
-                          if isinstance(val, dict):
-                              for var, arr in val.items():
-                                  if isinstance(arr, np.ndarray):
-                                      branches[f'{name}_{var}'] = arr
-                          elif isinstance(val, np.ndarray):
-                              branches[name] = val
+                    branches = compute_event_variables(
+                        events, objects, self.config, event_weights
+                    )
 
                 # Write to ROOT
                 outdir = os.path.dirname(output_file_root)
                 if outdir:
                     os.makedirs(outdir, exist_ok=True)
 
-                n_selected = 0 if no_events else len(events)
+                _ew = event_weights.get("full_event_weight") if event_weights else None
+                selected_events = float(np.sum(_ew)) if _ew is not None and len(_ew) > 0 else float(0 if no_events else len(events))
                 with uproot.recreate(output_file_root) as f:
                     if not no_events and branches:
-                        f['Events'] = branches
+                        write_branches = {}
+                        for k, v in branches.items():
+                            if isinstance(v, list):
+                                # Materialised jagged (ak.to_list()) — convert back to
+                                # ak.Array with explicit float32 dtype so uproot writes
+                                # the correct basket dtype even when all sub-lists are empty.
+                                try:
+                                    arr = ak.Array(v)
+                                    if arr.ndim > 1:
+                                        write_branches[k] = ak.values_astype(arr, np.float32)
+                                    else:
+                                        a = np.asarray(arr)
+                                        write_branches[k] = a.astype(np.float32) if a.dtype.kind == 'f' else a
+                                except Exception:
+                                    write_branches[k] = v
+                            elif isinstance(v, ak.Array):
+                                write_branches[k] = v
+                            else:
+                                a = np.asarray(v)
+                                if a.dtype.kind == 'u':
+                                    a = a.astype(np.int64)
+                                elif a.dtype.kind not in ('i', 'f'):
+                                    a = a.astype(np.float64)
+                                write_branches[k] = a
+                        f["Events"] = write_branches
                     else:
-                        logging.info("No selected events — writing ROOT file with Metadata only (empty Events tree omitted)")
+                        # Always write an empty Events tree with the correct schema so
+                        # hadd can merge this file with chunks that have selected events.
+                        logging.info("No selected events — writing empty Events tree for hadd compatibility")
+                        f.mktree("Events", get_empty_branch_types(self.config))
 
-                    # Always write Metadata so downstream tools can read n_events / h_total_weight
-                    metadata_dict = {
-                        'n_selected_events': np.array([n_selected], dtype=np.int64),
-                    }
-                    if n_events_total is not None:
-                        metadata_dict['n_events'] = np.array([n_events_total], dtype=np.int64)
-                    if h_total_weight is not None:
-                        metadata_dict['h_total_weight'] = np.array([h_total_weight], dtype=np.float64)
-                    f['Metadata'] = metadata_dict
-                    logging.info(f"Added n_events={n_events_total}, n_selected_events={n_selected} to ROOT file metadata")
+                    # Flat 1-bin TH1 per scalar — hadd sums bin contents correctly
+                    edges_1bin = np.array([0.0, 1.0])
+                    f['total_events']             = (np.array([float(total_events) if total_events is not None else 0.0]), edges_1bin)
+                    f['selected_events'] = (np.array([selected_events]),                                     edges_1bin)
+                    f['weighted_total_events']    = (np.array([float(weighted_total_events) if weighted_total_events is not None else 0.0]), edges_1bin)
+                    logging.info(f"Saved Metadata histograms: total_events={total_events}, selected_events={selected_events:.2f}, weighted_total_events={weighted_total_events}")
+
+                    # Labeled TH1 cutflow — bin labels = cut names, hadd sums correctly
+                    if cutflow:
+                        try:
+                            import boost_histogram as bh
+                            cut_names  = list(cutflow.keys())
+                            cut_counts = list(cutflow.values())
+                            h_cf = bh.Histogram(bh.axis.StrCategory(cut_names))
+                            for i, name in enumerate(cut_names):
+                                h_cf[bh.loc(name)] = cut_counts[i]
+                            f['cutflow'] = h_cf
+                        except Exception:
+                            # fallback: unlabeled TH1
+                            cut_counts = np.array(list(cutflow.values()), dtype=float)
+                            cf_edges   = np.arange(len(cut_counts) + 1, dtype=float)
+                            f['cutflow'] = (cut_counts, cf_edges)
+                        logging.info(f"Saved Cutflow histogram with {len(cutflow)} bins")
 
                 # Verify file was created
                 if os.path.exists(output_file_root):
                     file_size = os.path.getsize(output_file_root)
-                    logging.info(f"✓ Event selection exported to ROOT file {output_file_root} ({file_size} bytes, {n_selected} events)")
+                    logging.info(f"✓ Event selection exported to ROOT file {output_file_root} ({file_size} bytes, {selected_events:.0f} events)")
                 else:
                     logging.error(f"✗ ROOT file {output_file_root} was not created!")
             except Exception as e:
                 logging.error(f"Failed to write ROOT event selection to {output_file_root}: {e}", exc_info=True)
+
+        # Save parquet file if specified
+        if save_parquet:
+            try:
+                import pandas as pd
+                scalar_data = {}
+                for k, v in branches.items():
+                    if isinstance(v, ak.Array) and v.ndim > 1:
+                        continue  # skip jagged in parquet
+                    a = np.asarray(v) if not isinstance(v, np.ndarray) else v
+                    if a.ndim == 1:
+                        scalar_data[k] = a
+                df = pd.DataFrame(scalar_data)
+                df.attrs.update({
+                    'total_events':             float(total_events or 0),
+                    'selected_events': selected_events,
+                    'weighted_total_events':    float(weighted_total_events or 0),
+                })
+                df.to_parquet(output_file_parquet, index=False)
+                logging.info(f"✓ Event selection exported to parquet {output_file_parquet} ({len(df)} rows)")
+            except Exception as e:
+                logging.error(f"Failed to write parquet event selection to {output_file_parquet}: {e}", exc_info=True)
 
     def get_histogram_statistics(self) -> Dict[str, Dict[str, float]]:
         """
@@ -693,6 +641,9 @@ class DarkBottomLineProcessor:
             logging.info(f"Saved results to {output_file}")
         except ImportError:
             logging.warning("uproot not available. Falling back to pickle.")
+            self._save_pickle(output_file)
+        except Exception as e:
+            logging.error(f"ROOT write failed: {e}. Falling back to pickle.")
             self._save_pickle(output_file)
 
     def _save_pickle(self, output_file: str):

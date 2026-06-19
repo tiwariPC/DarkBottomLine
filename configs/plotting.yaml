@@ -1,77 +1,456 @@
 # Plotting configuration for DarkBottomLine framework
 # This file allows you to customize which plots are generated for different regions and categories
 
-# Variables that should NOT use log scale (multiplicity plots, etc.)
+# Variables that should NOT use log scale
+# Includes: multiplicities (integer-valued), categorical discriminants, PU counts
 no_log_scale_vars:
-  - n_jets
+#   - n_jets
+#   - n_bjets
+#   - n_muons
+#   - n_electrons
+#   - n_taus
+#   - n_leptons
+#   - n_pv
+  - pu_npv
+  - prod_cat          # categorical integer
+  - isjet1_eta_match  # boolean flag (0/1)
+  - isjet2_eta_match  # boolean flag (0/1)
+
+# Variables plotted in every region. Each region's final list = common + region-specific below.
+common_variables:
+  - Recoil
+  - PFMET_pt
+  - PFMET_phi
+  - Jet1Pt
+  - Jet1Eta
+  - Jet1Phi
+  - Jet1deepJet
+  - dPhi_jetMET
+  - n_bjets
+  - Njets_PassID
+
+# Per-region variable whitelists (region-specific additions to common_variables above).
+# Final plot list = common_variables + entries here for the matched region.
+# Exact region keys (e.g. "1b:SR") matched first, then substring (e.g. "CR_Wmunu").
+# Remove a region key to plot only common_variables for that region.
+region_variables:
+
+  "1b:SR":
+    - Jet2Pt
+    - Jet2Eta
+    - Jet2Phi
+    - Jet2deepJet
+    - JetHT
+    - M_Jet1Jet2
+    - dEtaJet12
+    - dPhiJet12
+    - dRJet12
+    - pT_Jet1Jet2
+    - ratioJet1PtMET
+    - ratioPtJet21
+    - b_flavor_count
+
+  "2b:SR":
+    - Jet2Pt
+    - Jet2Eta
+    - Jet2Phi
+    - Jet2deepJet
+    - Jet3Pt
+    - Jet3Eta
+    - Jet3Phi
+    - Jet3deepJet
+    - JetHT
+    - M_Jet1Jet2
+    - M_Jet1Jet3
+    - dEtaJet12
+    - dPhiJet12
+    - dRJet12
+    - pT_Jet1Jet2
+    - costheta_star
+    - ratioJet1PtMET
+    - ratioPtJet21
+    - b_flavor_count
+
+  "1b:CR_Wmunu":
+    - mt
+    - muon_lep1_pt
+    - muon_lep1_eta
+    - muon_lep1_phi
+
+  "1b:CR_Wenu":
+    - mt
+    - electron_lep1_pt
+    - electron_lep1_eta
+    - electron_lep1_phi
+
+  "2b:CR_Topmunu":
+    - Jet2Pt
+    - Jet2Eta
+    - Jet2Phi
+    - Jet2deepJet
+    - Jet3Pt
+    - Jet3Eta
+    - Jet3Phi
+    - JetHT
+    - M_Jet1Jet2
+    - dEtaJet12
+    - dPhiJet12
+    - costheta_star
+    - mt
+    - b_flavor_count
+    - muon_lep1_pt
+    - muon_lep1_eta
+    - muon_lep1_phi
+
+  "2b:CR_Topenu":
+    - Jet2Pt
+    - Jet2Eta
+    - Jet2Phi
+    - Jet2deepJet
+    - Jet3Pt
+    - Jet3Eta
+    - Jet3Phi
+    - JetHT
+    - M_Jet1Jet2
+    - dEtaJet12
+    - dPhiJet12
+    - costheta_star
+    - mt
+    - b_flavor_count
+    - electron_lep1_pt
+    - electron_lep1_eta
+    - electron_lep1_phi
+
+  "1b:CR_Zmumu":
+    - Jet2Pt
+    - Jet2Eta
+    - Jet2Phi
+    - JetHT
+    - z_mass
+    - z_pt
+    - muon_lep1_pt
+    - muon_lep1_eta
+    - muon_lep2_pt
+    - muon_lep2_eta
+
+  "2b:CR_Zmumu":
+    - Jet2Pt
+    - Jet2Eta
+    - Jet2Phi
+    - Jet3Pt
+    - Jet3Eta
+    - JetHT
+    - z_mass
+    - z_pt
+    - costheta_star
+    - b_flavor_count
+    - muon_lep1_pt
+    - muon_lep1_eta
+    - muon_lep2_pt
+    - muon_lep2_eta
+
+  "1b:CR_Zee":
+    - Jet2Pt
+    - Jet2Eta
+    - Jet2Phi
+    - JetHT
+    - z_mass
+    - z_pt
+    - electron_lep1_pt
+    - electron_lep1_eta
+    - electron_lep2_pt
+    - electron_lep2_eta
+
+  "2b:CR_Zee":
+    - Jet2Pt
+    - Jet2Eta
+    - Jet2Phi
+    - Jet3Pt
+    - Jet3Eta
+    - JetHT
+    - z_mass
+    - z_pt
+    - costheta_star
+    - b_flavor_count
+    - electron_lep1_pt
+    - electron_lep1_eta
+    - electron_lep2_pt
+    - electron_lep2_eta
+
+# Variables to plot at event-selection level (before region cuts)
+# Only these are plotted when --make-event-selection-plots is used.
+# Leave empty to plot all branches (default behaviour).
+event_selection_variables:
+  # Recoil / MET
+  - Recoil
+  - RecoilPhi
+  - PFMET_pt
+  - PFMET_phi
+  # Leading jets
+  - Jet1Pt
+  - Jet1Eta
+  - Jet1Phi
+  - Jet2Pt
+  - Jet2Eta
+  - Jet2Phi
+  # Muons (all events, before lepton veto)
+  - muon_pt
+  - muon_eta
+  - muon_phi
+  - muon_lep1_pt
+  - muon_lep1_eta
+  # Electrons
+  - electron_pt
+  - electron_eta
+  - electron_phi
+  - electron_lep1_pt
+  - electron_lep1_eta
+  # Multiplicities
+  - Njets_PassID
   - n_bjets
   - n_muons
   - n_electrons
-  - n_taus
-  - n_leptons
-  - n_pv
-  - pu_npv
 
-# Region-specific variable exclusions
-# Format:
-#   "region_pattern": [list of variable names to exclude]
+# Plot settings — all read by PlotManager.__init__
+dpi: 200
+
+# Stacked variable plot with ratio panel (width, height)
+figsize_ratio: [12, 12]
+# Stacked variable plot without ratio panel
+figsize_no_ratio: [12, 10]
+# Cutflow plot
+figsize_cutflow: [12, 12]
+
+# Layout geometry (fraction of figure)
+subplots_top: 0.92
+subplots_bottom: 0.09
+subplots_left: 0.14
+subplots_right: 0.95
+subplots_hspace: 0.08
+
+# Ratio panel height fraction relative to main panel
+ratio_height: 1.0    # ratio_height / main_height = 1:3
+main_height: 3.0
+
+# Font sizes
+fontsize_axis: 22
+fontsize_legend: 20
+fontsize_xtick_cutflow: 16
+
+# MC stat uncertainty band
+uncertainty_facecolor: "#bbbbbb"
+uncertainty_edgecolor: "#666666"
+uncertainty_hatch: "////"
+uncertainty_alpha: 0.5
+uncertainty_label: "Stat. unc."
+
+# Default number of auto-bins when no variable_bins entry matches
+n_bins_default: 40
+
+# Suffix patterns that map to MET-style variable bins (case-insensitive)
+met_suffix_patterns:
+  - met_pt
+  - recoil
+
+# Per-variable bin edges.
+# Format A (linspace): {low: float, high: float, n: int}
+# Format B (explicit): {edges: [e0, e1, ..., eN]}
+variable_bins:
+  # angular / delta variables
+  METPhi:             {low: -3.14159, high: 3.14159, n: 15}
+  PFMET_phi:          {low: -3.14159, high: 3.14159, n: 15}
+  RecoilPhi:          {low: -3.14159, high: 3.14159, n: 15}
+  dPhi_jetMET:        {low: 0.0,      high: 3.2,     n: 17}
+  dPhiJet12:          {low: -7.5,     high: 7.5,     n: 21}
+  dPhiJet13:          {low: -7.5,     high: 7.5,     n: 21}
+  DetaJet12:          {low: -7.5,     high: 7.5,     n: 21}
+  dRJet12:            {low: 0.0,      high: 7.0,     n: 29}
+  Jet1Eta:            {low: -2.5,     high: 2.5,     n: 15}
+  Jet1Phi:            {low: -3.14159, high: 3.14159, n: 15}
+  Jet2Eta:            {low: -2.5,     high: 2.5,     n: 15}
+  Jet2Phi:            {low: -3.14159, high: 3.14159, n: 15}
+  bjet_eta:           {low: -2.5,     high: 2.5,     n: 15}
+  bjet_phi:           {low: -3.14159, high: 3.14159, n: 15}
+  jet_eta:            {low: -2.5,     high: 2.5,     n: 15}
+  jet_phi:            {low: -3.14159, high: 3.14159, n: 15}
+  electron_eta:       {low: -2.5,     high: 2.5,     n: 15}
+  electron_phi:       {low: -3.14159, high: 3.14159, n: 15}
+  muon_eta:           {low: -2.5,     high: 2.5,     n: 15}
+  muon_phi:           {low: -3.14159, high: 3.14159, n: 15}
+  # pT / energy (variable-width where physics motivated)
+  MET:                {edges: [100, 200, 300, 400, 500, 750, 1000]}
+  PFMET_pt:           {edges: [100, 200, 300, 400, 500, 750, 1000]}
+  Recoil:             {edges: [250, 300, 400, 550, 1000]}
+  recoil:             {edges: [250, 300, 400, 550, 1000]}
+  Jet1Pt:             {low: 30.,  high: 800.,  n: 24}
+  Jet2Pt:             {low: 30.,  high: 800.,  n: 24}
+  bjet_pt:            {low: 30.,  high: 800.,  n: 24}
+  jet_pt:             {low: 30.,  high: 800.,  n: 24}
+  electron_pt:        {low: 20.,  high: 500.,  n: 25}
+  muon_pt:            {low: 20.,  high: 500.,  n: 25}
+  JetHT:              {low: 0.,   high: 2000., n: 21}
+  M_Jet1Jet2:         {low: 0.,   high: 2000., n: 21}
+  pT_Jet1Jet2:        {low: 0.,   high: 800.,  n: 24}
+  ratioPtJet21:       {low: 0.,   high: 2.,    n: 21}
+  ratioJet1PtMET:     {low: 0.,   high: 5.,    n: 22}
+  # b-tagging discriminants
+  Jet1DeepJet:        {low: 0.,   high: 1.2,   n: 25}
+  Jet2DeepJet:        {low: 0.,   high: 1.2,   n: 25}
+  jet_btag:           {low: 0.,   high: 1.2,   n: 25}
+  # multiplicities (half-integer edges for clean integer display)
+  n_jets:             {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  n_bjets:            {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  n_electrons:        {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  n_muons:            {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  n_taus:             {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  Njets_PassID:       {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  b_flavor_count:     {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5]}
+  # lepton kinematics
+  muon_lep1_pt:       {low: 20.,  high: 400.,  n: 20}
+  muon_lep1_eta:      {low: -2.5, high: 2.5,   n: 15}
+  muon_lep2_pt:       {low: 10.,  high: 300.,  n: 20}
+  muon_lep2_eta:      {low: -2.5, high: 2.5,   n: 15}
+  electron_lep1_pt:   {low: 20.,  high: 400.,  n: 20}
+  electron_lep1_eta:  {low: -2.5, high: 2.5,   n: 15}
+  electron_lep2_pt:   {low: 10.,  high: 300.,  n: 20}
+  electron_lep2_eta:  {low: -2.5, high: 2.5,   n: 15}
+  # W/Z/top masses and transverse quantities
+  mt:                 {low: 0.,   high: 300.,  n: 30}
+  z_mass:             {low: 50.,  high: 130.,  n: 40}
+  z_pt:               {low: 0.,   high: 800.,  n: 24}
+  # scores
+  costheta_star:      {edges: [0.0, 0.25, 0.50, 0.75, 1.0]}
+  dnn_score:          {low: 0.,   high: 1.,    n: 25}
+  ml_score:           {low: 0.,   high: 1.,    n: 25}
+  PFMET_significance: {low: 0.,   high: 100.,  n: 26}
+
+
+# Process grouping
 #
-# Matching rules:
-#   1. Exact region match: "1b:SR" matches only the exact region "1b:SR"
-#   2. Pattern match: "Top" matches any region containing "Top" (e.g., "2b:CR_Top_mu")
-#   3. Category pattern: "1b:" matches all regions in 1b category
+# type:     "background" (default) | "signal" | "data"
+# color:    hex color (optional; falls back to _PROCESS_CONFIG in plot_utils.py)
+# label:    LaTeX display label (optional; falls back to _PROCESS_CONFIG)
+# patterns: list of substring patterns — any ROOT/PKL file in --input-folder whose
+#           name contains the pattern is matched to this group.
+#           Use the shortest unambiguous prefix, e.g. "WtoLNu-2Jets_PTLNu-100to250_2J"
+#           (everything up to and including _2J is enough to uniquely identify the slice).
 #
-# Default exclusions (already applied):
-#   - z_mass and z_pt are excluded from Top and W CRs
-#   - Lepton variables are excluded from SRs
-#   - Jet3 variables are excluded from 1b SR and 1b CRs
+# Resolution order per file in the folder:
+#   1. Try each pattern in order; first match wins.
+#   2. Files matching no pattern in any group are skipped with a warning.
 
-region_exclusions:
-  # Exclude z_mass and z_pt from Top CRs (default - can be overridden)
-  SR:
-    - z_mass
-    - z_pt
+process_groups:
+  WtoLNuJets:
+    type: background
+    color: "#bd1f01"
+    label: "$W(\\ell\\nu)+$jets"
+    patterns:
+      - "WtoLNu-2Jets_PTLNu-40to100_2J"
+      - "WtoLNu-2Jets_PTLNu-100to200_2J"
+      - "WtoLNu-2Jets_PTLNu-200to400_2J"
+      - "WtoLNu-2Jets_PTLNu-400to600_2J"
+      - "WtoLNu-2Jets_PTLNu-600_2J"
 
-  Top:
-    - z_mass
-    - z_pt
+  Zto2NuJets:
+    type: background
+    color: "#a96b59"
+    label: "$Z(\\nu\\bar{\\nu})+$jets"
+    patterns:
+      - "Zto2Nu-2Jets_PTNuNu-40to100_2J"
+      - "Zto2Nu-2Jets_PTNuNu-100to200_2J"
+      - "Zto2Nu-2Jets_PTNuNu-200to400_2J"
+      - "Zto2Nu-2Jets_PTNuNu-400to600_2J"
+      - "Zto2Nu-2Jets_PTNuNu-600_2J"
 
-  # Exclude z_mass and z_pt from W CRs (default - can be overridden)
-  Wlnu:
-    - z_mass
-    - z_pt
-  Wenu:
-    - z_mass
-    - z_pt
-  Wmunu:
-    - z_mass
-    - z_pt
+  DYto2LJets:
+    type: background
+    color: "#3f90da"
+    label: "$Z(\\ell\\ell)+$jets"
+    patterns:
+      - "DYto2L-2Jets_MLL-50_PTLL-40to100_2J"
+      - "DYto2L-2Jets_MLL-50_PTLL-100to200_2J"
+      - "DYto2L-2Jets_MLL-50_PTLL-200to400_2J"
+      - "DYto2L-2Jets_MLL-50_PTLL-400to600_2J"
+      - "DYto2L-2Jets_MLL-50_PTLL-600_2J"
 
-  # Example: Exclude additional variables from specific regions
-  # Uncomment and modify as needed:
-  # "1b:SR":
-  #   - jet3_pt
-  #   - jet3_eta
-  #   - m_jet1jet3
+  ttbar:
+    type: background
+    color: "#e76300"
+    label: "$t\\bar{t}$"
+    patterns:
+      - "TTto2L2Nu_TuneCP5"
+      - "TTtoLNu2Q_TuneCP5"
+      - "TTto4Q_TuneCP5"
 
-  # "2b:SR":
-  #   - lep1_pt
-  #   - lep2_pt
+  singletop:
+    type: background
+    color: "#ffa90e"
+    label: "Single $t$"
+    patterns:
+      - "TBbarQ_t-channel"
+      - "TbarBQ_t-channel"
+      - "TBbartoLplusNuBbar-s-channel"
+      - "TbarBtoLminusNuB-s-channel"
+      - "TbarWplustoLNu2Q"
+      - "TWminustoLNu2Q"
 
-  # Example: Exclude variables from all regions in a category
-  # "1b:":
-  #   - some_variable
+  Diboson:
+    type: background
+    color: "#832db6"
+    label: "WW/WZ/ZZ"
+    patterns:
+      - "WZ_TuneCP5"
+      - "WW_TuneCP5"
+      - "ZZ_TuneCP5"
 
-  # Example: Exclude variables from all Z CRs
-  # Zll:
-  #   - w_mass
-  #   - w_pt
+  SMHiggs:
+    type: background
+    color: "#b9ac70"
+    label: "SM Higgs"
+    patterns:
+      - "GluGluHto2B_M-125"
+      - "VBFHto2B_M-125_TuneCP5"
+      - "VBFHto2B_M-125_dipoleRecoilOn"
+      - "WminusH_Hto2B"
+      - "WplusH_Hto2B"
+      - "ZH_Hto2B_Zto2L"
+      - "ZH_Hto2B_Zto2Nu"
+      - "ggZH_Hto2B_Zto2L"
+      - "ggZH_Hto2B_Zto2Nu"
+      - "ttHto2B_M-125"
+      - "tHto2B_M-125"
 
-# Plot settings
-plot_settings:
-  figsize: [12, 8]
-  dpi: 300
-  format: "pdf"
+  # --- Signal process (drawn as a line, not a filled band) ---
+  # Uncomment and fill in for your signal sample(s).
+  # Signal_bbMET:
+  #   type: signal
+  #   color: "#000000"
+  #   label: "DM ($m_{med}=1$ TeV)"
+  #   patterns:
+  #     - "SVJ_mMed-1000"
+  #     - "SVJ_mMed-2000"
 
+  # --- Data (drawn as black points, no xsec normalization) ---
+  # Two separate data groups: one for MET/JetMET (SR + muon CRs) and one for EGamma (electron CRs).
+  # The "regions" list contains substring patterns: a data group is used for a region if any
+  # pattern appears in the region name. Omit "regions" (or leave empty) to apply to all regions.
+  #
+  MET_Data:
+    type: data
+    label: "Data (MET)"
+    regions:
+      - "SR"
+      - "munu"       # matches CR_Wmunu, CR_Zmumu, CR_Topmunu
+      - "mumu"       # matches CR_Zmumu
+    patterns:
+      - "JetMET-Run"
+      - "MET-Run"
 
-
+  EGamma_Data:
+    type: data
+    label: "Data (EGamma)"
+    regions:
+      - "enu"        # matches CR_Wenu, CR_Topenu
+      - "Zee"        # matches CR_Zee
+    patterns:
+      - "EGamma-Run"

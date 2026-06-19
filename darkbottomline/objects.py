@@ -6,6 +6,8 @@ import awkward as ak
 import numpy as np
 from typing import Dict, Any, Tuple
 
+SENTINEL = -9.0  # fill value for variables undefined due to insufficient objects
+
 
 def select_muons(events: ak.Array, config: Dict[str, Any], wp: str = "loose") -> ak.Array:
     """
@@ -163,6 +165,7 @@ def select_jets(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
         "pt": events["Jet_pt"],
         "eta": events["Jet_eta"],
         "phi": events["Jet_phi"],
+        "mass": events["Jet_mass"] if "Jet_mass" in events.fields else ak.zeros_like(events["Jet_pt"]),
         "btagDeepFlavB": events["Jet_btagDeepFlavB"],
     }
     if "Jet_hadronFlavour" in events.fields:
@@ -363,13 +366,13 @@ def build_z_candidates(
 def calculate_costheta_star(jets: ak.Array) -> ak.Array:
     """
     cos(theta*) = |tanh(dEta_j1j2 / 2)|
-    Requires >= 2 jets. Returns -2 sentinel when < 2 jets.
+    Requires >= 2 jets. Returns SENTINEL when < 2 jets.
     """
     n_jets = ak.num(jets, axis=1)
     has_two = n_jets >= 2
 
     if not ak.any(has_two):
-        return ak.full_like(n_jets, -2.0, dtype=float)
+        return ak.full_like(n_jets, SENTINEL, dtype=float)
 
     j1 = ak.firsts(jets)
     j2 = ak.pad_none(jets, 2, axis=1)[:, 1]
@@ -377,11 +380,11 @@ def calculate_costheta_star(jets: ak.Array) -> ak.Array:
     deta = ak.fill_none(j1.eta, 0.0) - ak.fill_none(j2.eta, 0.0)
     cos_ts = np.abs(np.tanh(deta / 2.0))
 
-    return ak.where(has_two, cos_ts, -2.0)
+    return ak.where(has_two, cos_ts, SENTINEL)
 
 
-def calculate_recoil(events: ak.Array, objects: Dict[str, Any]) -> ak.Array:
-    """Recoil = |-(MET_vec + sum pT(loose muons+electrons))|."""
+def calculate_recoil(events: ak.Array, objects: Dict[str, Any]):
+    """Recoil = |-(MET_vec + sum pT(loose muons+electrons))|. Returns (recoil_pt, recoil_phi)."""
     met_pt = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
     met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
 
@@ -402,7 +405,9 @@ def calculate_recoil(events: ak.Array, objects: Dict[str, Any]) -> ak.Array:
 
     recoil_px = -(met_pt * np.cos(met_phi) + ak.fill_none(lep_px, 0.0))
     recoil_py = -(met_pt * np.sin(met_phi) + ak.fill_none(lep_py, 0.0))
-    return ak.fill_none(np.sqrt(recoil_px**2 + recoil_py**2), 0.0)
+    recoil_pt  = ak.fill_none(np.sqrt(recoil_px**2 + recoil_py**2), 0.0)
+    recoil_phi = ak.fill_none(np.arctan2(recoil_py, recoil_px), 0.0)
+    return recoil_pt, recoil_phi
 
 
 def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -497,6 +502,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
         "pt": events["Jet_pt"],
         "eta": events["Jet_eta"],
         "phi": events["Jet_phi"],
+        "mass": events["Jet_mass"] if "Jet_mass" in events.fields else ak.zeros_like(events["Jet_pt"]),
         "btagDeepFlavB": events["Jet_btagDeepFlavB"],
     }
     if "Jet_hadronFlavour" in events.fields:
@@ -570,18 +576,19 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Compute recoil once for all events: |-(MET_vec + sum pT(loose leptons))|
     print("  Computing recoil...")
-    recoil = calculate_recoil(events, {
+    recoil, recoil_phi = calculate_recoil(events, {
         "muons": selected_muons,
         "electrons": selected_electrons,
     })
 
-    # cos(theta*): helicity angle of leading jet in dijet CoM; -2 sentinel when < 2 jets
+    # cos(theta*): helicity angle of leading jet in dijet CoM; SENTINEL when < 2 jets
     print("  Computing cos(theta*)...")
     costheta_star = calculate_costheta_star(cleaned_jets)
 
     print("  Object building complete!")
     return {
         "recoil": recoil,
+        "recoil_phi": recoil_phi,
         "costheta_star": costheta_star,
         "photons": selected_photons,
         "muons": selected_muons,

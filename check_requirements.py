@@ -105,7 +105,7 @@ def parse_environment_yml(env_path):
     """Parse environment.yml and return list of (package_name, requirement_line, version_constraint)."""
     # conda uses different package names than pip for some packages
     conda_to_pip = {'pytorch': 'torch'}
-    skip_names = {'python', 'pip'}
+    skip_names = {'python', 'pip', 'root'}
     requirements = []
 
     with open(env_path, 'r') as f:

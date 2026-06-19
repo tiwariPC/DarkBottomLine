@@ -2,9 +2,18 @@
 Event selection functions for DarkBottomLine framework.
 """
 
+import logging
 import awkward as ak
 import numpy as np
 from typing import Dict, Any, List, Tuple
+
+
+def _safe_float(val, default=0.0) -> float:
+    return default if val is None else float(val)
+
+
+def _safe_int(val, default=0) -> int:
+    return default if val is None else int(val)
 
 
 
@@ -75,16 +84,16 @@ def _build_event_cut_masks(
 
     # Canonical order — trigger & filters first, then object cuts
     masks = {
-        "Pass trigger": trigger_cut,
-        "Pass filters": filter_cut,
-        "Pass recoil": recoil_cut,
-        "Pass muon multiplicity": muon_cut,
-        "Pass electron multiplicity": electron_cut,
-        "Pass tau multiplicity": tau_cut,
-        "Pass photon veto": photon_cut,
-        "Pass jet multiplicity": jet_cut,
-        "Pass leading jet pt": jet1_pt_cut,
-        "Pass delta phi": delta_phi_cut,
+        "OR Trigger":       trigger_cut,
+        "MET filters":      filter_cut,
+        "Recoil":           recoil_cut,
+        "N_{#mu}":          muon_cut,
+        "N_{e}":            electron_cut,
+        "#tau Veto":        tau_cut,
+        "#gamma Veto":      photon_cut,
+        "N_{j}":            jet_cut,
+        "p_{T}^{Jet1}":     jet1_pt_cut,
+        "#Delta#phi":       delta_phi_cut,
     }
 
     diagnostics = {
@@ -99,35 +108,35 @@ def _build_event_cut_masks(
         "n_photons_max": selection.get("max_photons", 0),
         "n_jets_min": selection["min_jets"],
         "n_jets_max": selection["max_jets"],
-        "recoil_min_obs": float(ak.min(recoil)),
-        "recoil_max_obs": float(ak.max(recoil)),
-        "recoil_mean_obs": float(ak.mean(recoil)),
-        "n_muons_obs_min": int(ak.min(n_muons)),
-        "n_muons_obs_max": int(ak.max(n_muons)),
-        "n_electrons_obs_min": int(ak.min(n_electrons)),
-        "n_electrons_obs_max": int(ak.max(n_electrons)),
-        "n_taus_obs_min": int(ak.min(n_taus)),
-        "n_taus_obs_max": int(ak.max(n_taus)),
-        "n_jets_obs_min": int(ak.min(n_jets)),
-        "n_jets_obs_max": int(ak.max(n_jets)),
+        "recoil_min_obs": _safe_float(ak.min(recoil)),
+        "recoil_max_obs": _safe_float(ak.max(recoil)),
+        "recoil_mean_obs": _safe_float(ak.mean(recoil)),
+        "n_muons_obs_min": _safe_int(ak.min(n_muons)),
+        "n_muons_obs_max": _safe_int(ak.max(n_muons)),
+        "n_electrons_obs_min": _safe_int(ak.min(n_electrons)),
+        "n_electrons_obs_max": _safe_int(ak.max(n_electrons)),
+        "n_taus_obs_min": _safe_int(ak.min(n_taus)),
+        "n_taus_obs_max": _safe_int(ak.max(n_taus)),
+        "n_jets_obs_min": _safe_int(ak.min(n_jets)),
+        "n_jets_obs_max": _safe_int(ak.max(n_jets)),
     }
 
     if logger:
         logger.info("  Object counts per event:")
         logger.info(
-            f"    n_muons: min={diagnostics['n_muons_obs_min']}, max={diagnostics['n_muons_obs_max']}, mean={ak.mean(n_muons):.2f}"
+            f"    n_muons: min={diagnostics['n_muons_obs_min']}, max={diagnostics['n_muons_obs_max']}, mean={_safe_float(ak.mean(n_muons)):.2f}"
         )
         logger.info(
-            f"    n_electrons: min={diagnostics['n_electrons_obs_min']}, max={diagnostics['n_electrons_obs_max']}, mean={ak.mean(n_electrons):.2f}"
+            f"    n_electrons: min={diagnostics['n_electrons_obs_min']}, max={diagnostics['n_electrons_obs_max']}, mean={_safe_float(ak.mean(n_electrons)):.2f}"
         )
         logger.info(
-            f"    n_taus: min={diagnostics['n_taus_obs_min']}, max={diagnostics['n_taus_obs_max']}, mean={ak.mean(n_taus):.2f}"
+            f"    n_taus: min={diagnostics['n_taus_obs_min']}, max={diagnostics['n_taus_obs_max']}, mean={_safe_float(ak.mean(n_taus)):.2f}"
         )
         logger.info(
-            f"    n_jets: min={diagnostics['n_jets_obs_min']}, max={diagnostics['n_jets_obs_max']}, mean={ak.mean(n_jets):.2f}"
+            f"    n_jets: min={diagnostics['n_jets_obs_min']}, max={diagnostics['n_jets_obs_max']}, mean={_safe_float(ak.mean(n_jets)):.2f}"
         )
         logger.info(
-            f"    n_bjets: mean={ak.mean(n_bjets):.2f}"
+            f"    n_bjets: mean={_safe_float(ak.mean(n_bjets)):.2f}"
         )
         logger.info("  Multiplicity cuts (standalone):")
         logger.info(
@@ -269,15 +278,13 @@ def get_cutflow(
         Dictionary with cut names and event counts
     """
     cutflow: Dict[str, int] = {}
-    cutflow["Total events"] = int(len(events))
+    cutflow["Total"] = int(len(events))
 
     all_masks, _ = _build_event_cut_masks(events, objects, config)
     final_mask = ak.ones_like(events["event"], dtype=bool)
     for step_name, step_mask in all_masks.items():
         final_mask = final_mask & step_mask
         cutflow[step_name] = int(ak.sum(final_mask))
-
-    cutflow["Final selection"] = int(ak.sum(final_mask))
     return cutflow
 
 
@@ -289,23 +296,21 @@ def apply_selection(
     """
     Apply complete event selection including triggers, filters, and cuts.
 
-    Args:
-        events: Awkward Array of events
-        objects: Dictionary containing selected objects
-        config: Configuration dictionary
-
     Returns:
         Tuple of (selected_events, selected_objects, cutflow)
     """
-    print("  Applying full selection (trigger → filters → object cuts)...")
+    logging.info("Applying full selection (trigger → filters → object cuts)...")
     all_masks, _ = _build_event_cut_masks(events, objects, config)
+
+    cutflow: Dict[str, int] = {"Total": int(len(events))}
     final_mask = ak.ones_like(events["event"], dtype=bool)
     for step_name, step_mask in all_masks.items():
         final_mask = final_mask & step_mask
-        print(f"    After {step_name}: {ak.sum(final_mask)}")
-    print(f"    Events passing all selections: {ak.sum(final_mask)}")
+        n = int(ak.sum(final_mask))
+        cutflow[step_name] = n
+        logging.info("    After %s: %d", step_name, n)
+    logging.info("    Events passing all selections: %d", int(ak.sum(final_mask)))
 
-    # Apply selection to events and objects
     selected_events = events[final_mask]
     selected_objects = {}
     for key, obj in objects.items():
@@ -313,8 +318,5 @@ def apply_selection(
             selected_objects[key] = obj[final_mask]
         else:
             selected_objects[key] = obj
-
-    # Calculate cutflow
-    cutflow = get_cutflow(events, objects, config)
 
     return selected_events, selected_objects, cutflow

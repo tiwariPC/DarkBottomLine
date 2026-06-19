@@ -4,6 +4,7 @@
 regions:
   "1b:SR":
     description: "Signal region, 1 b-tag category (paper: 1 b-tag, up to 1 additional jet)"
+    trigger: "met"
     cuts:
       Nbjets: "==1"
       Njets: "<=2"
@@ -11,92 +12,93 @@ regions:
 
   "2b:SR":
     description: "Signal region, 2 b-tag category (paper: 2 b-tags, up to 1 additional jet)"
+    trigger: "met"
     cuts:
       Nbjets: "==2"
       Njets: "<=3"
       NjetsMin: ">=2"
       Nleptons: "==0"
 
-  "1b:CR_Wlnu_mu":
+  "1b:CR_Wmunu":
     description: "W+jets control region in 1b category (muon)"
+    trigger: "met"
     cuts:
       Nbjets: "==1"
       Nmuons: "==1"
       Nelectrons: "==0"
-      Recoil: ">250"
       MET: ">100"
       MT: "<160"
       NAdditionalJets: "==0"
-  "1b:CR_Wlnu_el":
+  "1b:CR_Wenu":
     description: "W+jets control region in 1b category (electron)"
+    trigger: "ele"
     cuts:
       Nbjets: "==1"
       Nelectrons: "==1"
       Nmuons: "==0"
-      Recoil: ">250"
       MET: ">100"
       MT: "<160"
       NAdditionalJets: "==0"
-  "2b:CR_Top_mu":
+  "2b:CR_Topmunu":
     description: "Top control region in 2b category (muon)"
+    trigger: "met"
     cuts:
       Nbjets: "==2"
       Nmuons: "==1"
       Nelectrons: "==0"
-      Recoil: ">250"
       MT: "<160"
       NAdditionalJets: ">=1"
       Njets: ">=3"
-  "2b:CR_Top_el":
+  "2b:CR_Topenu":
     description: "Top control region in 2b category (electron)"
+    trigger: "ele"
     cuts:
       Nbjets: "==2"
       Nelectrons: "==1"
       Nmuons: "==0"
-      Recoil: ">250"
       MT: "<160"
       NAdditionalJets: ">=1"
       Njets: ">=3"
 
-  "1b:CR_Zll_mu":
+  "1b:CR_Zmumu":
     description: "Z+jets CR (1b) muon: 2 OS muons, leading tight pt>30, subleading loose pt>10"
+    trigger: "met"
     cuts:
       NmuonsZ: "==2"
       NelectronsZ: "==0"
-      Recoil: ">250"
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=2"
-  "1b:CR_Zll_el":
+  "1b:CR_Zee":
     description: "Z+jets CR (1b) electron: 2 OS electrons, leading tight pt>30, subleading loose pt>10"
+    trigger: "ele"
     cuts:
       NelectronsZ: "==2"
       NmuonsZ: "==0"
-      Recoil: ">250"
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=2"
 
-  "2b:CR_Zll_mu":
+  "2b:CR_Zmumu":
     description: "Z+jets CR (2b) muon: 2 OS muons, leading tight pt>30, subleading loose pt>10"
+    trigger: "met"
     cuts:
       NmuonsZ: "==2"
       NelectronsZ: "==0"
-      Recoil: ">250"
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=3"
-      NjetsMin: ">1"
-  "2b:CR_Zll_el":
+      NjetsMin: ">=2"
+  "2b:CR_Zee":
     description: "Z+jets CR (2b) electron: 2 OS electrons, leading tight pt>30, subleading loose pt>10"
+    trigger: "ele"
     cuts:
       NelectronsZ: "==2"
       NmuonsZ: "==0"
-      Recoil: ">250"
       MllMin: ">70"
       MllMax: "<110"
       Njets: "<=3"
-      NjetsMin: ">1"
+      NjetsMin: ">=2"
 
 # Global region settings
 settings:

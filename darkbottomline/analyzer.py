@@ -2,8 +2,70 @@
 Multi-region analyzer for DarkBottomLine framework.
 """
 
+# ── Compatibility patch for coffea 2025.12.0 + uproot 5.x (LCG_109) ─────────
+# uproot 5.x removed uproot.behaviors.RNTuple. coffea.util._is_interpretable
+# references it unconditionally → AttributeError in every loky worker process.
+# This module is imported by workers (via cloudpickle), so the patch runs there.
+try:
+    import uproot.behaviors as _uproot_behaviors
+    if not hasattr(_uproot_behaviors, "RNTuple"):
+        import types as _types, sys as _sys
+        _rnt = _types.ModuleType("uproot.behaviors.RNTuple")
+        class _HasFields:
+            pass
+        _rnt.HasFields = _HasFields
+        _uproot_behaviors.RNTuple = _rnt
+        _sys.modules.setdefault("uproot.behaviors.RNTuple", _rnt)
+        # Re-patch coffea.util._is_interpretable if already imported without the fix
+        try:
+            import coffea.util as _coffea_util
+            import uproot as _uproot
+            import warnings as _warnings
+            def _is_interpretable_patched(branch, emit_warning=True):
+                try:
+                    _rnt_cls = _uproot_behaviors.RNTuple.HasFields
+                    if isinstance(branch, _rnt_cls):
+                        if branch.path.startswith("_collection") or "." in branch.path:
+                            return False
+                        return True
+                except Exception:
+                    pass
+                if isinstance(branch.interpretation,
+                              _uproot.interpretation.identify.uproot.AsGrouped):
+                    for _, interp in branch.interpretation.subbranches.items():
+                        if isinstance(interp,
+                                      _uproot.interpretation.identify.UnknownInterpretation):
+                            if emit_warning:
+                                _warnings.warn(f"Skipping {branch.name} as it is not interpretable by Uproot")
+                            return False
+                if isinstance(branch.interpretation,
+                              _uproot.interpretation.identify.UnknownInterpretation):
+                    if emit_warning:
+                        _warnings.warn(f"Skipping {branch.name} as it is not interpretable by Uproot")
+                    return False
+                try:
+                    branch.interpretation.awkward_form(None)
+                except _uproot.interpretation.objects.CannotBeAwkward:
+                    if emit_warning:
+                        _warnings.warn(f"Skipping {branch.name} as it cannot be represented as an Awkward array")
+                    return False
+                return True
+            _coffea_util._is_interpretable = _is_interpretable_patched
+            # Also patch the reference inside the nanoevents mapping module
+            try:
+                import coffea.nanoevents.mapping.uproot as _nano_uproot
+                _nano_uproot._is_interpretable = _is_interpretable_patched
+            except Exception:
+                pass
+        except Exception:
+            pass
+except Exception:
+    pass
+# ─────────────────────────────────────────────────────────────────────────────
+
 import awkward as ak
 import numpy as np
+import os
 import time
 import logging
 from typing import Dict, Any, Optional, Union
@@ -90,12 +152,14 @@ class DarkBottomLineAnalyzer:
             "regions": {},
             "region_histograms": self.region_histograms,
             "region_cutflow": {},
+            "region_cutflow_histograms": {},
+            "event_selection_cutflow": {},
             "region_validation": {},
             "metadata": {},
             "event_weights": {},
         }
 
-        logging.info(f"Initialized analyzer with {len(self.region_manager.regions) if self.region_manager else 0} regions")
+        logging.debug(f"Initialized analyzer with {len(self.region_manager.regions) if self.region_manager else 0} regions")
 
     def _create_region_histograms(self) -> Dict[str, Dict[str, Any]]:
         """
@@ -161,8 +225,24 @@ class DarkBottomLineAnalyzer:
                 "weights": []
             }
 
+    def _create_cutflow_histogram(self, cutflow: Dict[str, int]) -> Any:
+        """Create a cutflow histogram with labeled steps."""
+        try:
+            import hist
+            labels = list(cutflow.keys())
+            h = hist.Hist(
+                hist.axis.StrCategory(labels, name="step", label="Cut Step"),
+                storage=hist.storage.Weight(),
+            )
+            for label, value in cutflow.items():
+                h.fill(step=label, weight=float(value))
+            return h
+        except ImportError:
+            return {"labels": list(cutflow.keys()), "values": list(cutflow.values())}
+
     def process(self, events: ak.Array, event_selection_output: Optional[str] = None,
-                n_events_total: Optional[int] = None, event_selection_only: bool = False,
+                total_events: Optional[int] = None, input_total_events: Optional[int] = None,
+                event_selection_only: bool = False,
                 output_format: str = "pkl") -> Dict[str, Any]:
         """
         Process events through all regions.
@@ -173,7 +253,8 @@ class DarkBottomLineAnalyzer:
         Args:
             events: Awkward Array of events
             event_selection_output: If set, save preselected events to this path (AFTER weight corrections)
-            n_events_total: Total number of events before selection (from input files)
+            total_events: Total number of events before selection (legacy semantic used by event-selection output)
+            input_total_events: Total number of events in the input files before any max-events slicing
             event_selection_only: If True, stop after saving event_selection_output (skip region analysis)
             output_format: Output format for event selection ("pkl", "root", "parquet")
 
@@ -203,8 +284,8 @@ class DarkBottomLineAnalyzer:
             events = self.base_processor.apply_lumi_mask(events)
             logging.info(f"Events after golden JSON filter: {len(events)}")
 
-        # Compute h_total_weight from raw events before any selection
-        h_total_weight = self.base_processor.correction_manager.get_h_total_weight(events)
+        # Compute weighted_total_events from raw events before any selection
+        weighted_total_events = self.base_processor.correction_manager.get_weighted_total_events(events)
 
         # Build physics objects
         logging.info("Building physics objects...")
@@ -222,6 +303,8 @@ class DarkBottomLineAnalyzer:
         except Exception as e:
             logging.error(f"Preselection failed: {e}", exc_info=True)
             raise
+        # Store event-selection cutflow in accumulator so region plots can prepend it
+        self.accumulator["event_selection_cutflow"] = dict(cutflow)
 
         # Step 2: Compute corrections and nominal total weight (for histograms + saving)
         # NOTE: This must happen BEFORE saving event_selection_output to ensure event weights are corrected
@@ -243,7 +326,7 @@ class DarkBottomLineAnalyzer:
                 weight_results = self.base_processor.correction_manager.compute_event_weights(
                     events, objects
                 )
-                event_weights_nominal = np.asarray(ak.to_numpy(weight_results["total_weight"]))
+                event_weights_nominal = np.asarray(ak.to_numpy(weight_results["full_event_weight"]))
                 event_weights_save = _build_event_weights_for_save(weight_results)
             except Exception as e:
                 logging.warning(f"Weight calculation failed, using unit weights: {e}", exc_info=True)
@@ -261,8 +344,8 @@ class DarkBottomLineAnalyzer:
                 self.base_processor._save_event_selection(
                     event_selection_output, events, objects,
                     max_events=self.base_processor.config.get("max_events"),
-                    n_events_total=n_events_total,
-                    h_total_weight=h_total_weight,
+                    total_events=total_events,
+                    weighted_total_events=weighted_total_events,
                     event_weights=event_weights_save,
                     cutflow=cutflow,
                     output_format=output_format
@@ -275,7 +358,7 @@ class DarkBottomLineAnalyzer:
                     logging.error(f"✗ File {event_selection_output} was not created!")
             except Exception as e:
                 logging.error(f"Failed to save event selection to {event_selection_output}: {e}", exc_info=True)
-            
+
             # If event_selection_only mode is enabled, return early
             if event_selection_only:
                 logging.info("event_selection_only mode: stopping after event selection (no region analysis)")
@@ -302,7 +385,7 @@ class DarkBottomLineAnalyzer:
                 "metadata": {},
                 "event_weights": {},
             }
-        
+
         logging.info("Applying region cuts...")
         region_masks = self.region_manager.apply_regions(events, objects)
 
@@ -329,6 +412,13 @@ class DarkBottomLineAnalyzer:
         logging.info("Validating regions...")
         validation_results = self.region_manager.validate_regions(events, objects)
 
+        # Build cutflow histograms for control regions only (8 CRs)
+        region_cutflows = self.region_manager.get_region_cutflows(events, objects, only_control_regions=False)
+        region_cutflow_histograms = {
+            region_name: self._create_cutflow_histogram(cutflow)
+            for region_name, cutflow in region_cutflows.items()
+        }
+
         # Calculate processing statistics
         processing_time = time.time() - start_time
 
@@ -338,16 +428,124 @@ class DarkBottomLineAnalyzer:
             events, objects, region_masks, event_weights_nominal
         )
         self.accumulator["region_cutflow"] = self._calculate_region_cutflow(region_masks)
+        self.accumulator["region_cutflow_histograms"] = region_cutflow_histograms
+        # event_selection_cutflow already set after apply_selection above
         self.accumulator["region_validation"] = validation_results
         self.accumulator["event_weights"] = event_weights_save
         self.accumulator["metadata"] = {
             "n_events_processed": len(events),
+            "n_events_input": int(input_total_events if input_total_events is not None else (total_events if total_events is not None else len(events))),
+            "weighted_total_events": weighted_total_events,
             "n_regions": len(self.region_manager.regions),
-            "processing_time": processing_time
+            "processing_time": processing_time,
+            "weighted_total_events": float(weighted_total_events),
+            "luminosity": float(self.base_processor.config.get("lumi", 1.0)),
         }
 
         logging.info(f"Analysis completed in {processing_time:.2f} seconds")
 
+        return self.accumulator
+
+    def process_from_eventselection(
+        self,
+        branches: Dict[str, np.ndarray],
+        weighted_total_events: float,
+        is_data: bool = False,
+        dnn_model: Optional[str] = None,
+        dnn_config: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run region analysis starting from a pre-selected flat-branch dict (EVENTSELECTION.root).
+
+        Skips NanoAOD object building and event-level preselection — input events have already
+        passed the event selection.  Region cuts are applied via RegionManager using the flat
+        branches (same fallback logic as make-event-plots region-from-events mode).
+
+        Args:
+            branches:                flat {name: np.ndarray} from EVENTSELECTION.root Events tree
+            weighted_total_events:   sum of generator weights before preselection (from metadata TH1)
+            is_data:                 True for collision data (unit weights)
+            dnn_model:               path to trained DNN checkpoint (optional)
+            dnn_config:              path to DNN config YAML (optional)
+
+        Returns:
+            Same accumulator structure as process()
+        """
+        import time
+        start_time = time.time()
+
+        if self.region_manager is None:
+            raise ValueError("RegionManager not initialised — pass --regions-config")
+
+        n_ev = len(next(iter(branches.values()))) if branches else 0
+
+        # Build ak.Array from flat branches; convert object-dtype (jagged) arrays individually
+        ak_dict: Dict[str, Any] = {}
+        for k, v in branches.items():
+            if not isinstance(v, np.ndarray) or v.ndim != 1:
+                continue
+            if v.dtype == object:
+                try:
+                    ak_dict[k] = ak.Array(list(v))
+                except Exception:
+                    pass
+            else:
+                ak_dict[k] = v
+        events = ak.Array(ak_dict)
+
+        # Weights: read from branches if present, else unit
+        if is_data:
+            event_weights_nominal = np.ones(n_ev, dtype=np.float64)
+        else:
+            fw = branches.get("full_event_weight")
+            if fw is not None and len(fw) == n_ev:
+                event_weights_nominal = np.asarray(fw, dtype=np.float64)
+            else:
+                event_weights_nominal = np.ones(n_ev, dtype=np.float64)
+
+        # Optional DNN scoring
+        if dnn_model:
+            try:
+                from .dnn_inference import DNNInference
+                inferencer = DNNInference(dnn_model, dnn_config)
+                scores = inferencer.predict(events)
+                events = ak.with_field(events, scores, "ml_score")
+                logging.info("DNN scores added to events (ml_score)")
+            except Exception as _dnn_exc:
+                logging.warning("DNN scoring failed, continuing without scores: %s", _dnn_exc)
+
+        # Apply region cuts (objects={} — regions.py uses flat-branch fallbacks)
+        logging.debug("Applying region cuts from event-selection branches (%d events)...", n_ev)
+        region_masks = self.region_manager.apply_regions(events, objects={})
+
+        region_results: Dict[str, Any] = {}
+        for region_name, region_mask in region_masks.items():
+            n_passing = int(ak.sum(region_mask))
+            if n_passing == 0:
+                logging.debug("Skipping region %s: 0 events", region_name)
+                region_results[region_name] = {"n_events": 0, "variables": {}, "dnn_scores": None}
+                continue
+            logging.debug("Processing region %s (%d events)...", region_name, n_passing)
+            region_results[region_name] = self._process_region(events, {}, region_mask, region_name)
+
+        region_histograms = self._fill_region_histograms(events, {}, region_masks, event_weights_nominal)
+        region_cutflow    = self._calculate_region_cutflow(region_masks)
+        validation        = self.region_manager.validate_regions(events, {})
+        processing_time   = time.time() - start_time
+
+        self.accumulator["regions"]          = region_results
+        self.accumulator["region_histograms"] = region_histograms
+        self.accumulator["region_cutflow"]    = region_cutflow
+        self.accumulator["region_validation"] = validation
+        self.accumulator["event_weights"]     = {}
+        self.accumulator["metadata"] = {
+            "n_events_processed":  n_ev,
+            "n_regions":           len(self.region_manager.regions),
+            "processing_time":     processing_time,
+            "weighted_total_events": float(weighted_total_events),
+            "luminosity":          float(self.base_processor.config.get("lumi", 1.0)),
+        }
+        logging.debug("Region analysis from event-selection completed in %.2f s", processing_time)
         return self.accumulator
 
     def _extract_objects_from_results(self, base_results: Dict[str, Any]) -> Dict[str, Any]:
@@ -499,18 +697,9 @@ class DarkBottomLineAnalyzer:
         events: ak.Array,
         objects: Dict[str, Any]
     ) -> Optional[ak.Array]:
-        """
-        Apply DNN to events (placeholder implementation).
-
-        Args:
-            events: Awkward Array of events
-            objects: Dictionary containing selected objects
-
-        Returns:
-            DNN scores or None if DNN not available
-        """
-        # Placeholder for DNN application
-        # In real implementation, this would load and apply the trained DNN model
+        """Return per-event DNN scores from ml_score field if present, else None."""
+        if "ml_score" in events.fields:
+            return events["ml_score"]
         return None
 
     def _fill_region_histograms(
@@ -587,9 +776,13 @@ class DarkBottomLineAnalyzer:
                         w = w_full[mask_np].astype(np.float64)
                     except (Exception, BaseException):
                         w = np.ones(n_r, dtype=np.float64)
-                    filled_histograms[region_name] = self.histogram_manager.fill_histograms(
+                    filled = self.histogram_manager.fill_histograms(
                         region_events, region_objects, w
                     )
+                    if "ml_score" in region_events.fields and "dnn_score" in filled:
+                        scores = np.clip(ak.to_numpy(region_events["ml_score"]).astype("f8"), 0., 1.)
+                        filled["dnn_score"].fill(dnn_score=scores, weight=w)
+                    filled_histograms[region_name] = filled
                 else:
                     filled_histograms[region_name] = self.histogram_manager.define_histograms()
 
@@ -706,7 +899,7 @@ class DarkBottomLineAnalyzer:
                 output_file_with_format = output_file
         else:
             output_file_with_format = output_file
-        
+
         # Route to appropriate save function based on format
         if output_file_with_format.endswith('.parquet'):
             self._save_parquet(output_file_with_format)
@@ -754,9 +947,18 @@ class DarkBottomLineAnalyzer:
                     for hist_name, hist in histograms.items():
                         f[f"{region_name}_{hist_name}"] = hist
 
-                # Save metadata as a JSON string
-                metadata_str = json.dumps(self.accumulator.get("metadata", {}))
-                f["metadata"] = metadata_str
+                # Save cutflow histograms in a ROOT directory named Metadata
+                for region_name, hist in self.accumulator.get("region_cutflow_histograms", {}).items():
+                    f[f"Metadata/{region_name}_cutflow"] = hist
+
+                # Save metadata as 1-bin TH1 per scalar — hadd sums correctly
+                metadata = self.accumulator.get("metadata", {})
+                edges_1bin = np.array([0.0, 1.0])
+                for mk, mv in metadata.items():
+                    try:
+                        f[f"Metadata/h_{mk}"] = (np.array([float(mv)]), edges_1bin)
+                    except (TypeError, ValueError):
+                        pass
 
                 # Per-event weights as TTree
                 event_weights = self.accumulator.get("event_weights", {})
@@ -768,6 +970,9 @@ class DarkBottomLineAnalyzer:
             logging.info(f"Saved region results to {output_file}")
         except ImportError:
             logging.warning("uproot not available. Falling back to pickle.")
+            self._save_pickle(output_file)
+        except Exception as e:
+            logging.error(f"ROOT write failed: {e}. Falling back to pickle.")
             self._save_pickle(output_file)
 
     def _save_pickle(self, output_file: str):
@@ -788,17 +993,19 @@ if COFFEA_AVAILABLE:
         Coffea-compatible processor wrapper for multi-region analyzer.
         """
 
-        def __init__(self, config: Dict[str, Any], regions_config_path: Optional[str] = None, 
-                     event_selection_output: Optional[str] = None,
-                     n_events_total: Optional[int] = None,
-                     event_selection_only: bool = False,
-                     output_format: Optional[str] = None,
-                     max_events: Optional[int] = None):
+        def __init__(self, config: Dict[str, Any], regions_config_path: Optional[str] = None,
+                        event_selection_output: Optional[str] = None,
+                        total_events: Optional[int] = None,
+                        input_total_events: Optional[int] = None,
+                        event_selection_only: bool = False,
+                        output_format: Optional[str] = None,
+                        max_events: Optional[int] = None):
             self.config = config
             self.regions_config_path = regions_config_path
             self.event_selection_output = event_selection_output
-            self.n_events_total = n_events_total  # Total events before selection
-            self.h_total_weight = None  # Set on first chunk in process()
+            self.total_events = total_events  # Total events before selection
+            self.input_total_events = input_total_events  # Input-file total before any slicing
+            self.weighted_total_events = None  # Set on first chunk in process()
             self.event_selection_only = event_selection_only
             self.max_events = max_events  # Maximum events to process
             self.processed_events = 0  # Track number of events processed
@@ -816,13 +1023,15 @@ if COFFEA_AVAILABLE:
             self.accumulator = processor.dict_accumulator({
                 "regions": processor.dict_accumulator({}),
                 "region_histograms": processor.dict_accumulator({}),
+                "region_cutflow_histograms": processor.dict_accumulator({}),
                 "region_cutflow": processor.dict_accumulator({}),
+                "event_selection_cutflow": processor.dict_accumulator({}),
                 "region_validation": processor.dict_accumulator({}),
                 "metadata": processor.dict_accumulator({}),
                 "event_weights": processor.dict_accumulator({}),
                 "_event_selection_chunk_files": processor.dict_accumulator({}),  # Use dict_accumulator for proper merging
             })
-            
+
             # Store selected events/objects for event_selection_output
             # Use file-based approach for cross-worker compatibility
             # Always create _temp_dir so event_weights can be saved to chunk files
@@ -868,14 +1077,26 @@ if COFFEA_AVAILABLE:
                 if len(events_to_process) > events_remaining:
                     events_to_process = events_to_process[:events_remaining]
                     logging.info(f"Limiting chunk to {len(events_to_process)} events (max_events={self.max_events}, already processed={self.processed_events})")
-            
+
             # Track processed events
             self.processed_events += len(events_to_process)
             logging.info(f"Processing {len(events_to_process)} events (total processed: {self.processed_events}/{self.max_events if self.max_events else 'unlimited'})")
 
-            # Accumulate h_total_weight across chunks
-            chunk_h = self.analyzer.base_processor.correction_manager.get_h_total_weight(events_to_process)
-            self.h_total_weight = (self.h_total_weight or 0.0) + chunk_h
+            # Accumulate weighted_total_events across chunks.
+            # Also persist to a temp file so postprocess() can sum across
+            # workers (futures/dask workers run in separate processes and do
+            # not share self.weighted_total_events with the main process).
+            chunk_h = self.analyzer.base_processor.correction_manager.get_weighted_total_events(events_to_process)
+            self.weighted_total_events = (self.weighted_total_events or 0.0) + chunk_h
+            if self._temp_dir:
+                import os, pickle, time, uuid
+                _wte_id = f"{int(time.time() * 1000000)}_{uuid.uuid4().hex[:8]}"
+                _wte_file = os.path.join(self._temp_dir, f"wte_chunk_{_wte_id}.pkl")
+                try:
+                    with open(_wte_file, "wb") as _f:
+                        pickle.dump({"weighted_total_events": float(chunk_h)}, _f, protocol=pickle.HIGHEST_PROTOCOL)
+                except Exception as _e:
+                    logging.warning(f"Failed to persist wte chunk: {_e}")
 
             # Call analyzer.process() with appropriate parameters
             # In event_selection_only mode, analyzer will skip region analysis
@@ -886,7 +1107,8 @@ if COFFEA_AVAILABLE:
                 event_selection_output=None,
                 event_selection_only=self.event_selection_only,
                 output_format=self.output_format,
-                n_events_total=self.n_events_total
+                total_events=self.total_events,
+                input_total_events=self.input_total_events
             )
 
             # If event_selection_output is requested, collect selected events from this chunk
@@ -905,8 +1127,45 @@ if COFFEA_AVAILABLE:
                     )
                     logging.info(f"Chunk: {len(selected_events)}/{len(events_to_process)} events passed selection")
 
-                    # Save this chunk to a temporary file (for cross-worker compatibility)
-                    # Use unique filename to avoid conflicts across workers
+                    # Compute event weights so futures output matches iterative output
+                    chunk_event_weights = {}
+                    n_sel = len(selected_events)
+                    if self.analyzer.base_processor.is_data:
+                        ones = np.ones(n_sel, dtype=np.float64)
+                        chunk_event_weights = {
+                            "generator": ones,
+                            "pileup": ones,
+                            "weight_total_nominal": ones,
+                        }
+                    else:
+                        try:
+                            _wr = self.analyzer.base_processor.correction_manager.compute_event_weights(
+                                selected_events, selected_objects
+                            )
+                            chunk_event_weights = _build_event_weights_for_save(_wr)
+                        except Exception as _we:
+                            logging.warning(f"Chunk weight calculation failed, using unit weights: {_we}")
+                            ones = np.ones(n_sel, dtype=np.float64)
+                            chunk_event_weights = {
+                                "generator": ones,
+                                "pileup": ones,
+                                "weight_total_nominal": ones,
+                            }
+
+                    # Convert selected_events to flat numpy branch dict before pickling.
+                    # NanoEvents-derived awkward arrays are tied to the uproot file handle
+                    # which is closed in the main process → pickle.load fails with
+                    # "zero-size array to reduction operation" on awkward 2.8.9.
+                    from .variables import compute_event_variables
+                    try:
+                        branches = compute_event_variables(
+                            selected_events, selected_objects,
+                            self.config, chunk_event_weights
+                        )
+                    except Exception as _be:
+                        logging.warning(f"compute_event_variables failed: {_be}; storing raw arrays")
+                        branches = {}
+
                     import time
                     import uuid
                     chunk_id = f"{int(time.time() * 1000000)}_{uuid.uuid4().hex[:8]}"
@@ -914,22 +1173,19 @@ if COFFEA_AVAILABLE:
                     with open(chunk_file, 'wb') as f:
                         pickle.dump(
                             {
-                                "events": selected_events,
-                                "objects": selected_objects,
+                                "branches": branches,   # flat numpy dict — safe to pickle
+                                "n_events": n_sel,
                                 "cutflow": chunk_cutflow,
+                                "event_weights": chunk_event_weights,
                             },
                             f,
                             protocol=pickle.HIGHEST_PROTOCOL,
                         )
 
-                    # Add to accumulator dict (this will be merged across workers)
-                    # Note: Don't store in accumulator because Coffea can't properly merge True values
-                    # Instead, we'll dir-scan for chunk files in postprocess
-                    # self.accumulator["_event_selection_chunk_files"][chunk_file] = True
-                    logging.info(f"Saved chunk to {chunk_file}, accumulator will scan dir in postprocess")
+                    logging.info(f"Saved chunk to {chunk_file}: {n_sel} events, {len(branches)} branches")
                 except Exception as e:
                     logging.warning(f"Failed to collect selected events for event_selection_output: {e}", exc_info=True)
-            
+
             # If event_selection_only mode is enabled, don't merge results (no region analysis was done)
             if self.event_selection_only:
                 logging.info("event_selection_only mode: skipping accumulator merge (no region analysis)")
@@ -1033,9 +1289,10 @@ if COFFEA_AVAILABLE:
             chunk_id = f"{int(time.time() * 1000000)}_{uuid.uuid4().hex[:8]}"
             result_file = os.path.join(self._temp_dir, f"analysis_chunk_{chunk_id}.pkl")
             payload = {k: result[k] for k in ("regions", "region_histograms",
-                                               "region_cutflow", "region_validation",
+                                               "region_cutflow_histograms", "region_cutflow",
+                                               "event_selection_cutflow", "region_validation",
                                                "metadata") if k in result}
-            payload["h_total_weight"] = float(chunk_h)
+            payload["weighted_total_events"] = float(chunk_h)
             try:
                 with open(result_file, "wb") as f:
                     pickle.dump(payload, f, protocol=pickle.HIGHEST_PROTOCOL)
@@ -1049,12 +1306,15 @@ if COFFEA_AVAILABLE:
             merged: Dict[str, Any] = {
                 "regions": {},
                 "region_histograms": {},
+                "region_cutflow_histograms": {},
                 "region_cutflow": {"total_events": 0, "regions": {}},
+                "event_selection_cutflow": {},
                 "region_validation": {"status": "completed", "regions": {},
                                       "overlaps": {}, "warnings": []},
-                "metadata": {"n_events_processed": 0, "n_regions": 0,
-                             "processing_time": 0.0},
-                "h_total_weight": 0.0,
+                "metadata": {"n_events_processed": 0, "n_events_input": 0,
+                             "n_regions": 0, "processing_time": 0.0,
+                             "weighted_total_events": 0.0, "luminosity": 0.0},
+                "weighted_total_events": 0.0,
             }
             for rf in sorted(result_files):
                 try:
@@ -1100,6 +1360,22 @@ if COFFEA_AVAILABLE:
                             except Exception as e:
                                 logging.warning(f"Failed to merge histogram {hname}/{region}: {e}")
 
+                # region_cutflow_histograms: add hist objects with +
+                for region, h in chunk.get("region_cutflow_histograms", {}).items():
+                    if region not in merged["region_cutflow_histograms"]:
+                        merged["region_cutflow_histograms"][region] = h
+                    else:
+                        try:
+                            merged["region_cutflow_histograms"][region] = merged["region_cutflow_histograms"][region] + h
+                        except Exception as e:
+                            logging.warning(f"Failed to merge cutflow histogram {region}: {e}")
+
+                # event_selection_cutflow: sum per-step counts across chunks
+                for step, count in chunk.get("event_selection_cutflow", {}).items():
+                    merged["event_selection_cutflow"][step] = (
+                        int(merged["event_selection_cutflow"].get(step, 0)) + int(count)
+                    )
+
                 # region_cutflow: sum total_events and per-region n_events
                 cutflow = chunk.get("region_cutflow", {})
                 merged["region_cutflow"]["total_events"] += int(cutflow.get("total_events", 0))
@@ -1124,15 +1400,19 @@ if COFFEA_AVAILABLE:
                         )
                 merged["region_validation"]["warnings"].extend(validation.get("warnings", []))
 
-                # metadata: sum n_events_processed and processing_time
+                # metadata: sum n_events_processed and processing_time; take lumi from first chunk
                 meta = chunk.get("metadata", {})
                 merged["metadata"]["n_events_processed"] += int(meta.get("n_events_processed", 0))
+                if "n_events_input" in meta:
+                    merged["metadata"]["n_events_input"] = int(meta.get("n_events_input", 0))
                 merged["metadata"]["processing_time"] += float(meta.get("processing_time", 0.0))
                 if "n_regions" in meta:
                     merged["metadata"]["n_regions"] = meta["n_regions"]
+                if merged["metadata"]["luminosity"] == 0.0 and meta.get("luminosity", 0.0) > 0:
+                    merged["metadata"]["luminosity"] = float(meta["luminosity"])
 
-                # h_total_weight: sum across all chunks
-                merged["h_total_weight"] += float(chunk.get("h_total_weight", 0.0))
+                # weighted_total_events: sum across all chunks
+                merged["weighted_total_events"] += float(chunk.get("weighted_total_events", 0.0))
 
             # Recompute fractions
             total_cf = merged["region_cutflow"]["total_events"]
@@ -1153,7 +1433,6 @@ if COFFEA_AVAILABLE:
             """Post-process results."""
             import os
             import pickle
-            import awkward as ak
 
             # Get chunk files from accumulator (merged across all workers)
             # File paths are stored as keys in the dict accumulator
@@ -1172,6 +1451,28 @@ if COFFEA_AVAILABLE:
 
             logging.info(f"postprocess called: event_selection_output={self.event_selection_output}, chunk_files={len(chunk_files)}")
 
+            # ── Sum weighted_total_events from per-worker temp files ──────────
+            # Futures/dask workers run in separate processes; self.weighted_total_events
+            # on the main-process instance is None. Summing the wte_chunk files is the
+            # only reliable source of truth across all executors.
+            if self._temp_dir and os.path.exists(self._temp_dir):
+                wte_files = [
+                    os.path.join(self._temp_dir, f)
+                    for f in os.listdir(self._temp_dir)
+                    if f.startswith("wte_chunk_") and f.endswith(".pkl")
+                ]
+                if wte_files:
+                    _wte_total = 0.0
+                    for _wf in wte_files:
+                        try:
+                            with open(_wf, "rb") as _f:
+                                _wte_total += float(pickle.load(_f).get("weighted_total_events", 0.0))
+                            os.remove(_wf)
+                        except Exception as _e:
+                            logging.warning(f"Failed to load wte chunk {_wf}: {_e}")
+                    self.weighted_total_events = _wte_total
+                    logging.info(f"Summed weighted_total_events from {len(wte_files)} worker files: {_wte_total}")
+
             # ── Merge region analysis results from per-chunk temp files ───────
             if self._temp_dir and os.path.exists(self._temp_dir):
                 analysis_files = [
@@ -1183,13 +1484,20 @@ if COFFEA_AVAILABLE:
                     merged_analysis = self._merge_analysis_chunks(analysis_files)
                     accumulator["regions"] = merged_analysis["regions"]
                     accumulator["region_histograms"] = merged_analysis["region_histograms"]
+                    accumulator["region_cutflow_histograms"] = merged_analysis["region_cutflow_histograms"]
                     accumulator["region_cutflow"] = merged_analysis["region_cutflow"]
+                    accumulator["event_selection_cutflow"] = merged_analysis["event_selection_cutflow"]
                     accumulator["region_validation"] = merged_analysis["region_validation"]
+                    # weighted_total_events is already set from wte_chunk files above;
+                    # only fall back to analysis-chunk value if wte files were absent.
+                    if self.weighted_total_events is None and merged_analysis.get("weighted_total_events"):
+                        self.weighted_total_events = merged_analysis["weighted_total_events"]
+                    # Inject wte into metadata so region plots can normalise histograms
+                    merged_analysis["metadata"]["weighted_total_events"] = float(
+                        self.weighted_total_events or merged_analysis.get("weighted_total_events", 0.0)
+                    )
+                    # luminosity already in metadata from chunk merge (taken from first chunk)
                     accumulator["metadata"] = merged_analysis["metadata"]
-                    # Propagate summed h_total_weight back to the processor instance so
-                    # _save_event_selection (called below) receives the correct value.
-                    if merged_analysis.get("h_total_weight"):
-                        self.h_total_weight = merged_analysis["h_total_weight"]
                     logging.info(f"Merged region analysis from {len(analysis_files)} chunks: "
                                  f"{len(merged_analysis['regions'])} regions, "
                                  f"{merged_analysis['metadata']['n_events_processed']} events processed")
@@ -1242,72 +1550,86 @@ if COFFEA_AVAILABLE:
             # Save accumulated event selection if requested
             if self.event_selection_output and chunk_files:
                 try:
-                    # Load all chunks from files
-                    all_selected_events_list = []
-                    all_selected_objects_list = []
+                    # Load all chunks from files.
+                    # Chunks now contain flat numpy branch dicts (key "branches") — NOT
+                    # NanoEvents awkward arrays — so they deserialise safely across processes.
+                    merged_branches: Dict[str, list] = {}   # branch_name → list of np.ndarray
                     merged_cutflow: Dict[str, int] = {}
+                    total_selected = 0
 
-                    for chunk_file in chunk_files:
-                        if os.path.exists(chunk_file):
-                            try:
-                                with open(chunk_file, 'rb') as f:
-                                    chunk_data = pickle.load(f)
-                                    events = chunk_data.get("events")
-                                    objects = chunk_data.get("objects")
-                                    cutflow = chunk_data.get("cutflow")
-                                    if events is not None and len(events) > 0:
-                                        all_selected_events_list.append(events)
-                                        all_selected_objects_list.append(objects)
-                                    if isinstance(cutflow, dict):
-                                        for key, value in cutflow.items():
-                                            try:
-                                                merged_cutflow[key] = int(merged_cutflow.get(key, 0)) + int(value)
-                                            except Exception:
-                                                pass
-                            except Exception as e:
-                                logging.warning(f"Failed to load chunk file {chunk_file}: {e}")
+                    for chunk_file in sorted(chunk_files):
+                        if not os.path.exists(chunk_file):
+                            continue
+                        try:
+                            with open(chunk_file, 'rb') as f:
+                                chunk_data = pickle.load(f)
+                        except Exception as e:
+                            logging.warning(f"Failed to unpickle chunk file {chunk_file}: {e}")
+                            continue
+                        try:
+                            branches = chunk_data.get("branches", {})
+                            n_ev = int(chunk_data.get("n_events", 0))
+                            cutflow = chunk_data.get("cutflow")
 
-                    if all_selected_events_list:
-                        # Concatenate all selected events and objects from all chunks
-                        all_selected_events = ak.concatenate(all_selected_events_list)
+                            if n_ev > 0 and branches:
+                                total_selected += n_ev
+                                for bname, barr in branches.items():
+                                    if bname not in merged_branches:
+                                        merged_branches[bname] = []
+                                    merged_branches[bname].append(barr)
 
-                        # Merge selected objects dictionaries
-                        all_selected_objects = {}
-                        if all_selected_objects_list:
-                            all_keys = set()
-                            for obj_dict in all_selected_objects_list:
-                                all_keys.update(obj_dict.keys())
-                            for key in all_keys:
-                                arrays_to_concat = []
-                                for obj_dict in all_selected_objects_list:
-                                    if key in obj_dict and len(obj_dict[key]) > 0:
-                                        arrays_to_concat.append(obj_dict[key])
-                                if arrays_to_concat:
-                                    all_selected_objects[key] = ak.concatenate(arrays_to_concat)
-                    else:
-                        # No events passed selection across all chunks — still write the output
-                        # file so Metadata (n_events, h_total_weight) is present for downstream tools.
+                            if isinstance(cutflow, dict):
+                                for key, value in cutflow.items():
+                                    try:
+                                        merged_cutflow[key] = int(merged_cutflow.get(key, 0)) + int(value)
+                                    except Exception:
+                                        pass
+                        except Exception as e:
+                            logging.warning(f"Failed to process chunk file {chunk_file}: {e}")
+
+                    # Concatenate per-branch arrays across all chunks.
+                    # Branches are np.ndarray (flat) or list-of-lists (jagged).
+                    flat_branches: Dict[str, Any] = {}
+                    for bname, arrs in merged_branches.items():
+                        if not arrs:
+                            continue
+                        if isinstance(arrs[0], np.ndarray):
+                            flat_branches[bname] = np.concatenate(arrs)
+                        else:
+                            # jagged: list-of-lists per chunk → flatten one level
+                            merged_list = []
+                            for a in arrs:
+                                merged_list.extend(a)
+                            flat_branches[bname] = merged_list
+
+                    if not flat_branches:
                         logging.warning(
                             f"No selected events found in {len(chunk_files)} chunk files — "
                             f"writing metadata-only output to {self.event_selection_output}"
                         )
-                        all_selected_events = ak.Array([])
-                        all_selected_objects = {}
 
-                    # Save using base processor helper (handles empty events gracefully)
-                    logging.info(f"Saving accumulated event-level selection to {self.event_selection_output}")
-                    self.analyzer.base_processor._save_event_selection(
-                        self.event_selection_output, all_selected_events, all_selected_objects,
-                        max_events=self.config.get("max_events"),
-                        n_events_total=self.n_events_total,
-                        h_total_weight=self.h_total_weight,
-                        output_format=self.output_format
+                    # Write directly to ROOT using flat numpy branch arrays.
+                    # Bypasses _save_event_selection entirely — no awkward arrays needed.
+                    logging.info(
+                        f"Saving {total_selected} selected events "
+                        f"({len(flat_branches)} branches) to {self.event_selection_output}"
                     )
-                    # Verify file was created
+                    self._write_event_selection_root(
+                        self.event_selection_output,
+                        flat_branches,
+                        total_events=self.total_events,
+                        weighted_total_events=self.weighted_total_events,
+                        n_selected=total_selected,
+                        cutflow=merged_cutflow if merged_cutflow else None,
+                    )
+
                     if os.path.exists(self.event_selection_output):
                         file_size = os.path.getsize(self.event_selection_output)
-                        n_saved = len(all_selected_events)
-                        logging.info(f"✓ Saved accumulated event-level selection from {len(chunk_files)} chunks ({n_saved} events) to {self.event_selection_output} ({file_size} bytes)")
+                        logging.info(
+                            f"✓ Saved accumulated event-level selection from "
+                            f"{len(chunk_files)} chunks ({total_selected} events) "
+                            f"to {self.event_selection_output} ({file_size} bytes)"
+                        )
                     else:
                         logging.error(f"✗ File {self.event_selection_output} was not created!")
 
@@ -1337,4 +1659,97 @@ if COFFEA_AVAILABLE:
                 except Exception as e:
                     logging.error(f"Failed to save accumulated event selection to {self.event_selection_output}: {e}", exc_info=True)
 
+            # Ensure weighted_total_events is in metadata before returning
+            if "metadata" not in accumulator:
+                accumulator["metadata"] = {}
+            if self.weighted_total_events is not None:
+                accumulator["metadata"]["weighted_total_events"] = self.weighted_total_events
+
             return accumulator
+
+        def _write_event_selection_root(
+            self,
+            output_path: str,
+            branches: Dict[str, np.ndarray],
+            total_events: Optional[int],
+            weighted_total_events: Optional[float],
+            n_selected: int,
+            cutflow: Optional[Dict[str, int]],
+        ) -> None:
+            """Write flat numpy branch arrays directly to a ROOT file.
+
+            Replaces the old path that reconstructed awkward arrays from
+            NanoEvents-derived objects (which can't be deserialized across
+            loky worker processes on awkward 2.8.9).
+            """
+            import uproot
+            import os
+
+            outdir = os.path.dirname(output_path)
+            if outdir:
+                os.makedirs(outdir, exist_ok=True)
+
+            edges_1bin = np.array([0.0, 1.0])
+
+            with uproot.recreate(output_path) as f:
+                # Metadata scalars as 1-bin TH1Ds (hadd-summable)
+                f["total_events"] = (
+                    np.array([float(total_events if total_events is not None else 0)]),
+                    edges_1bin,
+                )
+                f["weighted_total_events"] = (
+                    np.array([float(weighted_total_events if weighted_total_events is not None else 0.0)]),
+                    edges_1bin,
+                )
+                # selected_events = sum of full_event_weight (matches iterative path)
+                _ew = branches.get("full_event_weight")
+                if _ew is not None and len(_ew) > 0:
+                    try:
+                        _sel_val = float(np.sum(np.asarray(_ew)))
+                    except Exception:
+                        _sel_val = float(n_selected)
+                else:
+                    _sel_val = float(n_selected)
+                f["selected_events"] = (
+                    np.array([_sel_val]),
+                    edges_1bin,
+                )
+
+                # Cutflow: single labeled TH1 (matches iterative path in processor.py)
+                if cutflow:
+                    try:
+                        import boost_histogram as bh
+                        cut_names  = list(cutflow.keys())
+                        cut_counts = list(cutflow.values())
+                        h_cf = bh.Histogram(bh.axis.StrCategory(cut_names))
+                        for i, name in enumerate(cut_names):
+                            h_cf[bh.loc(name)] = cut_counts[i]
+                        f["cutflow"] = h_cf
+                    except Exception:
+                        cut_counts = np.array(list(cutflow.values()), dtype=float)
+                        cf_edges   = np.arange(len(cut_counts) + 1, dtype=float)
+                        f["cutflow"] = (cut_counts, cf_edges)
+
+                # Events TTree — flat numpy branches only (jagged ak.Arrays corrupt uproot output)
+                if branches:
+                    try:
+                        flat_branches = {}
+                        for k, v in branches.items():
+                            if isinstance(v, np.ndarray):
+                                if v.dtype == object or v.ndim != 1:
+                                    continue  # jagged or multi-dim numpy
+                                flat_branches[k] = v
+                            elif isinstance(v, ak.Array):
+                                try:
+                                    arr = ak.to_numpy(v)
+                                    if arr.dtype == object or arr.ndim != 1:
+                                        continue  # jagged
+                                    flat_branches[k] = arr.astype(np.float32)
+                                except Exception:
+                                    continue
+                        f["Events"] = flat_branches
+                        logging.info(f"Wrote Events tree with {n_selected} entries, {len(flat_branches)} branches")
+                    except Exception as e:
+                        logging.error(f"Failed to write Events tree: {e}", exc_info=True)
+
+            return None

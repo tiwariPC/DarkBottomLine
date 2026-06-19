@@ -111,6 +111,14 @@ def _fix_binning_edges(node: Any) -> None:
     if not isinstance(node, dict):
         return
     nodetype = node.get("nodetype")
+    # Some correction JSONs use 'category' nodes that are structurally
+    # equivalent to binning nodes for the purposes of edges/content fixing.
+    # Treat 'category' as 'binning' here so we can repair non-monotonic edges
+    # and make the JSON acceptable to correctionlib.from_string.
+    if nodetype == "category":
+        node["nodetype"] = "binning"
+        nodetype = "binning"
+
     if nodetype == "binning":
         edges = node.get("edges")
         content = node.get("content")
@@ -210,7 +218,7 @@ def _load_correction_file_with_edges_fix(file_path: str) -> Optional[CorrectionS
     except Exception as e:
         err_str = str(e)
         truncated = err_str[:200] + " [...]" if len(err_str) > 200 else err_str
-        logging.warning(
+        logging.debug(
             "CorrectionSet.from_string failed after bin-edge fix for %s (will fall back to from_file): %s",
             file_path,
             truncated,
@@ -255,7 +263,7 @@ class CorrectionManager:
                 cs = _load_correction_file_with_edges_fix(file_path)
                 if cs is not None:
                     self.corrections[correction_type] = cs
-                    logging.info(
+                    logging.debug(
                         f"Loaded {correction_type} corrections from {file_path} "
                         "(bin edges fixed for correctionlib)"
                     )
@@ -268,7 +276,7 @@ class CorrectionManager:
                     with gzip.open(path_to_try, "rt") as f:
                         data = f.read().strip()
                     self.corrections[correction_type] = CorrectionSet.from_string(data)
-                    logging.info(f"Loaded {correction_type} corrections from {path_to_try} (gzip)")
+                    logging.debug(f"Loaded {correction_type} corrections from {path_to_try} (gzip)")
                     loaded = True
                 except Exception as e:
                     logging.warning(f"Failed to load {correction_type} (gzip): {e}")
@@ -277,7 +285,7 @@ class CorrectionManager:
                 path_to_try = str(resolved_path) if resolved_path is not None else file_path
                 try:
                     self.corrections[correction_type] = CorrectionSet.from_file(path_to_try)
-                    logging.info(f"Loaded {correction_type} corrections from {path_to_try}")
+                    logging.debug(f"Loaded {correction_type} corrections from {path_to_try}")
                     loaded = True
                 except Exception as e:
                     err_msg = str(e).lower()
@@ -285,7 +293,7 @@ class CorrectionManager:
                         cs = _load_correction_file_with_edges_fix(file_path)
                         if cs is not None:
                             self.corrections[correction_type] = cs
-                            logging.info(
+                            logging.debug(
                                 f"Loaded {correction_type} corrections from {file_path} "
                                 "(applied bin-edge fix for non-monotonic edges)"
                             )
@@ -742,8 +750,28 @@ class CorrectionManager:
         cs = self.corrections["jetJEC"]
         corr_cfg = self.config.get("corrections", {})
         tag = corr_cfg.get("jetJEC_tag", "")
+        level = corr_cfg.get("jetJEC_level", "L1L2L3Res")
         algo = corr_cfg.get("jetJEC_algo", "AK4PFPuppi")
         unc_name = corr_cfg.get("jetJEC_unc", "Total")
+        is_data = bool(self.config.get("data", {}).get("is_data", False))
+        compound_keys = list(cs.compound.keys()) if hasattr(cs, "compound") else []
+        correction_keys = list(cs.keys())
+
+        def _pick_compound_key(name: str) -> Optional[str]:
+            exact_key = f"{tag}_{name}_{algo}" if tag else None
+            if exact_key and exact_key in cs.compound:
+                return exact_key
+
+            preferred_flavor = "_DATA_" if is_data else "_MC_"
+            for candidate in compound_keys:
+                if preferred_flavor in candidate and candidate.endswith(f"{name}_{algo}"):
+                    return candidate
+
+            for candidate in compound_keys:
+                if candidate.endswith(f"{name}_{algo}"):
+                    return candidate
+
+            return exact_key
 
         n_flat = len(ak.ravel(jets.pt))
         if n_flat == 0:
@@ -765,18 +793,17 @@ class CorrectionManager:
 
         # Compound JEC correction (central)
         jec_central = np.ones(n_flat, dtype=float)
-        compound_key = f"{tag}_L1L2L3Res_{algo}" if tag else None
+        compound_key = _pick_compound_key(level)
         try:
-            if compound_key:
+            if compound_key and compound_key in cs.compound:
                 sf_obj = cs.compound[compound_key]
             else:
-                keys = list(cs.compound.keys()) if hasattr(cs, "compound") else []
-                sf_obj = cs.compound[keys[0]] if keys else None
+                sf_obj = cs.compound[compound_keys[0]] if compound_keys else None
             if sf_obj is not None:
                 if isinstance(sf_obj, str):
                     sf_obj = cs.compound[sf_obj]
                 jec_central = np.asarray(
-                    sf_obj.evaluate(flat_pt, flat_eta, flat_area, flat_phi, flat_rho), dtype=float
+                    sf_obj.evaluate(flat_area, flat_eta, flat_pt, flat_rho), dtype=float
                 )
         except Exception as e:
             logging.warning(f"JEC compound correction evaluation failed: {e}")
@@ -784,11 +811,22 @@ class CorrectionManager:
         # JEC Total uncertainty (for up/down)
         jec_unc = np.zeros(n_flat, dtype=float)
         unc_key_full = f"{tag}_{unc_name}_{algo}" if tag else None
+        if not unc_key_full or unc_key_full not in correction_keys:
+            preferred_flavor = "_DATA_" if is_data else "_MC_"
+            for candidate in correction_keys:
+                if preferred_flavor in candidate and candidate.endswith(f"{unc_name}_{algo}"):
+                    unc_key_full = candidate
+                    break
+            else:
+                for candidate in correction_keys:
+                    if candidate.endswith(f"{unc_name}_{algo}"):
+                        unc_key_full = candidate
+                        break
         try:
-            unc_obj = cs[unc_key_full] if unc_key_full else None
+            unc_obj = cs[unc_key_full] if unc_key_full and unc_key_full in correction_keys else None
             if unc_obj is not None:
                 jec_unc = np.asarray(
-                    unc_obj.evaluate(flat_pt * jec_central, flat_eta), dtype=float
+                    unc_obj.evaluate(flat_eta, flat_pt * jec_central), dtype=float
                 )
         except Exception as e:
             logging.warning(f"JEC uncertainty evaluation failed: {e}")
@@ -900,7 +938,7 @@ class CorrectionManager:
 
         return corrections
 
-    def get_h_total_weight(self, events: ak.Array) -> float:
+    def get_weighted_total_events(self, events: ak.Array) -> float:
         """
         Compute the normalization sum from all events before any selection.
         For MC: sum of sign(genWeight) over all events (+1 or -1 per event).
@@ -924,14 +962,14 @@ class CorrectionManager:
         """
         Compute total event weight and per-systematic up/down variations.
 
-        total_weight = genweight * weight_pileup * weight_btag * weight_muon
-                       * weight_electron * weight_electronHLT * weight_JEC
+        full_event_weight = genweight * weight_pileup * weight_btag * weight_muon
+                            * weight_electron * weight_electronHLT * weight_JEC
 
         For each component X:
-            weight_XUP   = (total_weight / weight_X_central) * weight_X_up
-            weight_XDOWN = (total_weight / weight_X_central) * weight_X_down
+            weight_XUP   = (full_event_weight / weight_X_central) * weight_X_up
+            weight_XDOWN = (full_event_weight / weight_X_central) * weight_X_down
 
-        Returns dict with keys: total_weight, weight_pileupUP/DOWN,
+        Returns dict with keys: full_event_weight, weight_pileupUP/DOWN,
         weight_btagUP/DOWN, weight_muonUP/DOWN, weight_electronUP/DOWN,
         weight_electronHLTUP/DOWN, weight_JECUP/DOWN.
         """
@@ -990,7 +1028,8 @@ class CorrectionManager:
         else:
             w_jec = w_jec_up = w_jec_down = ones
 
-        total_weight = genweight * w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_jec
+        sf_weight = w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_jec
+        full_event_weight = genweight * sf_weight
 
         def _vary(total, central, variation):
             """Replace central component with variation: (total / central) * variation."""
@@ -998,19 +1037,20 @@ class CorrectionManager:
             return (total / safe) * variation
 
         return {
-            "total_weight": total_weight,
-            "weight_pileupUP": _vary(total_weight, w_pu, w_pu_up),
-            "weight_pileupDOWN": _vary(total_weight, w_pu, w_pu_down),
-            "weight_btagUP": _vary(total_weight, w_btag, w_btag_up),
-            "weight_btagDOWN": _vary(total_weight, w_btag, w_btag_down),
-            "weight_muonUP": _vary(total_weight, w_muon, w_muon_up),
-            "weight_muonDOWN": _vary(total_weight, w_muon, w_muon_down),
-            "weight_electronUP": _vary(total_weight, w_electron, w_electron_up),
-            "weight_electronDOWN": _vary(total_weight, w_electron, w_electron_down),
-            "weight_electronHLTUP": _vary(total_weight, w_ele_hlt, w_ele_hlt_up),
-            "weight_electronHLTDOWN": _vary(total_weight, w_ele_hlt, w_ele_hlt_down),
-            "weight_JECUP": _vary(total_weight, w_jec, w_jec_up),
-            "weight_JECDOWN": _vary(total_weight, w_jec, w_jec_down),
+            "sf_weight": sf_weight,
+            "full_event_weight": full_event_weight,
+            "weight_pileupUP": _vary(full_event_weight, w_pu, w_pu_up),
+            "weight_pileupDOWN": _vary(full_event_weight, w_pu, w_pu_down),
+            "weight_btagUP": _vary(full_event_weight, w_btag, w_btag_up),
+            "weight_btagDOWN": _vary(full_event_weight, w_btag, w_btag_down),
+            "weight_muonUP": _vary(full_event_weight, w_muon, w_muon_up),
+            "weight_muonDOWN": _vary(full_event_weight, w_muon, w_muon_down),
+            "weight_electronUP": _vary(full_event_weight, w_electron, w_electron_up),
+            "weight_electronDOWN": _vary(full_event_weight, w_electron, w_electron_down),
+            "weight_electronHLTUP": _vary(full_event_weight, w_ele_hlt, w_ele_hlt_up),
+            "weight_electronHLTDOWN": _vary(full_event_weight, w_ele_hlt, w_ele_hlt_down),
+            "weight_JECUP": _vary(full_event_weight, w_jec, w_jec_up),
+            "weight_JECDOWN": _vary(full_event_weight, w_jec, w_jec_down),
         }
 
     def get_systematic_variations(self) -> list:

@@ -7,6 +7,8 @@ import numpy as np
 from typing import Dict, Any, Optional, Union
 import logging
 
+SENTINEL = -9.0
+
 try:
     import hist
     HIST_AVAILABLE = True
@@ -467,7 +469,8 @@ class HistogramManager:
                 met_pt = np.asarray(ak.to_numpy(ak.ravel(met_pt_arr)))
             except Exception:
                 met_pt = np.zeros(len(events), dtype=np.float64)
-        histograms["met"].fill(met=met_pt, weight=weights)
+        _m = met_pt != SENTINEL
+        histograms["met"].fill(met=met_pt[_m], weight=weights[_m])
 
         # Safe per-event count: use axis=1 for jagged arrays; depth-1 (e.g. sliced region) -> zeros
         def _safe_num(arr, n_ev: int):
@@ -505,12 +508,16 @@ class HistogramManager:
                 jet_eta = np.asarray(ak.to_numpy(ak.flatten(jets.eta)))
                 jet_phi = np.asarray(ak.to_numpy(ak.flatten(jets.phi)))
                 jet_weights = np.asarray(ak.to_numpy(ak.flatten(ak.broadcast_arrays(weights, jets.pt)[0])))
-                histograms["jet_pt"].fill(jet_pt=jet_pt, weight=jet_weights)
-                histograms["jet_eta"].fill(jet_eta=jet_eta, weight=jet_weights)
-                histograms["jet_phi"].fill(jet_phi=jet_phi, weight=jet_weights)
+                _mpt = jet_pt != SENTINEL
+                histograms["jet_pt"].fill(jet_pt=jet_pt[_mpt], weight=jet_weights[_mpt])
+                _meta = jet_eta != SENTINEL
+                histograms["jet_eta"].fill(jet_eta=jet_eta[_meta], weight=jet_weights[_meta])
+                _mphi = jet_phi != SENTINEL
+                histograms["jet_phi"].fill(jet_phi=jet_phi[_mphi], weight=jet_weights[_mphi])
                 if hasattr(jets, "btagDeepFlavB"):
                     btag_score = np.asarray(ak.to_numpy(ak.flatten(jets.btagDeepFlavB)))
-                    histograms["btag_deepjet"].fill(btag_deepjet=btag_score, weight=jet_weights)
+                    _mbtag = btag_score != SENTINEL
+                    histograms["btag_deepjet"].fill(btag_deepjet=btag_score[_mbtag], weight=jet_weights[_mbtag])
         except Exception:
             pass
 
@@ -521,8 +528,10 @@ class HistogramManager:
                 muon_pt = np.asarray(ak.to_numpy(ak.flatten(tight_mu.pt)))
                 muon_eta = np.asarray(ak.to_numpy(ak.flatten(tight_mu.eta)))
                 muon_weights = np.asarray(ak.to_numpy(ak.flatten(ak.broadcast_arrays(weights, tight_mu.pt)[0])))
-                histograms["muon_pt"].fill(muon_pt=muon_pt, weight=muon_weights)
-                histograms["muon_eta"].fill(muon_eta=muon_eta, weight=muon_weights)
+                _mmpt = muon_pt != SENTINEL
+                histograms["muon_pt"].fill(muon_pt=muon_pt[_mmpt], weight=muon_weights[_mmpt])
+                _mmeta = muon_eta != SENTINEL
+                histograms["muon_eta"].fill(muon_eta=muon_eta[_mmeta], weight=muon_weights[_mmeta])
         except Exception:
             pass
 
@@ -533,8 +542,10 @@ class HistogramManager:
                 electron_pt = np.asarray(ak.to_numpy(ak.flatten(tight_el.pt)))
                 electron_eta = np.asarray(ak.to_numpy(ak.flatten(tight_el.eta)))
                 electron_weights = np.asarray(ak.to_numpy(ak.flatten(ak.broadcast_arrays(weights, tight_el.pt)[0])))
-                histograms["electron_pt"].fill(electron_pt=electron_pt, weight=electron_weights)
-                histograms["electron_eta"].fill(electron_eta=electron_eta, weight=electron_weights)
+                _mept = electron_pt != SENTINEL
+                histograms["electron_pt"].fill(electron_pt=electron_pt[_mept], weight=electron_weights[_mept])
+                _meeta = electron_eta != SENTINEL
+                histograms["electron_eta"].fill(electron_eta=electron_eta[_meeta], weight=electron_weights[_meeta])
         except Exception:
             pass
 
@@ -543,6 +554,15 @@ class HistogramManager:
             if (tight_mu is not None and len(ak.flatten(tight_mu)) > 0 and
                     jets is not None and len(ak.flatten(jets)) > 0):
                 pass
+        except Exception:
+            pass
+
+        # Fill DNN score histogram if ml_score branch present
+        try:
+            if "ml_score" in events.fields:
+                scores = np.clip(np.asarray(ak.to_numpy(events["ml_score"]), dtype="f8"), 0.0, 1.0)
+                _ms = scores != SENTINEL
+                histograms["dnn_score"].fill(dnn_score=scores[_ms], weight=weights[_ms])
         except Exception:
             pass
 

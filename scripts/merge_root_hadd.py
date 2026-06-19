@@ -3,17 +3,14 @@
 
 Features:
 - Merge ROOT files in multiple input folders in parallel.
-- Group files by common prefix up to a marker token (default: NANOAODSIM).
+- Merge all ROOT files inside each input folder into a single output file.
 - Write merged ROOT files to a configurable output directory.
-- Export a sidecar JSON with summed numeric values from Metadata tree.
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import os
-import re
 import shutil
 import subprocess
 import tempfile
@@ -21,12 +18,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
-
-
-UUID_SUFFIX_RE = re.compile(
-    r"-(?:\d+)-[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
+from typing import List, Sequence, Tuple
 
 
 @dataclass
@@ -36,7 +28,6 @@ class MergeTask:
     files: List[Path]
     input_bytes: int
     output_root: Path
-    output_meta_json: Path
 
 
 class _ByteBudget:
@@ -68,18 +59,72 @@ def _check_hadd_exists() -> None:
         raise RuntimeError("Cannot find 'hadd' in PATH. Please load ROOT environment first.")
 
 
-def _resolve_group_key(file_path: Path, marker: str) -> str:
-    stem = file_path.stem
-    idx = stem.find(marker)
-    if idx >= 0:
-        return stem[: idx + len(marker)]
+def _check_events_tree_readable(path: Path) -> Tuple[bool, str | None]:
+    """Return whether the file's Events tree can be read by uproot.
 
-    # Fallback: remove known chunk+uuid suffix, otherwise merge all unnamed chunks in folder.
-    no_suffix = UUID_SUFFIX_RE.sub("", stem)
-    return no_suffix if no_suffix != stem else "ALL_FILES"
+    Files without an Events tree are kept, since they may still contribute summary
+    trees. Files that have an Events tree but fail a small read probe are skipped.
+    """
+    # Prefer a PyROOT-based probe when available because it exercises ROOT's
+    # native IO paths and can detect corruption that uproot may not report.
+    try:
+        import ROOT  # type: ignore
+        # Allow disabling PyROOT probe via environment variable to avoid
+        # crashes when reading corrupted baskets in multithreaded probes.
+        import os
+        if os.getenv("MERGE_DISABLE_PYROOT"):
+            root_available = False
+        else:
+            root_available = True
+    except Exception:
+        root_available = False
+
+    if root_available:
+        try:
+            tf = ROOT.TFile.Open(str(path), "READ")
+            if not tf or tf.IsZombie():
+                return False, "PyROOT: cannot open file"
+            if not tf.GetListOfKeys().Contains("Events"):
+                tf.Close()
+                return True, None
+
+            tree = tf.Get("Events")
+            n = int(tree.GetEntries())
+            probe_n = min(10, max(1, n))
+            # Try reading a few entries to exercise baskets.
+            for i in range(probe_n):
+                try:
+                    tree.GetEntry(i)
+                except Exception as e:
+                    tf.Close()
+                    return False, f"PyROOT:GetEntry error: {e}"
+            tf.Close()
+            return True, None
+        except Exception as exc:
+            return False, f"PyROOT: {type(exc).__name__}: {exc}".splitlines()[0]
+
+    # Fallback to uproot probe if PyROOT isn't available.
+    try:
+        import uproot  # type: ignore
+        import awkward as ak  # type: ignore
+    except Exception:
+        # If neither library is available, assume OK (can't check here).
+        return True, None
+
+    try:
+        with uproot.open(path) as f_in:
+            if "Events" not in f_in:
+                return True, None
+
+            events_tree = f_in["Events"]
+            events_tree.arrays(entry_start=0, entry_stop=10, library="ak")
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}".splitlines()[0]
+
+    return True, None
 
 
-def _collect_tasks(input_dirs: Sequence[Path], output_dir: Path, marker: str) -> List[MergeTask]:
+def _collect_tasks(input_dirs: Sequence[Path], output_dir: Path) -> List[MergeTask]:
     tasks: List[MergeTask] = []
     for in_dir in input_dirs:
         if not in_dir.is_dir():
@@ -89,27 +134,36 @@ def _collect_tasks(input_dirs: Sequence[Path], output_dir: Path, marker: str) ->
         if not root_files:
             continue
 
-        groups: Dict[str, List[Path]] = {}
-        for f in root_files:
-            key = _resolve_group_key(f, marker)
-            groups.setdefault(key, []).append(f)
+        good_files: List[Path] = []
+        skipped_files: List[Tuple[Path, str]] = []
+        for root_file in root_files:
+            is_ok, reason = _check_events_tree_readable(root_file)
+            if is_ok:
+                good_files.append(root_file)
+            else:
+                skipped_files.append((root_file, reason or "unreadable Events tree"))
 
-        sub_out = output_dir / in_dir.name
-        sub_out.mkdir(parents=True, exist_ok=True)
-        for key, files in sorted(groups.items()):
-            input_bytes = sum((f.stat().st_size for f in files), 0)
-            out_root = sub_out / f"{key}.root"
-            out_json = sub_out / f"{key}.metadata_sum.json"
-            tasks.append(
-                MergeTask(
-                    folder=in_dir,
-                    group_key=key,
-                    files=sorted(files),
-                    input_bytes=input_bytes,
-                    output_root=out_root,
-                    output_meta_json=out_json,
-                )
+        if skipped_files:
+            print(f"[SKIP] {in_dir.name}: ignoring {len(skipped_files)} file(s) with unreadable Events trees")
+            for bad_file, reason in skipped_files[:10]:
+                print(f"[SKIP] {in_dir.name}: {bad_file.name} -> {reason}")
+            if len(skipped_files) > 10:
+                print(f"[SKIP] {in_dir.name}: ... and {len(skipped_files) - 10} more")
+
+        if not good_files:
+            continue
+
+        input_bytes = sum((f.stat().st_size for f in good_files), 0)
+        out_root = output_dir / f"{in_dir.name}.root"
+        tasks.append(
+            MergeTask(
+                folder=in_dir,
+                group_key=in_dir.name,
+                files=good_files,
+                input_bytes=input_bytes,
+                output_root=out_root,
             )
+        )
     return tasks
 
 
@@ -135,7 +189,6 @@ def _probe_hadd_merge(files: Sequence[Path], workdir: Path, label: str) -> bool:
         files=list(files),
         input_bytes=sum((p.stat().st_size for p in files), 0),
         output_root=probe_root,
-        output_meta_json=workdir / f"probe_{label}.json",
     )
     try:
         _hadd_merge(probe_task, dry_run=False)
@@ -146,12 +199,6 @@ def _probe_hadd_merge(files: Sequence[Path], workdir: Path, label: str) -> bool:
         try:
             if probe_root.exists():
                 probe_root.unlink()
-        except Exception:
-            pass
-        try:
-            probe_json = probe_task.output_meta_json
-            if probe_json.exists():
-                probe_json.unlink()
         except Exception:
             pass
 
@@ -174,61 +221,8 @@ def _find_mergeable_files(files: Sequence[Path], workdir: Path, label: str) -> T
     return left_good + right_good, left_bad + right_bad
 
 
-def _sum_metadata_to_json(task: MergeTask) -> Dict[str, float]:
-    try:
-        import uproot  # type: ignore
-    except Exception:
-        return {}
-
-    sums: Dict[str, float] = {}
-    files_seen = 0
-    for file_path in task.files:
-        try:
-            with uproot.open(file_path) as f:
-                if "Metadata" not in f:
-                    continue
-                tree = f["Metadata"]
-                for branch_name in tree.keys():
-                    arr = tree[branch_name].array(library="np")
-                    if not hasattr(arr, "dtype"):
-                        continue
-                    if not getattr(arr.dtype, "kind", "") in {"i", "u", "f", "b"}:
-                        continue
-                    sums[branch_name] = sums.get(branch_name, 0.0) + float(arr.sum())
-                files_seen += 1
-        except Exception:
-            continue
-
-    payload = {
-        "group": task.group_key,
-        "input_folder": str(task.folder),
-        "input_files": [str(p) for p in task.files],
-        "metadata_files_seen": files_seen,
-        "sums": sums,
-    }
-    task.output_meta_json.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    return sums
-
-
 def _is_eos_path(path: Path) -> bool:
     return path.as_posix().startswith("/eos/")
-
-
-def _copy_artifacts(src_root: Path, dst_root: Path, src_json: Path, dst_json: Path) -> None:
-    dst_root.parent.mkdir(parents=True, exist_ok=True)
-    # Use rename on same filesystem to avoid a second full-size copy.
-    if src_root.stat().st_dev == dst_root.parent.stat().st_dev:
-        src_root.replace(dst_root)
-    else:
-        shutil.copy2(src_root, dst_root)
-        src_root.unlink(missing_ok=True)
-    if src_json.exists():
-        dst_json.parent.mkdir(parents=True, exist_ok=True)
-        if src_json.stat().st_dev == dst_json.parent.stat().st_dev:
-            src_json.replace(dst_json)
-        else:
-            shutil.copy2(src_json, dst_json)
-            src_json.unlink(missing_ok=True)
 
 
 def _find_recoil_branch(branches: Sequence[str], preferred: str) -> str | None:
@@ -314,7 +308,7 @@ def _run_one_task(
     work_dir: Path | None = None,
     staging_budget: _ByteBudget | None = None,
 ) -> str:
-    needs_staging = _is_eos_path(task.output_root) or _is_eos_path(task.output_meta_json)
+    needs_staging = _is_eos_path(task.output_root)
     working_task = task
     temp_dir_cm = None
     filter_note = ""
@@ -334,7 +328,6 @@ def _run_one_task(
             files=task.files,
             input_bytes=task.input_bytes,
             output_root=(staging_dir / task.output_root.name) if needs_staging else task.output_root,
-            output_meta_json=(staging_dir / task.output_meta_json.name) if needs_staging else task.output_meta_json,
         )
 
     try:
@@ -354,7 +347,6 @@ def _run_one_task(
                 files=good_files,
                 input_bytes=sum((p.stat().st_size for p in good_files), 0),
                 output_root=working_task.output_root,
-                output_meta_json=working_task.output_meta_json,
             )
 
         _hadd_merge(working_task, dry_run=dry_run)
@@ -364,29 +356,26 @@ def _run_one_task(
                 filter_note = f", recoil_filter=skipped(branch='{recoil_branch}' not found)"
             else:
                 filter_note = f", recoil_filter={used_branch}>={recoil_min:g} ({before}->{after})"
-        if not dry_run:
-            _sum_metadata_to_json(working_task)
-            if needs_staging:
-                _copy_artifacts(
-                    working_task.output_root,
-                    task.output_root,
-                    working_task.output_meta_json,
-                    task.output_meta_json,
-                )
+        if not dry_run and needs_staging:
+            task.output_root.parent.mkdir(parents=True, exist_ok=True)
+            if working_task.output_root.stat().st_dev == task.output_root.parent.stat().st_dev:
+                working_task.output_root.replace(task.output_root)
+            else:
+                shutil.copy2(working_task.output_root, task.output_root)
+                working_task.output_root.unlink(missing_ok=True)
     finally:
         if temp_dir_cm is not None:
             temp_dir_cm.cleanup()
         if budget_used and staging_budget is not None:
             staging_budget.release(budget_used)
 
-    return f"{task.folder.name}/{task.group_key} -> {task.output_root} ({len(working_task.files)} files{skip_note}{filter_note})"
+    return f"{task.folder.name} -> {task.output_root} ({len(working_task.files)} files{skip_note}{filter_note})"
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Merge ROOT files with hadd by grouping names that share a common prefix "
-            "up to marker (default: NANOAODSIM)."
+            "Merge all ROOT files inside each input folder into one output ROOT file."
         )
     )
     parser.add_argument(
@@ -409,11 +398,6 @@ def _parse_args() -> argparse.Namespace:
         "--output-dir",
         required=True,
         help="Output directory for merged ROOT files.",
-    )
-    parser.add_argument(
-        "--marker",
-        default="NANOAODSIM",
-        help="Grouping marker token in filename (default: NANOAODSIM).",
     )
     parser.add_argument(
         "-j",
@@ -481,7 +465,7 @@ def main() -> int:
     if args.max_staging_gb > 0:
         staging_budget = _ByteBudget(int(args.max_staging_gb * 1024**3))
 
-    tasks = _collect_tasks(input_dirs, output_dir, args.marker)
+    tasks = _collect_tasks(input_dirs, output_dir)
     if not tasks:
         print("No ROOT files found to merge.")
         return 0
@@ -523,8 +507,6 @@ def main() -> int:
         return 2
 
     print("\nAll merge tasks completed successfully.")
-    if not args.dry_run:
-        print("Metadata sums were written to *.metadata_sum.json sidecar files.")
     return 0
 
 

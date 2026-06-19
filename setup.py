@@ -21,33 +21,33 @@ setup(
     packages=find_packages(),
     install_requires=[
         # Core scientific
-        "numpy>=1.24.3",
-        "scipy>=1.10.0",
-        "matplotlib>=3.8.4",
-        "pandas>=2.0.1",
+        "numpy==2.2.6",
+        "scipy==1.16.3",
+        "matplotlib==3.10.8",
+        "pandas==2.2.3",
         # Physics analysis
-        "awkward>=2.8.11",
-        "uproot>=5.6.9",
-        "correctionlib>=2.6.4",
-        "coffea>=2025.12.0",
-        "fsspec-xrootd>=0.2.2",
-        "xrootd>=5.7.2",
+        "awkward==2.8.9",
+        "uproot==5.6.0",
+        "correctionlib==2.6.4",
+        "coffea==2025.12.0",
+        "fsspec-xrootd==0.5.1",
+        "xrootd==5.9.1",
         # Distributed computing
-        "dask[complete]>=2024.4.2",
-        "distributed>=2024.4.2",
+        "dask==2025.2.0",
+        "distributed==2025.2.0",
         # Machine learning
-        "torch>=2.0.0",
-        "scikit-learn>=1.2.2",
+        "torch==2.10.0",
+        "scikit-learn==1.8.0",
         # Histogramming and plotting
-        "hist>=2.7.2",
-        "plotly>=5.0.0",
+        "hist==2.9.0",
+        "plotly==5.16.1",
         # Data handling
-        "pyarrow>=17.0.0",
+        "pyarrow==20.0.0",
         # Configuration
-        "pyyaml>=6.0.1",
+        "pyyaml==6.0.2",
         # Utilities
-        "tqdm>=4.67.1",
-        "memory-profiler>=0.60.0",
+        "tqdm==4.67.1",
+        "memory-profiler==0.61.0",
     ],
     entry_points={
         "console_scripts": [
@@ -63,5 +63,6 @@ setup(
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
+        "Programming Language :: Python :: 3.13",
     ],
 )

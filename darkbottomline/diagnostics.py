@@ -11,7 +11,7 @@ from typing import Dict, Any, List, Optional, Union
 import uproot
 # import ROOT  # Optional: ROOT not available
 
-from .utils.plot_utils import CMSPlotStyle, add_cms_label, create_subplot_grid
+from utils.plot_utils import CMSPlotStyle, add_cms_label, create_subplot_grid
 
 
 class DiagnosticPlotter:
