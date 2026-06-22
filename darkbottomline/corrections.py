@@ -670,7 +670,7 @@ class CorrectionManager:
             flavor = ak.zeros_like(jets.pt, dtype=np.int32)
         eta = np.asarray(ak.ravel(np.abs(jets.eta)), dtype=float)
         pt = np.asarray(ak.ravel(jets.pt), dtype=float)
-        discr = np.asarray(ak.ravel(jets.btagDeepFlavB), dtype=float)
+        discr = np.asarray(ak.ravel(jets.btagScore), dtype=float)
         flavor_flat = np.asarray(ak.ravel(flavor), dtype=np.int32)
         n = len(pt)
         if n == 0:
@@ -954,6 +954,54 @@ class CorrectionManager:
         except Exception:
             return float(len(events))
 
+    def get_pdf_scale_weights(self, events: ak.Array) -> Dict[str, np.ndarray]:
+        """
+        PDF (envelope) and QCD scale (7-point) weights from LHEPdfWeight / LHEScaleWeight.
+
+        PDF: NNPDF envelope — max/min over replicas 1-100 (index 0 = nominal already = 1.0).
+        Scale: 7-point — indices [0,1,2,3,4,6,8], skip 5 (muR=2,muF=0.5) and 7 (muR=0.5,muF=2).
+        Returns ratio weights (multiplicative factor on full_event_weight), ones if branches absent.
+        """
+        n = len(events)
+        ones = np.ones(n, dtype=np.float32)
+
+        # --- PDF envelope ---
+        pdf_up = ones.copy()
+        pdf_down = ones.copy()
+        if "LHEPdfWeight" in events.fields:
+            try:
+                pdf_w = ak.to_numpy(events["LHEPdfWeight"])  # shape (n, 103)
+                # replicas are indices 1-100; index 0 = nominal (=1.0 already normalized)
+                replicas = pdf_w[:, 1:101]
+                pdf_up   = np.max(replicas, axis=1).astype(np.float32)
+                pdf_down = np.min(replicas, axis=1).astype(np.float32)
+            except Exception as e:
+                logging.debug("PDF weight failed: %s", e)
+
+        # --- QCD scale 7-point envelope ---
+        # Variations: (muR,muF) = (1,1)(1,2)(1,0.5)(2,1)(2,2)(skip:2,0.5)(0.5,1)(skip:0.5,2)(0.5,0.5)
+        # Indices:       0      1      2      3      4       5              6         7              8
+        # Skip 5 (muR=2,muF=0.5) and 7 (muR=0.5,muF=2). Exclude 0 (nominal=1.0) from envelope.
+        scale_up = ones.copy()
+        scale_down = ones.copy()
+        if "LHEScaleWeight" in events.fields:
+            try:
+                sc_w = ak.to_numpy(events["LHEScaleWeight"])  # shape (n, 9)
+                _idx = [1, 2, 3, 4, 6, 8]  # 6 non-central variations; skip 0 (nominal), 5, 7
+                _idx = [i for i in _idx if i < sc_w.shape[1]]
+                sc_sel = sc_w[:, _idx]
+                scale_up   = np.max(sc_sel, axis=1).astype(np.float32)
+                scale_down = np.min(sc_sel, axis=1).astype(np.float32)
+            except Exception as e:
+                logging.debug("Scale weight failed: %s", e)
+
+        return {
+            "pdf_up": pdf_up,
+            "pdf_down": pdf_down,
+            "scale_up": scale_up,
+            "scale_down": scale_down,
+        }
+
     def compute_event_weights(
         self,
         events: ak.Array,
@@ -1036,6 +1084,10 @@ class CorrectionManager:
             safe = ak.where(central != 0.0, central, ak.ones_like(central))
             return (total / safe) * variation
 
+        # PDF and QCD scale weights (multiplicative on full_event_weight)
+        pdf_scale = self.get_pdf_scale_weights(events)
+        _fw = ak.to_numpy(full_event_weight).astype(np.float32)
+
         return {
             "sf_weight": sf_weight,
             "full_event_weight": full_event_weight,
@@ -1051,6 +1103,10 @@ class CorrectionManager:
             "weight_electronHLTDOWN": _vary(full_event_weight, w_ele_hlt, w_ele_hlt_down),
             "weight_JECUP": _vary(full_event_weight, w_jec, w_jec_up),
             "weight_JECDOWN": _vary(full_event_weight, w_jec, w_jec_down),
+            "weight_pdfUP":   (_fw * pdf_scale["pdf_up"]).astype(np.float32),
+            "weight_pdfDOWN": (_fw * pdf_scale["pdf_down"]).astype(np.float32),
+            "weight_scaleUP":   (_fw * pdf_scale["scale_up"]).astype(np.float32),
+            "weight_scaleDOWN": (_fw * pdf_scale["scale_down"]).astype(np.float32),
         }
 
     def get_systematic_variations(self) -> list:

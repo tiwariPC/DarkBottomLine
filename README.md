@@ -210,34 +210,52 @@ darkbottomline analyze \
     --make-region-plots \
     --plot-regions "1b:SR" \
     --plot-variables Recoil PFMET_pt Jet1Pt n_bjets
+
+# With signal overlay (×100 scale for shape visibility) + systematic plots
+darkbottomline analyze \
+    --mode region-analysis \
+    --config configs/2022.yaml \
+    --regions-config configs/regions.yaml \
+    --input outputs/eventsel/ \
+    --xsection-json scripts/xsection_background.json \
+    --xsection-signal-json scripts/xsection_signal.json \
+    --plot-config configs/plotting.yaml \
+    --make-region-plots \
+    --signal-scale 100 \
+    --make-syst-plots
 ```
+
+**New flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--xsection-signal-json JSON` | Signal cross sections: `{model: {masspoint: xsec_pb}}` e.g. `scripts/xsection_signal.json` |
+| `--signal-scale N` | Multiply all signal histograms by N for shape visibility (shown as `×N` in legend, default: 1) |
+| `--make-syst-plots` | Also produce central+UP+DOWN comparison plots per uncertainty (same output dirs as normal plots) |
 
 **Output:**
 
 ```text
 outputs/plots/{version}/
   png/region_analysis/1b_SR/
-      hist_1b_SR_{var}.png
-      hist_1b_SR_{var}_log.png
-      cutflow_1b_SR.png                      ← event-sel + region cuts on log scale
-  pdf/region_analysis/1b_SR/
-      hist_1b_SR_{var}.pdf
-      cutflow_1b_SR.pdf
-  pdf/region_analysis/1b_CR_Wmunu/
-      hist_1b_CR_Wmunu_{var}.pdf
-      cutflow_1b_CR_Wmunu.pdf
-  pdf/region_analysis/2b_CR_Topmunu/
-      hist_2b_CR_Topmunu_{var}.pdf
-      cutflow_2b_CR_Topmunu.pdf
+      hist_1b_SR_{var}.png              ← stacked bkg + signal overlay
+      cutflow_1b_SR.png                 ← event-sel steps + region cuts, log scale
+      1b_SR_{var}_weight_pdf.png        ← syst plot: central/UP/DOWN (--make-syst-plots)
+      1b_SR_{var}_weight_scale.png
+      1b_SR_{var}_JES.png
+      ...
+  pdf/region_analysis/1b_SR/            ← same, PDF format
   text/region_analysis/{region}/
-      hist_{region}_{var}.txt               ← yield tables (booktabs)
-      cutflow_{region}.txt                  ← cut-by-cut yield table
+      hist_{region}_{var}.txt           ← yield tables (booktabs)
+      cutflow_{region}.txt              ← cut-by-cut yield table
   root/
-      hist_{category}_{region}_{var}.root
-      cutflow_{region}.root                 ← TH1D, bin = cut step
+      hist_{cat}_{region}_{var}.root    ← all bkg TH1s + TotalBkg + data_obs + sig_* per masspoint
+      hist_{cat}_{region}_{var}_weight_pdfUP.root    ← syst variations
+      ...
+      cutflow_{region}.root             ← TH1D, bin = cut step
 ```
 
-**Cutflow plot:** blue bars = event-selection steps (Total→Trigger→Recoil→...) + orange bars = sequential region cuts (Nbjets==1, Nmuons==1, ...), all lumi×xsec weighted bkg-sum, log-scale y-axis.
+**Cutflow plot:** blue bars = event-selection steps (OR Trigger → Noise filters → Recoil → ...) + orange bars = region cuts (MET trigger → Nbjets → Njets → Nleptons → ...), lumi×xsec weighted, log y-axis.
 
 ---
 
@@ -305,6 +323,121 @@ process_groups:
 ```
 
 Cross sections: `scripts/xsection_background.json` (keyed by filename stem).
+
+### Signal group
+
+```yaml
+process_groups:
+  Signal_2HDMa:
+    type: signal
+    patterns:
+      - "BBDM-2HDMa"
+```
+
+PNG/PDF: first 3 masspoints as dashed lines. ROOT: all masspoints as individual TH1s (`sig_MH3_..._MH4_...`).
+
+---
+
+## Plotting yaml — full reference
+
+All plot appearance controlled by `configs/plotting.yaml`. No hardcoded values in Python.
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `cms_label` | `"Work in progress"` | CMS label text (e.g. `"Preliminary"`, `"Simulation"`) |
+| `com_energy` | `13.6` | Centre-of-mass energy in TeV |
+| `dpi` | `200` | Output PNG/PDF resolution |
+| `figsize_ratio` | `[12, 12]` | Figure size with ratio panel |
+| `figsize_no_ratio` | `[12, 10]` | Figure size without ratio panel |
+| `figsize_cutflow` | `[12, 12]` | Cutflow figure size |
+| `subplots_top/bottom/left/right` | `0.92/0.09/0.14/0.95` | Subplot margins |
+| `subplots_hspace` | `0.08` | Gap between main and ratio panels |
+| `main_height` / `ratio_height` | `3.0` / `1.0` | Height ratio of main:ratio panels |
+| `fontsize_axis` | `22` | Axis label font size |
+| `fontsize_legend` | `20` | Legend font size |
+| `fontsize_xtick_cutflow` | `16` | Cutflow x-tick font size |
+| `ratio_ylim` | `[0.0, 2.0]` | Data/MC ratio panel y range |
+| `data_markersize` | `5.5` | Data point marker size |
+| `data_elinewidth` | `1.2` | Data error bar line width |
+| `data_color` | `"black"` | Data point color |
+| `signal_linewidth` | `2.0` | Signal overlay line width |
+| `signal_colors` | `["#000000", "#e31a1c", ...]` | Colors for signal masspoint lines |
+| `legend_ncol` | `2` | Legend column count |
+| `uncertainty_facecolor` | `"#bbbbbb"` | MC stat band fill color |
+| `uncertainty_edgecolor` | `"#666666"` | MC stat band edge color |
+| `uncertainty_hatch` | `"////"` | MC stat band hatch pattern |
+| `uncertainty_alpha` | `0.5` | MC stat band opacity |
+| `uncertainty_label` | `"Stat. unc."` | MC stat band legend label |
+| `n_bins_default` | `40` | Auto-bin count when no `variable_bins` entry |
+| `variable_bins` | — | Per-variable bin edges (linspace or explicit edges) |
+| `no_log_scale_vars` | — | Variables plotted linear (not log) |
+| `common_variables` | — | Variables plotted in every region |
+| `region_variables` | — | Per-region additional variables |
+| `event_selection_variables` | — | Variables for pre-region plots |
+| `systematic_variables` | — | Variables for which syst ROOT files are produced |
+| `met_suffix_patterns` | — | Branch suffixes treated as MET-type for binning |
+
+### Bin configuration
+
+```yaml
+variable_bins:
+  Recoil:   {edges: [250, 300, 400, 550, 1000]}   # explicit edges
+  MET_pt:   {edges: [100, 200, 300, 400, 500, 750, 1000]}
+  Jet1Pt:   {low: 30., high: 800., n: 24}          # linspace
+```
+
+Bins always applied as-is — x-axis range uses full config edges regardless of data content.
+
+---
+
+## Signal Samples (2HDMa multi-masspoint)
+
+Signal NanoAOD files contain events from multiple mass-plane grid points in a single file. Each event belongs to exactly one grid point, identified by a boolean branch:
+
+```text
+GenModel_MH3_600_MH4_10_Mchi_1      # 1 if event is MH3=600, MH4=10, Mchi=1; else 0
+GenModel_MH3_600_MH4_50_Mchi_1
+...
+GenModel_MH3_1500_MH4_1450_Mchi_1   # 29 branches total for 2HDMa Type-II
+```
+
+**Exactly one flag is 1 per event.** The framework preserves all GenModel branches through event selection automatically — no special flag needed.
+
+### Running event selection on signal
+
+```bash
+darkbottomline analyze \
+    --mode event-selection \
+    --config configs/2024.yaml \
+    --input /path/to/BBDM-2HDMa-fullsim_NanoAOD.root \
+    --event-selection-output outputs/eventsel/BBDM-2HDMa_EVENTSELECTION.root
+```
+
+The output EVENTSELECTION.root Events TTree contains all 29 `GenModel_*` branches as `int8` alongside all standard physics branches. Use them downstream to select events for a specific masspoint:
+
+```python
+import uproot, numpy as np
+f = uproot.open("BBDM-2HDMa_EVENTSELECTION.root")
+ev = f["Events"].arrays(library="np")
+mask = ev["GenModel_MH3_600_MH4_200_Mchi_1"] == 1
+recoil_600_200 = ev["Recoil"][mask]
+```
+
+### Cross sections
+
+Signal cross sections go in `scripts/xsection_signal.json`. Nested by model name (extensible for future signal models):
+
+```json
+{
+  "2HDMa": {
+    "_comment": "tanb=35, sint=0.7, mchi=1 GeV",
+    "MH3_600_MH4_200_Mchi_1":  0.20796,
+    "MH3_1500_MH4_200_Mchi_1": 0.20593
+  }
+}
+```
+
+Keys match the `GenModel_*` branch suffix (strip `GenModel_` prefix). All models in the file are merged into the cross-section lookup — add future models as new top-level keys.
 
 ---
 

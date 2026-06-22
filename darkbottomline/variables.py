@@ -62,30 +62,34 @@ def _dijet(px1, py1, pz1, e1, px2, py2, pz2, e2):
 # ---------------------------------------------------------------------------
 
 def _met_variables(events: ak.Array) -> Dict[str, np.ndarray]:
-    """MET kinematics. Supports both NanoAOD v12 (MET_*) and v15 (PFMET_*)."""
-    def _get(v15, v12):
-        if v15 in events.fields:
-            return ak.to_numpy(events[v15])
-        elif v12 in events.fields:
-            return ak.to_numpy(events[v12])
+    """MET kinematics. PuppiMET preferred; falls back to PFMET then MET."""
+    def _get(*candidates):
+        for v in candidates:
+            if v in events.fields:
+                return ak.to_numpy(events[v])
         return np.zeros(len(events), dtype=np.float32)
 
     return {
-        'PFMET_pt':           _get('PFMET_pt',           'MET_pt'),
-        'PFMET_phi':          _get('PFMET_phi',           'MET_phi'),
-        'pfMetCorrSig':       _get('PFMET_significance',  'MET_significance'),
+        'MET_pt':           _get('PuppiMET_pt',  'PFMET_pt',  'MET_pt'),
+        'MET_phi':          _get('PuppiMET_phi', 'PFMET_phi', 'MET_phi'),
+        'MET_significance': _get('PFMET_significance', 'MET_significance'),
     }
 
 
 def _recoil_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
-    """Recoil pT and phi (precomputed in build_objects)."""
+    """Recoil pT and phi (precomputed in build_objects), plus JES/JER shifted variants."""
     recoil     = objects.get('recoil')
     recoil_phi = objects.get('recoil_phi')
     n = len(recoil) if recoil is not None else 0
     _zeros = ak.Array(np.zeros(n, dtype=np.float32))
+    central = recoil if recoil is not None else _zeros
     return {
-        'Recoil':    _scalar(recoil     if recoil     is not None else _zeros),
-        'RecoilPhi': _scalar(recoil_phi if recoil_phi is not None else _zeros),
+        'Recoil':          _scalar(central),
+        'RecoilPhi':       _scalar(recoil_phi if recoil_phi is not None else _zeros),
+        'Recoil_JESUp':   _scalar(objects.get('recoil_JESUp',   central)),
+        'Recoil_JESDown': _scalar(objects.get('recoil_JESDown', central)),
+        'Recoil_JERUp':   _scalar(objects.get('recoil_JERUp',   central)),
+        'Recoil_JERDown': _scalar(objects.get('recoil_JERDown', central)),
     }
 
 
@@ -139,9 +143,10 @@ def _multiplicity_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
         try:
             mll = ak.where(
                 ak.fill_none(ak.values_astype(nzm, np.int32), 0) == 2, mll_mu,
-                ak.where(ak.fill_none(ak.values_astype(nze, np.int32), 0) == 2, mll_el, 0.0)
+                ak.where(ak.fill_none(ak.values_astype(nze, np.int32), 0) == 2, mll_el,
+                         np.float32(SENTINEL))
             )
-            out['mll'] = ak.to_numpy(ak.fill_none(ak.values_astype(mll, np.float32), np.float32(0.0)))
+            out['mll'] = ak.to_numpy(ak.fill_none(ak.values_astype(mll, np.float32), np.float32(SENTINEL)))
         except Exception:
             pass
     return out
@@ -150,7 +155,7 @@ def _multiplicity_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
 def _jet_lead_variables(objects: Dict[str, Any], btag_algo: str) -> Dict[str, np.ndarray]:
     """Leading 3 jet kinematics + btag scores."""
     jets = objects.get('jets', ak.Array([]))
-    btag = jets.btagDeepFlavB if hasattr(jets, 'btagDeepFlavB') else ak.zeros_like(jets.pt)
+    btag = jets.btagScore if hasattr(jets, 'btagScore') else ak.zeros_like(jets.pt)
 
     return {
         'Jet1Pt':              _lead(jets.pt,  0),
@@ -177,8 +182,8 @@ def _jet_composite_variables(
     j1pt  = jet_lead['Jet1Pt'];  j2pt  = jet_lead['Jet2Pt'];  j3pt  = jet_lead['Jet3Pt']
     j1eta = jet_lead['Jet1Eta']; j2eta = jet_lead['Jet2Eta']; j3eta = jet_lead['Jet3Eta']
     j1phi = jet_lead['Jet1Phi']; j2phi = jet_lead['Jet2Phi']; j3phi = jet_lead['Jet3Phi']
-    met_pt  = met_vars['PFMET_pt'].astype(np.float32)
-    met_phi = met_vars['PFMET_phi'].astype(np.float32)
+    met_pt  = met_vars['MET_pt'].astype(np.float32)
+    met_phi = met_vars['MET_phi'].astype(np.float32)
 
     has_j1 = j1pt > 0
     has_2j = has_j1 & (j2pt > 0)
@@ -228,6 +233,18 @@ def _dphi_jet_met(objects: Dict[str, Any], met_phi: np.ndarray) -> np.ndarray:
     return np.where(raw >= 0, np.minimum(raw, np.float32(2 * np.pi) - raw), raw).astype(np.float32)
 
 
+def _genmodel_variables(events: ak.Array) -> Dict[str, np.ndarray]:
+    """Pass through GenModel_* boolean branches (signal grid-point flags)."""
+    out: Dict[str, np.ndarray] = {}
+    for field in events.fields:
+        if field.startswith('GenModel_'):
+            try:
+                out[field] = ak.to_numpy(events[field]).astype(np.int8)
+            except Exception:
+                pass
+    return out
+
+
 def _jagged_variables(objects: Dict[str, Any]) -> Dict[str, ak.Array]:
     """Full jagged (per-event vector) branches for all objects."""
     out: Dict[str, ak.Array] = {}
@@ -244,7 +261,7 @@ def _jagged_variables(objects: Dict[str, Any]) -> Dict[str, ak.Array]:
         ('jets',      'pt',           'jet_pt'),
         ('jets',      'eta',          'jet_eta'),
         ('jets',      'phi',          'jet_phi'),
-        ('jets',      'btagDeepFlavB','jet_btag'),
+        ('jets',      'btagScore',    'jet_btag'),
         ('bjets',     'pt',           'bjet_pt'),
         ('bjets',     'eta',          'bjet_eta'),
         ('bjets',     'phi',          'bjet_phi'),
@@ -272,8 +289,10 @@ def _jagged_variables(objects: Dict[str, Any]) -> Dict[str, ak.Array]:
 # Scalar branches: name → numpy dtype
 _SCALAR_BRANCHES: Dict[str, Any] = {
     'event': np.int64, 'run': np.int64, 'luminosityBlock': np.int64,
-    'PFMET_pt': np.float32, 'PFMET_phi': np.float32, 'pfMetCorrSig': np.float32,
+    'MET_pt': np.float32, 'MET_phi': np.float32, 'MET_significance': np.float32,
     'Recoil': np.float32, 'RecoilPhi': np.float32,
+    'Recoil_JESUp': np.float32, 'Recoil_JESDown': np.float32,
+    'Recoil_JERUp': np.float32, 'Recoil_JERDown': np.float32,
     'costheta_star': np.float32,
     'Njets_PassID': np.int32, 'n_bjets': np.int32, 'n_muons': np.int32,
     'n_electrons': np.int32, 'n_taus': np.int32, 'b_flavor_count': np.int32,
@@ -294,6 +313,8 @@ _SCALAR_BRANCHES: Dict[str, Any] = {
     'electron_lep1_pt': np.float32, 'electron_lep1_phi': np.float32, 'electron_lep1_eta': np.float32,
     'electron_lep2_pt': np.float32, 'electron_lep2_phi': np.float32, 'electron_lep2_eta': np.float32,
     'full_event_weight': np.float32,
+    'weight_pdfUP': np.float32, 'weight_pdfDOWN': np.float32,
+    'weight_scaleUP': np.float32, 'weight_scaleDOWN': np.float32,
     'pass_met_trigger': np.int32,
     'pass_ele_trigger': np.int32,
 }
@@ -399,7 +420,7 @@ def compute_event_variables(
 
     # --- Composite jet + MET variables ---
     out.update(_jet_composite_variables(jet_lead, met_vars))
-    out['dPhi_jetMET'] = _dphi_jet_met(objects, met_vars['PFMET_phi'])
+    out['dPhi_jetMET'] = _dphi_jet_met(objects, met_vars['MET_phi'])
 
     # --- Leading lepton scalar branches (needed for MT/Mll in CR cuts) ---
     for lep_key, prefix in (('muons', 'muon'), ('electrons', 'electron')):
@@ -415,6 +436,9 @@ def compute_event_variables(
 
     # --- Jagged object branches ---
     out.update(_jagged_variables(objects))
+
+    # --- GenModel grid-point flags (signal only; no-op for bkg/data) ---
+    out.update(_genmodel_variables(events))
 
     # --- Event weights ---
     if event_weights:

@@ -33,8 +33,8 @@ def _build_event_cut_masks(
             combined_trigger_mask = combined_trigger_mask | pass_triggers(events, trigger_paths)
     trigger_cut = combined_trigger_mask
 
-    # --- MET filters ---
-    filter_cut = pass_met_filters(events, config["met_filters"])
+    # --- Noise filters ---
+    filter_cut = pass_met_filters(events, config["noise_filters"])
 
     # Count objects per event
     n_muons = ak.num(objects["muons"], axis=1)
@@ -71,7 +71,9 @@ def _build_event_cut_masks(
     delta_phi_min = selection.get("delta_phi_min")
     if delta_phi_min is not None:
         jets = objects.get("jets", ak.Array([]))
-        met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
+        met_phi = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
+        if met_phi is None:
+            raise KeyError("No MET phi branch found (tried PuppiMET_phi, PFMET_phi, MET_phi)")
         if len(ak.flatten(jets)) > 0:
             dphi = np.abs(jets.phi - met_phi)
             dphi = np.where(dphi > np.pi, 2 * np.pi - dphi, dphi)
@@ -85,7 +87,7 @@ def _build_event_cut_masks(
     # Canonical order — trigger & filters first, then object cuts
     masks = {
         "OR Trigger":       trigger_cut,
-        "MET filters":      filter_cut,
+        "Noise filters":    filter_cut,
         "Recoil":           recoil_cut,
         "N_{#mu}":          muon_cut,
         "N_{e}":            electron_cut,

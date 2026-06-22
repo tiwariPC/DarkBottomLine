@@ -166,7 +166,7 @@ def select_jets(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
         "eta": events["Jet_eta"],
         "phi": events["Jet_phi"],
         "mass": events["Jet_mass"] if "Jet_mass" in events.fields else ak.zeros_like(events["Jet_pt"]),
-        "btagDeepFlavB": events["Jet_btagDeepFlavB"],
+        "btagScore": events[config.get("btagging", {}).get("branch", "Jet_btagDeepFlavB")],
     }
     if "Jet_hadronFlavour" in events.fields:
         jet_fields["hadronFlavour"] = events["Jet_hadronFlavour"]
@@ -257,12 +257,7 @@ def get_bjet_mask(jets: ak.Array, config: Dict[str, Any]) -> ak.Array:
     wp = config["wp"]
     score = config[f"score_{wp}"]
 
-    if algorithm == "deepJet":
-        return jets.btagDeepFlavB > score
-    elif algorithm == "deepCSV":
-        return jets.btagDeepB > score
-
-    raise ValueError(f"Unknown btagging algorithm: {algorithm}")
+    return jets.btagScore > score
 
 
 def _dilepton_mass(l1: ak.Array, l2: ak.Array, m_default: float = 0.105) -> ak.Array:
@@ -312,8 +307,8 @@ def build_z_candidates(
     # awkward has no ak.zeros; use numpy and wrap for compatibility
     n_z_muons = ak.Array(np.zeros(n_ev, dtype=np.int64))
     n_z_electrons = ak.Array(np.zeros(n_ev, dtype=np.int64))
-    mll_mu = ak.Array(np.zeros(n_ev, dtype=float))
-    mll_el = ak.Array(np.zeros(n_ev, dtype=float))
+    mll_mu = ak.Array(np.full(n_ev, SENTINEL, dtype=float))
+    mll_el = ak.Array(np.full(n_ev, SENTINEL, dtype=float))
     z_lep_sum_x_mu = ak.Array(np.zeros(n_ev, dtype=float))
     z_lep_sum_y_mu = ak.Array(np.zeros(n_ev, dtype=float))
     z_lep_sum_x_el = ak.Array(np.zeros(n_ev, dtype=float))
@@ -343,7 +338,7 @@ def build_z_candidates(
         valid = has_two & os_pair & lead_tight_pt & sublead_pt_ok
         n_z = ak.where(valid, 2, 0)
         m_default = 0.105 if is_mu else 0.000511
-        mll = ak.where(valid, _dilepton_mass(lead, sublead, m_default), 0.0)
+        mll = ak.where(valid, _dilepton_mass(lead, sublead, m_default), SENTINEL)
         sum_x = np.cos(lead.phi) * lead.pt + np.cos(ak.fill_none(sublead.phi, 0.0)) * ak.fill_none(sublead.pt, 0.0)
         sum_y = np.sin(lead.phi) * lead.pt + np.sin(ak.fill_none(sublead.phi, 0.0)) * ak.fill_none(sublead.pt, 0.0)
         return n_z, mll, sum_x, sum_y, valid
@@ -383,31 +378,37 @@ def calculate_costheta_star(jets: ak.Array) -> ak.Array:
     return ak.where(has_two, cos_ts, SENTINEL)
 
 
+def _recoil_from_met(met_pt, met_phi, muons, electrons):
+    """Recoil = -(MET_vec + sum pT leptons). ak.sum returns 0 for empty events."""
+    met_px = met_pt * np.cos(met_phi)
+    met_py = met_pt * np.sin(met_phi)
+
+    mu_px = ak.sum(muons.pt * np.cos(muons.phi), axis=1)
+    mu_py = ak.sum(muons.pt * np.sin(muons.phi), axis=1)
+    el_px = ak.sum(electrons.pt * np.cos(electrons.phi), axis=1)
+    el_py = ak.sum(electrons.pt * np.sin(electrons.phi), axis=1)
+
+    recoil_px = -(met_px + mu_px + el_px)
+    recoil_py = -(met_py + mu_py + el_py)
+
+    recoil_pt  = np.sqrt(recoil_px**2 + recoil_py**2)
+    recoil_phi = np.arctan2(recoil_py, recoil_px)
+    return recoil_pt, recoil_phi
+
+
 def calculate_recoil(events: ak.Array, objects: Dict[str, Any]):
     """Recoil = |-(MET_vec + sum pT(loose muons+electrons))|. Returns (recoil_pt, recoil_phi)."""
-    met_pt = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
-    met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
+    def _met_field(*candidates):
+        for v in candidates:
+            if v in events.fields:
+                return events[v]
+        raise KeyError(f"No MET branch found among {candidates}")
 
-    muons = objects.get("muons", ak.Array([]))
+    met_pt  = _met_field("PuppiMET_pt",  "PFMET_pt",  "MET_pt")
+    met_phi = _met_field("PuppiMET_phi", "PFMET_phi", "MET_phi")
+    muons     = objects.get("muons",     ak.Array([]))
     electrons = objects.get("electrons", ak.Array([]))
-
-    lep_px = ak.zeros_like(met_pt)
-    lep_py = ak.zeros_like(met_pt)
-    try:
-        if len(ak.flatten(muons)) > 0:
-            lep_px = lep_px + ak.sum(muons.pt * np.cos(muons.phi), axis=1)
-            lep_py = lep_py + ak.sum(muons.pt * np.sin(muons.phi), axis=1)
-        if len(ak.flatten(electrons)) > 0:
-            lep_px = lep_px + ak.sum(electrons.pt * np.cos(electrons.phi), axis=1)
-            lep_py = lep_py + ak.sum(electrons.pt * np.sin(electrons.phi), axis=1)
-    except (Exception, BaseException):
-        pass
-
-    recoil_px = -(met_pt * np.cos(met_phi) + ak.fill_none(lep_px, 0.0))
-    recoil_py = -(met_pt * np.sin(met_phi) + ak.fill_none(lep_py, 0.0))
-    recoil_pt  = ak.fill_none(np.sqrt(recoil_px**2 + recoil_py**2), 0.0)
-    recoil_phi = ak.fill_none(np.arctan2(recoil_py, recoil_px), 0.0)
-    return recoil_pt, recoil_phi
+    return _recoil_from_met(met_pt, met_phi, muons, electrons)
 
 
 def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
@@ -503,7 +504,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
         "eta": events["Jet_eta"],
         "phi": events["Jet_phi"],
         "mass": events["Jet_mass"] if "Jet_mass" in events.fields else ak.zeros_like(events["Jet_pt"]),
-        "btagDeepFlavB": events["Jet_btagDeepFlavB"],
+        "btagScore": events[config.get("btagging", {}).get("branch", "Jet_btagDeepFlavB")],
     }
     if "Jet_hadronFlavour" in events.fields:
         jet_fields["hadronFlavour"] = events["Jet_hadronFlavour"]
@@ -574,12 +575,22 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
     selected_bjets = cleaned_jets[bjet_mask]
     print(f"    B-jets identified: {ak.sum(ak.num(selected_bjets, axis=1))}")
 
-    # Compute recoil once for all events: |-(MET_vec + sum pT(loose leptons))|
+    # Compute central recoil + JES/JER shifted variants
     print("  Computing recoil...")
-    recoil, recoil_phi = calculate_recoil(events, {
-        "muons": selected_muons,
-        "electrons": selected_electrons,
-    })
+    _lep_objs = {"muons": selected_muons, "electrons": selected_electrons}
+    recoil, recoil_phi = calculate_recoil(events, _lep_objs)
+
+    def _shifted_recoil(pt_branch, phi_branch):
+        if pt_branch in events.fields and phi_branch in events.fields:
+            rpt, _ = _recoil_from_met(events[pt_branch], events[phi_branch],
+                                      selected_muons, selected_electrons)
+            return rpt
+        return recoil  # fall back to central if branch missing
+
+    recoil_JESUp   = _shifted_recoil("PuppiMET_ptJESUp",   "PuppiMET_phiJESUp")
+    recoil_JESDown = _shifted_recoil("PuppiMET_ptJESDown",  "PuppiMET_phiJESDown")
+    recoil_JERUp   = _shifted_recoil("PuppiMET_ptJERUp",   "PuppiMET_phiJERUp")
+    recoil_JERDown = _shifted_recoil("PuppiMET_ptJERDown",  "PuppiMET_phiJERDown")
 
     # cos(theta*): helicity angle of leading jet in dijet CoM; SENTINEL when < 2 jets
     print("  Computing cos(theta*)...")
@@ -589,6 +600,10 @@ def build_objects(events: ak.Array, config: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "recoil": recoil,
         "recoil_phi": recoil_phi,
+        "recoil_JESUp": recoil_JESUp,
+        "recoil_JESDown": recoil_JESDown,
+        "recoil_JERUp": recoil_JERUp,
+        "recoil_JERDown": recoil_JERDown,
         "costheta_star": costheta_star,
         "photons": selected_photons,
         "muons": selected_muons,

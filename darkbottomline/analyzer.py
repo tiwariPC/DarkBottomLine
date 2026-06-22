@@ -645,8 +645,8 @@ class DarkBottomLineAnalyzer:
         if len(events) == 0:
             return {}
 
-        # MET
-        variables["met"] = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
+        # MET — PuppiMET preferred
+        variables["met"] = next((events[v] for v in ("PuppiMET_pt", "PFMET_pt", "MET_pt") if v in events.fields), None)
 
         # Jet multiplicity; use tight pt>30 leptons for region-consistent variables
         jets = objects.get("jets", ak.Array([]))
@@ -675,7 +675,7 @@ class DarkBottomLineAnalyzer:
 
         # DeltaPhi between MET and jets (use safe count; avoid axis=1 on depth-1 arrays)
         jets = objects.get("jets", ak.Array([]))
-        met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
+        met_phi = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
         n_jets_per_event = _safe_num_jagged(jets, n_ev)
         has_jets = np.any(n_jets_per_event > 0)
 

@@ -1331,6 +1331,23 @@ def make_event_plots(args):
                 # already flat: {stem: xsec}
                 cross_sections[_cat] = float(_entries)
 
+    # Signal cross sections: {model: {masspoint: xsec}} — flatten all models into cross_sections
+    if getattr(args, "xsection_signal_json", None):
+        with open(args.xsection_signal_json) as f:
+            _sig_raw = json.load(f)
+        for _model, _entries in _sig_raw.items():
+            if isinstance(_entries, dict):
+                for _k, _v in _entries.items():
+                    if _k.startswith("_"):
+                        continue  # skip _comment etc.
+                    if isinstance(_v, (int, float)):
+                        cross_sections[_k] = float(_v)
+            elif isinstance(_entries, (int, float)):
+                cross_sections[_model] = float(_entries)
+        logging.info("Loaded signal cross sections from %s (%d masspoints)",
+                     args.xsection_signal_json,
+                     sum(1 for k in cross_sections if k.startswith("MH")))
+
     version = args.version
     if not version:
         version = _default_version()
@@ -1352,6 +1369,8 @@ def make_event_plots(args):
         regions_config=getattr(args, "regions_config", None),
         weight_systematic=getattr(args, "weight_systematic", None),
         show_data=getattr(args, "show_data", False),
+        signal_scale=float(getattr(args, "signal_scale", 1.0) or 1.0),
+        make_syst_plots=getattr(args, "make_syst_plots", False),
     )
     logging.info(f"analyze-regions: {len(out_files)} plot(s) written to {args.output_dir}")
 
@@ -1512,6 +1531,12 @@ Examples:
                                help="Collision data: apply golden JSON lumi mask, skip MC weights")
     analyze_parser.add_argument("--xsection-json", default=None, metavar="JSON",
                                help="JSON mapping filename stem → cross-section in pb (region-analysis mode)")
+    analyze_parser.add_argument("--xsection-signal-json", default=None, metavar="JSON",
+                               help="JSON with signal cross sections: {model: {masspoint: xsec_pb}} e.g. scripts/xsection_signal.json")
+    analyze_parser.add_argument("--signal-scale", type=float, default=1.0, metavar="N",
+                               help="Multiply all signal histograms by N for shape visibility (shown as ×N in legend, default: 1)")
+    analyze_parser.add_argument("--make-syst-plots", action="store_true", default=False,
+                               help="Produce systematic comparison plots (central+up+down per uncertainty) in outputs/plots/{version}/systematics/")
     # Plotting flags
     analyze_parser.add_argument("--make-region-plots", action="store_true", default=False,
                                help="Produce stacked region plots (pdf/png/txt/root) — region-analysis and full modes")

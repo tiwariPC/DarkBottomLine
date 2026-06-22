@@ -647,7 +647,7 @@ def analyze(input, output, max_events):
 
 - **Location**: `apply_selection()` function
 
-**Note**: This applies global event selection cuts (e.g., MET filters, triggers).
+**Note**: This applies global event selection cuts (e.g., noise filters, triggers).
 
 ---
 

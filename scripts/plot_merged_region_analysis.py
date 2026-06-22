@@ -298,9 +298,9 @@ def _split_region_and_variable(hist_key: str) -> Tuple[str, str]:
 _VARIABLE_LABEL_ALIASES = {
     "met": "MET",
     "met_phi": "METPhi",
-    "pfmet_pt": "PFMET_pt",
-    "pfmet_phi": "PFMET_phi",
-    "pfmet_significance": "PFMET_significance",
+    "met_pt": "MET_pt",
+    "met_phi": "MET_phi",
+    "met_significance": "MET_significance",
     "recoil": "recoil",
     "jet1_pt": "Jet1Pt",
     "jet1_eta": "Jet1Eta",
