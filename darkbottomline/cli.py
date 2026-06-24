@@ -188,30 +188,37 @@ def _merge_pickle_outputs(files: List[str], output_path: str):
                 logging.error(f"Error removing temporary file {file_path}: {e}")
 
 
-def _add_dnn_scores_to_events(events, model_path: str, config_path: Optional[str], score_branch: str = "ml_score"):
-    """Score all events with trained DNN; return ak.Array with ml_score field added."""
+def _add_dnn_scores_to_events(events, model_path: str, config_path: Optional[str],
+                              score_branch: str = "ml_score",
+                              objects: dict = None, config: dict = None):
+    """Score all events with trained DNN; return ak.Array with ml_score field added.
+
+    When *objects* and *config* are provided, uses the standard variable
+    pipeline (compute_event_variables) so that the DNN sees the same
+    feature values as the region-analysis and plotting code.
+    """
     import awkward as ak
-    from dnn.feature_engineering import build_feature_frame_from_tree, REQUESTED_FEATURES_25
+    from dnn.feature_engineering import REQUESTED_FEATURES_25
     from dnn.common import sanitize_feature_frame
+    import pandas as _pd
 
     inference = DNNInference(model_path, config_path=config_path)
     model_info = inference.get_model_info()
     features = model_info.get("features") or list(REQUESTED_FEATURES_25)
-
-    # Build feature DataFrame from the ak.Array event record
-    # Treat events like a flat tree: extract each feature branch directly
     n = len(events)
-    X_parts = {}
-    for feat in features:
-        if feat in events.fields:
-            X_parts[feat] = np.asarray(ak.to_numpy(events[feat]), dtype="f8")
-        else:
-            X_parts[feat] = np.full(n, -9999.0, dtype="f8")
 
-    import pandas as pd
-    df = pd.DataFrame(X_parts)
-    from dnn.common import sanitize_feature_frame
-    df = sanitize_feature_frame(df)
+    if objects is not None and config is not None:
+        df = _build_dnn_feature_matrix_from_events(events, objects, config, features)
+    else:
+        # Legacy: direct field lookup
+        X_parts = {}
+        for feat in features:
+            if feat in events.fields:
+                X_parts[feat] = np.asarray(ak.to_numpy(events[feat]), dtype="f8")
+            else:
+                X_parts[feat] = np.full(n, -9999.0, dtype="f8")
+        df = _pd.DataFrame(X_parts)
+        df = sanitize_feature_frame(df)
 
     X = df.to_numpy(dtype="f8")
     masses = np.zeros(n, dtype="f8")
@@ -223,7 +230,54 @@ def _add_dnn_scores_to_events(events, model_path: str, config_path: Optional[str
     return events_with_score
 
 
-def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args) -> Tuple[np.ndarray, str]:
+def _build_dnn_feature_matrix_from_events(
+    events: "ak.Array",
+    objects: dict,
+    config: dict,
+    features: list,
+) -> "pd.DataFrame":
+    """Build DNN feature matrix using compute_event_variables for proper alias resolution.
+
+    Uses the same variable computation pipeline as the EVENTSELECTION output
+    (variables.py), ensuring DNN training/inference sees exactly the same
+    features as the plotting and region-analysis code.  This resolves name
+    mismatches like "MET" → "PFMET_pt", "METPhi" → "PFMET_phi", etc.
+    """
+    import pandas as _pd
+    from .variables import compute_event_variables
+    from dnn.common import sanitize_feature_frame
+
+    n = len(events)
+
+    # Compute all flat scalar variables via the standard pipeline
+    all_vars = compute_event_variables(events, objects, config)
+
+    # DNN feature name → compute_event_variables output name
+    btag_algo = config.get("btagging", {}).get("algorithm", "deepJet")
+    _NAME_MAP: dict = {
+        "MET":          "PFMET_pt",
+        "METPhi":       "PFMET_phi",
+        "rJet1PtMET":   "ratioJet1PtMET",
+        "Jet1deepCSV":  f"Jet1{btag_algo}",
+        "Jet2deepCSV":  f"Jet2{btag_algo}",
+    }
+
+    X_dict: dict = {}
+    for feat in features:
+        var_name = _NAME_MAP.get(feat, feat)
+        arr = all_vars.get(var_name)
+        if arr is not None:
+            X_dict[feat] = np.asarray(arr, dtype="f8").ravel()
+        else:
+            X_dict[feat] = np.full(n, -9999.0, dtype="f8")
+
+    df = _pd.DataFrame(X_dict)
+    df = sanitize_feature_frame(df)
+    return df
+
+
+def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args,
+                         objects: dict = None, config: dict = None) -> Tuple[np.ndarray, str]:
     """Train DNN on selected events (in-memory); return (scores, model_path).
 
     Scores array aligns 1:1 with events — same length, float32.
@@ -241,63 +295,96 @@ def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args) -
     sig_prefix = getattr(args, "signal_prefix", None)
     label_csv_path = getattr(args, "label_csv", None)
 
-    # Build label array from input file heuristics
-    # For in-memory events we need a per-event signal label.
-    # Use the first input file's classification applied to all events
-    # (single-sample mode) or per-file if multiple files loaded separately.
-    # Here events are already concatenated — label from args.signal_prefix/pattern
-    # applied to the first input file name as proxy.
+    # Build label array from input file heuristics, excluding data files.
+    # We need per-file entry counts to build a mask that aligns with the
+    # pre-concatenated events ak.Array, so data-file events can be dropped
+    # from X, y, and w consistently.
     input_files = _get_input_files(args.input)
+    import os as _os
+
+    # Phase 1: collect per-file info (entry counts, labels, data flags)
+    file_entries: list = []
     if label_csv_path:
         import csv as _csv
         label_map = {}
         with open(label_csv_path, "r", newline="") as fp:
             for row in _csv.DictReader(fp):
                 label_map[str(row["path"]).strip()] = int(row["label"])
-        # Can't map per-event without per-file info; fall back to file-level
-        y_parts = []
         for fpath in input_files:
-            import os as _os
             key = fpath if fpath in label_map else _os.path.basename(fpath)
             lbl = label_map.get(key, 0)
+            is_data = _is_data(fpath)
             with uproot.open(fpath) as f:
-                y_parts.append(np.full(int(f["Events"].num_entries), lbl, dtype="i4"))
-        y = np.concatenate(y_parts)[:n]
+                cnt = int(f["Events"].num_entries)
+            file_entries.append((cnt, lbl, is_data))
     else:
-        # Build per-file labels then concatenate to match events length
-        y_parts = []
         for fpath in input_files:
             is_data = _is_data(fpath)
             if is_data:
-                sig = 0
+                sig = -1  # sentinel: will be excluded
             else:
                 sig = 1 if _is_signal_heuristic(fpath, sig_patterns, sig_prefix) else 0
             with uproot.open(fpath) as f:
                 cnt = int(f["Events"].num_entries)
-            y_parts.append(np.full(cnt, sig, dtype="i4"))
-        y = np.concatenate(y_parts)[:n]
+            file_entries.append((cnt, sig, is_data))
 
+    # Phase 2: build per-event y and a keep-mask (True = keep for training)
+    y_parts = []
+    keep_parts = []
+    n_data_skipped = 0
+    for cnt, sig, is_data in file_entries:
+        if is_data:
+            y_parts.append(np.full(cnt, -1, dtype="i4"))
+            keep_parts.append(np.zeros(cnt, dtype=bool))
+            n_data_skipped += cnt
+        else:
+            y_parts.append(np.full(cnt, sig, dtype="i4"))
+            keep_parts.append(np.ones(cnt, dtype=bool))
+    y_full = np.concatenate(y_parts)[:n]
+    keep = np.concatenate(keep_parts)[:n]
+
+    if n_data_skipped > 0:
+        logging.info("Excluded %d data events from DNN training (files: %s)",
+                     n_data_skipped,
+                     [f for f in input_files if _is_data(f)])
+
+    # Filter to non-data events only
+    y = y_full[keep]
     if np.unique(y).size < 2:
-        logging.warning("Only one class present — skipping DNN training, scores set to 0.5")
+        logging.warning("Only one class present after excluding data — skipping DNN training, scores set to 0.5")
         return np.full(n, 0.5, dtype="float32"), ""
 
-    # Build feature DataFrame from events ak.Array
+    # Build full feature matrix from all events (data + MC)
+    n_keep = int(keep.sum())
     feat_list = list(REQUESTED_FEATURES_25)
-    X_dict = {}
-    for feat in feat_list:
-        if feat in events.fields:
-            X_dict[feat] = np.asarray(ak.to_numpy(events[feat]), dtype="f8")
-        else:
-            X_dict[feat] = np.full(n, -9999.0, dtype="f8")
-    X_df = pd.DataFrame(X_dict)
+
+    if objects is not None and config is not None:
+        # Use standard variable-computation pipeline (resolves MET→PFMET_pt, etc.)
+        X_full_df = _build_dnn_feature_matrix_from_events(
+            events, objects, config, feat_list
+        )
+        X_dict_full = {c: X_full_df[c].to_numpy(dtype="f8") for c in X_full_df.columns}
+    else:
+        # Fallback: direct field lookup (legacy, may miss aliased branches)
+        X_dict_full = {}
+        for feat in feat_list:
+            if feat in events.fields:
+                X_dict_full[feat] = np.asarray(ak.to_numpy(events[feat]), dtype="f8")
+            else:
+                X_dict_full[feat] = np.full(n, -9999.0, dtype="f8")
+
+    # Training subset: non-data events only
+    X_dict_train = {feat: arr[keep] for feat, arr in X_dict_full.items()}
+    X_df = pd.DataFrame(X_dict_train)
     X_df = sanitize_feature_frame(X_df)
 
-    # Weights
+    # Weights, filtered to non-data events
     if "full_event_weight" in events.fields:
-        w = np.asarray(ak.to_numpy(events["full_event_weight"]), dtype="f8")
-        w = np.where(np.isfinite(w), np.maximum(w, 0.0), 0.0)
+        w_full = np.asarray(ak.to_numpy(events["full_event_weight"]), dtype="f8")
+        w_full = np.where(np.isfinite(w_full), np.maximum(w_full, 0.0), 0.0)
+        w = w_full[keep]
     else:
-        w = np.ones(n, dtype="f8")
+        w = np.ones(n_keep, dtype="f8")
 
     trainer = DNNTrainer(train_dnn_config)
     metrics = trainer.train_from_arrays(
@@ -309,8 +396,11 @@ def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args) -
     model_path = str(Path(dnn_outdir) / "dnn_model.pt")
     logging.info("DNN trained — AUC(val)=%.4f  model=%s", metrics.get("auc_val", float("nan")), model_path)
 
-    # Score all events with the just-trained model
-    scores = trainer.predict(X_df.to_numpy(dtype="f8"), np.zeros(n, dtype="f8")).ravel().astype("float32")
+    # Score ALL events (including data) with the just-trained model
+    # X_full is the feature matrix for every event; data events are scored but not trained on
+    X_full = pd.DataFrame(X_dict_full)
+    X_full = sanitize_feature_frame(X_full)
+    scores = trainer.predict(X_full.to_numpy(dtype="f8"), np.zeros(n, dtype="f8")).ravel().astype("float32")
     return scores, model_path
 
 
@@ -794,30 +884,127 @@ def run_analyzer(args):
                     logging.info(f"Event selection completed, saved to {args.event_selection_output}")
 
                 elif train_dnn_config:
-                    # Train DNN on selected events → inject ml_score in-memory → optionally region analysis
-                    logging.info("DNN training on %d events...", len(events))
-                    scores, model_path = _train_dnn_on_events(events, train_dnn_config, dnn_outdir, args)
-                    events = ak.with_field(events, ak.Array(scores), "ml_score")
-                    logging.info("ml_score injected in-memory (no disk write)")
+                    # ── Apply preselection + compute MC weights BEFORE DNN training ──
+                    # Physics rationale: DNN must train on the same phase space
+                    # (post-preselection) and with correct event weights
+                    # (generator × pileup × btag SF × …).
+                    from .objects import build_objects
+                    from .selections import apply_selection
+                    import awkward as _ak
+
+                    n_total = len(events)
+
+                    # Step 1: Build physics objects & apply preselection
+                    objects_all = build_objects(events, config)
+                    selected_events, selected_objects, _cutflow = apply_selection(
+                        events, objects_all, config
+                    )
+                    n_sel = len(selected_events)
+                    logging.info(
+                        "Preselection for DNN training: %d / %d events pass (%.1f%%)",
+                        n_sel, n_total, 100.0 * n_sel / max(n_total, 1),
+                    )
+
+                    if n_sel == 0:
+                        logging.error("No events pass preselection — cannot train DNN")
+                        sys.exit(1)
+
+                    # Step 2: Compute MC event weights on preselected events
+                    proc_temp = DarkBottomLineProcessor(config)
+                    if not config.get("data", {}).get("is_data", False):
+                        try:
+                            weight_results = proc_temp.correction_manager.compute_event_weights(
+                                selected_events, selected_objects
+                            )
+                            full_weight = _ak.fill_none(
+                                weight_results["full_event_weight"], 1.0, axis=0
+                            )
+                        except Exception as _w_exc:
+                            logging.warning(
+                                "Weight computation failed, using unit weights: %s", _w_exc
+                            )
+                            full_weight = _ak.ones_like(
+                                selected_events[selected_events.fields[0]]
+                            )
+                    else:
+                        full_weight = _ak.ones_like(
+                            selected_events[selected_events.fields[0]]
+                        )
+                    selected_events = _ak.with_field(
+                        selected_events, full_weight, "full_event_weight"
+                    )
+                    logging.info("MC weights attached to preselected events")
+
+                    # Step 3: Train DNN on preselected + weighted events
+                    logging.info("DNN training on %d preselected events...", n_sel)
+                    _scores_train, model_path = _train_dnn_on_events(
+                        selected_events, train_dnn_config, dnn_outdir, args,
+                        objects=selected_objects, config=config,
+                    )
+
+                    # Step 4: Score ALL original events using the saved model
+                    # (training was on preselected; scoring covers the full dataset
+                    #  so ml_score is available for every event entering region analysis)
+                    trainer_scoring = DNNTrainer(train_dnn_config)
+                    trainer_scoring.load_model(model_path)
+
+                    # Use standard variable pipeline for consistent feature values
+                    from dnn.feature_engineering import REQUESTED_FEATURES_25
+                    feat_list = list(REQUESTED_FEATURES_25)
+                    X_full_df = _build_dnn_feature_matrix_from_events(
+                        events, objects_all, config, feat_list
+                    )
+                    scores = (
+                        trainer_scoring
+                        .predict(
+                            X_full_df.to_numpy(dtype="f8"),
+                            np.zeros(n_total, dtype="f8"),
+                        )
+                        .ravel()
+                        .astype("float32")
+                    )
+                    events = _ak.with_field(events, _ak.Array(scores), "ml_score")
+                    logging.info(
+                        "ml_score injected for all %d events "
+                        "(model trained on %d preselected events)",
+                        n_total, n_sel,
+                    )
 
                     if dnn_only:
-                        _plot_dnn_score_only(scores, str(Path(dnn_outdir) / "plots"))
-                        logging.info("--dnn-only set: stopping after DNN scoring. Training plots in %s/plots/", dnn_outdir)
+                        _plot_dnn_score_only(
+                            scores, str(Path(dnn_outdir) / "plots")
+                        )
+                        logging.info(
+                            "--dnn-only set: stopping after DNN scoring. "
+                            "Training plots in %s/plots/", dnn_outdir
+                        )
                     else:
-                        results = analyzer.process(events, event_selection_output=args.event_selection_output,
-                                                   event_selection_only=False, output_format=output_format_to_use,
-                                                   total_events=total_events)
+                        results = analyzer.process(
+                            events,
+                            event_selection_output=args.event_selection_output,
+                            event_selection_only=False,
+                            output_format=output_format_to_use,
+                            total_events=total_events,
+                        )
                         if args.output:
                             outdir = os.path.dirname(args.output)
                             if outdir:
                                 os.makedirs(outdir, exist_ok=True)
                             analyzer.accumulator = results
-                            analyzer.save_results(args.output, output_format=args.output_format)
+                            analyzer.save_results(
+                                args.output, output_format=args.output_format
+                            )
 
                 elif dnn_model:
                     # Score with existing model → inject ml_score in-memory → optionally region analysis
                     logging.info("Scoring events with DNN model: %s", dnn_model)
-                    events = _add_dnn_scores_to_events(events, dnn_model, dnn_config)
+                    # Build objects for proper feature-name resolution (MET→PFMET_pt etc.)
+                    from .objects import build_objects as _build_obj
+                    _obj_for_dnn = _build_obj(events, config)
+                    events = _add_dnn_scores_to_events(
+                        events, dnn_model, dnn_config,
+                        objects=_obj_for_dnn, config=config,
+                    )
                     scores = np.asarray(ak.to_numpy(events["ml_score"]), dtype="f4")
 
                     if dnn_only:
