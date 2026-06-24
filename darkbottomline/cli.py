@@ -277,12 +277,17 @@ def _build_dnn_feature_matrix_from_events(
 
 
 def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args,
-                         objects: dict = None, config: dict = None) -> Tuple[np.ndarray, str]:
+                         objects: dict = None, config: dict = None,
+                         y_train: np.ndarray = None) -> Tuple[np.ndarray, str]:
     """Train DNN on selected events (in-memory); return (scores, model_path).
 
     Scores array aligns 1:1 with events — same length, float32.
     All training plots (AUC, ranking, score distributions, loss curves) are
     written to dnn_outdir/plots/ by train_from_arrays.
+
+    When *y_train* is provided, the internal per-file label-building and
+    data-exclusion logic is skipped entirely — the caller guarantees that
+    *events* contains only MC events with correct labels.
     """
     import awkward as ak
     import pandas as pd
@@ -295,64 +300,71 @@ def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args,
     sig_prefix = getattr(args, "signal_prefix", None)
     label_csv_path = getattr(args, "label_csv", None)
 
-    # Build label array from input file heuristics, excluding data files.
-    # We need per-file entry counts to build a mask that aligns with the
-    # pre-concatenated events ak.Array, so data-file events can be dropped
-    # from X, y, and w consistently.
-    input_files = _get_input_files(args.input)
-    import os as _os
-
-    # Phase 1: collect per-file info (entry counts, labels, data flags)
-    file_entries: list = []
-    if label_csv_path:
-        import csv as _csv
-        label_map = {}
-        with open(label_csv_path, "r", newline="") as fp:
-            for row in _csv.DictReader(fp):
-                label_map[str(row["path"]).strip()] = int(row["label"])
-        for fpath in input_files:
-            key = fpath if fpath in label_map else _os.path.basename(fpath)
-            lbl = label_map.get(key, 0)
-            is_data = _is_data(fpath)
-            with uproot.open(fpath) as f:
-                cnt = int(f["Events"].num_entries)
-            file_entries.append((cnt, lbl, is_data))
+    # Build label array.  When *y_train* is provided externally (integrated
+    # path with correct per-file→per-event alignment), skip the internal
+    # per-file label-building and data-exclusion logic entirely.
+    if y_train is not None:
+        y = np.asarray(y_train, dtype="i4")
+        keep = np.ones(len(y), dtype=bool)  # caller already excluded data
+        n_data_skipped = 0
+        if np.unique(y).size < 2:
+            logging.warning("Only one class present — skipping DNN training, scores set to 0.5")
+            return np.full(n, 0.5, dtype="float32"), ""
     else:
-        for fpath in input_files:
-            is_data = _is_data(fpath)
-            if is_data:
-                sig = -1  # sentinel: will be excluded
-            else:
-                sig = 1 if _is_signal_heuristic(fpath, sig_patterns, sig_prefix) else 0
-            with uproot.open(fpath) as f:
-                cnt = int(f["Events"].num_entries)
-            file_entries.append((cnt, sig, is_data))
+        input_files = _get_input_files(args.input)
+        import os as _os
 
-    # Phase 2: build per-event y and a keep-mask (True = keep for training)
-    y_parts = []
-    keep_parts = []
-    n_data_skipped = 0
-    for cnt, sig, is_data in file_entries:
-        if is_data:
-            y_parts.append(np.full(cnt, -1, dtype="i4"))
-            keep_parts.append(np.zeros(cnt, dtype=bool))
-            n_data_skipped += cnt
+        # Phase 1: collect per-file info (entry counts, labels, data flags)
+        file_entries: list = []
+        if label_csv_path:
+            import csv as _csv
+            label_map = {}
+            with open(label_csv_path, "r", newline="") as fp:
+                for row in _csv.DictReader(fp):
+                    label_map[str(row["path"]).strip()] = int(row["label"])
+            for fpath in input_files:
+                key = fpath if fpath in label_map else _os.path.basename(fpath)
+                lbl = label_map.get(key, 0)
+                is_data = _is_data(fpath)
+                with uproot.open(fpath) as f:
+                    cnt = int(f["Events"].num_entries)
+                file_entries.append((cnt, lbl, is_data))
         else:
-            y_parts.append(np.full(cnt, sig, dtype="i4"))
-            keep_parts.append(np.ones(cnt, dtype=bool))
-    y_full = np.concatenate(y_parts)[:n]
-    keep = np.concatenate(keep_parts)[:n]
+            for fpath in input_files:
+                is_data = _is_data(fpath)
+                if is_data:
+                    sig = -1  # sentinel: will be excluded
+                else:
+                    sig = 1 if _is_signal_heuristic(fpath, sig_patterns, sig_prefix) else 0
+                with uproot.open(fpath) as f:
+                    cnt = int(f["Events"].num_entries)
+                file_entries.append((cnt, sig, is_data))
 
-    if n_data_skipped > 0:
-        logging.info("Excluded %d data events from DNN training (files: %s)",
-                     n_data_skipped,
-                     [f for f in input_files if _is_data(f)])
+        # Phase 2: build per-event y and a keep-mask (True = keep for training)
+        y_parts = []
+        keep_parts = []
+        n_data_skipped = 0
+        for cnt, sig, is_data in file_entries:
+            if is_data:
+                y_parts.append(np.full(cnt, -1, dtype="i4"))
+                keep_parts.append(np.zeros(cnt, dtype=bool))
+                n_data_skipped += cnt
+            else:
+                y_parts.append(np.full(cnt, sig, dtype="i4"))
+                keep_parts.append(np.ones(cnt, dtype=bool))
+        y_full = np.concatenate(y_parts)[:n]
+        keep = np.concatenate(keep_parts)[:n]
 
-    # Filter to non-data events only
-    y = y_full[keep]
-    if np.unique(y).size < 2:
-        logging.warning("Only one class present after excluding data — skipping DNN training, scores set to 0.5")
-        return np.full(n, 0.5, dtype="float32"), ""
+        if n_data_skipped > 0:
+            logging.info("Excluded %d data events from DNN training (files: %s)",
+                         n_data_skipped,
+                         [f for f in input_files if _is_data(f)])
+
+        # Filter to non-data events only
+        y = y_full[keep]
+        if np.unique(y).size < 2:
+            logging.warning("Only one class present after excluding data — skipping DNN training, scores set to 0.5")
+            return np.full(n, 0.5, dtype="float32"), ""
 
     # Build full feature matrix from all events (data + MC)
     n_keep = int(keep.sum())
@@ -899,16 +911,54 @@ def run_analyzer(args):
                     # (post-preselection) and with correct event weights
                     # (generator × pileup × btag SF × …).
                     from .objects import build_objects
-                    from .selections import apply_selection
+                    from .selections import _build_event_cut_masks
+                    from dnn.make_trees import _is_data, _is_signal_heuristic
                     import awkward as _ak
 
                     n_total = len(events)
 
-                    # Step 1: Build physics objects & apply preselection
+                    # Step 0: Build per-file labels + keep-mask for ORIGINAL events
+                    # (before preselection) so the alignment is correct.  We then
+                    # apply the preselection mask to get per-event labels for the
+                    # events that actually enter DNN training.
+                    sig_patterns = tuple(getattr(args, "signal_pattern", None) or ())
+                    sig_prefix = getattr(args, "signal_prefix", None)
+                    y_parts_full = []
+                    keep_parts_full = []
+                    n_data_total = 0
+                    for fpath in input_files:
+                        is_data = _is_data(fpath)
+                        with uproot.open(fpath) as f:
+                            cnt = int(f["Events"].num_entries)
+                        if is_data:
+                            y_parts_full.append(np.full(cnt, -1, dtype="i4"))
+                            keep_parts_full.append(np.zeros(cnt, dtype=bool))
+                            n_data_total += cnt
+                        else:
+                            sig = 1 if _is_signal_heuristic(fpath, sig_patterns, sig_prefix) else 0
+                            y_parts_full.append(np.full(cnt, sig, dtype="i4"))
+                            keep_parts_full.append(np.ones(cnt, dtype=bool))
+                    y_full_orig = np.concatenate(y_parts_full)[:n_total]
+                    keep_full_orig = np.concatenate(keep_parts_full)[:n_total]
+                    if n_data_total > 0:
+                        logging.info(
+                            "Identified %d data events (%d total) — will be excluded from DNN training",
+                            n_data_total, n_total,
+                        )
+
+                    # Step 1: Build physics objects & compute preselection mask
                     objects_all = build_objects(events, config)
-                    selected_events, selected_objects, _cutflow = apply_selection(
-                        events, objects_all, config
-                    )
+                    cut_masks, _ = _build_event_cut_masks(events, objects_all, config)
+                    presel_mask = _ak.ones_like(events["event"], dtype=bool)
+                    for m in cut_masks.values():
+                        presel_mask = presel_mask & _ak.fill_none(m, False, axis=0)
+
+                    # Apply preselection to events, objects, and labels
+                    selected_events = events[presel_mask]
+                    selected_objects = {k: v[presel_mask] for k, v in objects_all.items()}
+                    presel_mask_np = np.asarray(_ak.to_numpy(presel_mask), dtype=bool)
+                    y_presel = y_full_orig[presel_mask_np]
+                    keep_presel = keep_full_orig[presel_mask_np]
                     n_sel = len(selected_events)
                     logging.info(
                         "Preselection for DNN training: %d / %d events pass (%.1f%%)",
@@ -919,12 +969,23 @@ def run_analyzer(args):
                         logging.error("No events pass preselection — cannot train DNN")
                         sys.exit(1)
 
-                    # Step 2: Compute MC event weights on preselected events
+                    # Step 2: Filter to MC-only events + compute weights
+                    mc_mask = keep_presel  # True = non-data
+                    n_mc = int(mc_mask.sum())
+                    if n_mc == 0:
+                        logging.error("No MC events after preselection — cannot train DNN")
+                        sys.exit(1)
+                    logging.info("MC events for DNN training: %d / %d preselected", n_mc, n_sel)
+
+                    selected_events_mc = selected_events[mc_mask]
+                    selected_objects_mc = {k: v[mc_mask] for k, v in selected_objects.items()}
+                    y_train = y_presel[mc_mask]
+
                     proc_temp = DarkBottomLineProcessor(config)
                     if not config.get("data", {}).get("is_data", False):
                         try:
                             weight_results = proc_temp.correction_manager.compute_event_weights(
-                                selected_events, selected_objects
+                                selected_events_mc, selected_objects_mc
                             )
                             full_weight = _ak.fill_none(
                                 weight_results["full_event_weight"], 1.0, axis=0
@@ -934,22 +995,23 @@ def run_analyzer(args):
                                 "Weight computation failed, using unit weights: %s", _w_exc
                             )
                             full_weight = _ak.ones_like(
-                                selected_events[selected_events.fields[0]]
+                                selected_events_mc[selected_events_mc.fields[0]]
                             )
                     else:
                         full_weight = _ak.ones_like(
-                            selected_events[selected_events.fields[0]]
+                            selected_events_mc[selected_events_mc.fields[0]]
                         )
-                    selected_events = _ak.with_field(
-                        selected_events, full_weight, "full_event_weight"
+                    selected_events_mc = _ak.with_field(
+                        selected_events_mc, full_weight, "full_event_weight"
                     )
-                    logging.info("MC weights attached to preselected events")
+                    logging.info("MC weights attached to %d training events", n_mc)
 
-                    # Step 3: Train DNN on preselected + weighted events
-                    logging.info("DNN training on %d preselected events...", n_sel)
+                    # Step 3: Train DNN on MC-only preselected + weighted events
+                    logging.info("DNN training on %d MC preselected events...", n_mc)
                     _scores_train, model_path = _train_dnn_on_events(
-                        selected_events, train_dnn_config, dnn_outdir, args,
-                        objects=selected_objects, config=config,
+                        selected_events_mc, train_dnn_config, dnn_outdir, args,
+                        objects=selected_objects_mc, config=config,
+                        y_train=y_train,
                     )
 
                     # Step 4: Score ALL original events using the saved model
