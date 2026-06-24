@@ -62,30 +62,34 @@ def _dijet(px1, py1, pz1, e1, px2, py2, pz2, e2):
 # ---------------------------------------------------------------------------
 
 def _met_variables(events: ak.Array) -> Dict[str, np.ndarray]:
-    """MET kinematics. Supports both NanoAOD v12 (MET_*) and v15 (PFMET_*)."""
-    def _get(v15, v12):
-        if v15 in events.fields:
-            return ak.to_numpy(events[v15])
-        elif v12 in events.fields:
-            return ak.to_numpy(events[v12])
+    """MET kinematics. PuppiMET preferred; falls back to PFMET then MET."""
+    def _get(*candidates):
+        for v in candidates:
+            if v in events.fields:
+                return ak.to_numpy(events[v])
         return np.zeros(len(events), dtype=np.float32)
 
     return {
-        'PFMET_pt':           _get('PFMET_pt',           'MET_pt'),
-        'PFMET_phi':          _get('PFMET_phi',           'MET_phi'),
-        'pfMetCorrSig':       _get('PFMET_significance',  'MET_significance'),
+        'MET_pt':           _get('PuppiMET_pt',  'PFMET_pt',  'MET_pt'),
+        'MET_phi':          _get('PuppiMET_phi', 'PFMET_phi', 'MET_phi'),
+        'MET_significance': _get('PFMET_significance', 'MET_significance'),
     }
 
 
 def _recoil_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
-    """Recoil pT and phi (precomputed in build_objects)."""
+    """Recoil pT and phi (precomputed in build_objects), plus JES/JER shifted variants."""
     recoil     = objects.get('recoil')
     recoil_phi = objects.get('recoil_phi')
     n = len(recoil) if recoil is not None else 0
     _zeros = ak.Array(np.zeros(n, dtype=np.float32))
+    central = recoil if recoil is not None else _zeros
     return {
-        'Recoil':    _scalar(recoil     if recoil     is not None else _zeros),
-        'RecoilPhi': _scalar(recoil_phi if recoil_phi is not None else _zeros),
+        'Recoil':          _scalar(central),
+        'RecoilPhi':       _scalar(recoil_phi if recoil_phi is not None else _zeros),
+        'Recoil_JESUp':   _scalar(objects.get('recoil_JESUp',   central)),
+        'Recoil_JESDown': _scalar(objects.get('recoil_JESDown', central)),
+        'Recoil_JERUp':   _scalar(objects.get('recoil_JERUp',   central)),
+        'Recoil_JERDown': _scalar(objects.get('recoil_JERDown', central)),
     }
 
 
@@ -108,7 +112,16 @@ def _multiplicity_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
         n = ak.to_numpy(ak.num(jets, axis=1)).size if hasattr(jets, '__len__') else 0
         b_flavor_count = np.zeros(n, dtype=np.int32)
 
-    return {
+    def _scalar_int(key):
+        arr = objects.get(key)
+        if arr is None:
+            return None
+        try:
+            return ak.to_numpy(ak.fill_none(ak.values_astype(arr, np.int32), np.int32(0)))
+        except Exception:
+            return None
+
+    out = {
         'Njets_PassID':   _num('jets'),
         'n_bjets':        _num('bjets'),
         'n_muons':        _num('muons'),
@@ -116,12 +129,33 @@ def _multiplicity_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
         'n_taus':         _num('taus'),
         'b_flavor_count': b_flavor_count,
     }
+    # Z-candidate lepton counts and mass — required for CR_Zee/CR_Zmumu region cuts
+    for key, branch in (('n_z_muons', 'n_z_muons'), ('n_z_electrons', 'n_z_electrons')):
+        v = _scalar_int(key)
+        if v is not None:
+            out[branch] = v
+    # Z dilepton mass: muon pair if NmuonsZ==2 else electron pair
+    mll_mu = objects.get('mll_mu')
+    mll_el = objects.get('mll_el')
+    nzm = objects.get('n_z_muons')
+    nze = objects.get('n_z_electrons')
+    if mll_mu is not None and mll_el is not None and nzm is not None and nze is not None:
+        try:
+            mll = ak.where(
+                ak.fill_none(ak.values_astype(nzm, np.int32), 0) == 2, mll_mu,
+                ak.where(ak.fill_none(ak.values_astype(nze, np.int32), 0) == 2, mll_el,
+                         np.float32(SENTINEL))
+            )
+            out['mll'] = ak.to_numpy(ak.fill_none(ak.values_astype(mll, np.float32), np.float32(SENTINEL)))
+        except Exception:
+            pass
+    return out
 
 
 def _jet_lead_variables(objects: Dict[str, Any], btag_algo: str) -> Dict[str, np.ndarray]:
     """Leading 3 jet kinematics + btag scores."""
     jets = objects.get('jets', ak.Array([]))
-    btag = jets.btagDeepFlavB if hasattr(jets, 'btagDeepFlavB') else ak.zeros_like(jets.pt)
+    btag = jets.btagScore if hasattr(jets, 'btagScore') else ak.zeros_like(jets.pt)
 
     return {
         'Jet1Pt':              _lead(jets.pt,  0),
@@ -148,8 +182,8 @@ def _jet_composite_variables(
     j1pt  = jet_lead['Jet1Pt'];  j2pt  = jet_lead['Jet2Pt'];  j3pt  = jet_lead['Jet3Pt']
     j1eta = jet_lead['Jet1Eta']; j2eta = jet_lead['Jet2Eta']; j3eta = jet_lead['Jet3Eta']
     j1phi = jet_lead['Jet1Phi']; j2phi = jet_lead['Jet2Phi']; j3phi = jet_lead['Jet3Phi']
-    met_pt  = met_vars['PFMET_pt'].astype(np.float32)
-    met_phi = met_vars['PFMET_phi'].astype(np.float32)
+    met_pt  = met_vars['MET_pt'].astype(np.float32)
+    met_phi = met_vars['MET_phi'].astype(np.float32)
 
     has_j1 = j1pt > 0
     has_2j = has_j1 & (j2pt > 0)
@@ -199,6 +233,18 @@ def _dphi_jet_met(objects: Dict[str, Any], met_phi: np.ndarray) -> np.ndarray:
     return np.where(raw >= 0, np.minimum(raw, np.float32(2 * np.pi) - raw), raw).astype(np.float32)
 
 
+def _genmodel_variables(events: ak.Array) -> Dict[str, np.ndarray]:
+    """Pass through GenModel_* boolean branches (signal grid-point flags)."""
+    out: Dict[str, np.ndarray] = {}
+    for field in events.fields:
+        if field.startswith('GenModel_'):
+            try:
+                out[field] = ak.to_numpy(events[field]).astype(np.int8)
+            except Exception:
+                pass
+    return out
+
+
 def _jagged_variables(objects: Dict[str, Any]) -> Dict[str, ak.Array]:
     """Full jagged (per-event vector) branches for all objects."""
     out: Dict[str, ak.Array] = {}
@@ -215,7 +261,7 @@ def _jagged_variables(objects: Dict[str, Any]) -> Dict[str, ak.Array]:
         ('jets',      'pt',           'jet_pt'),
         ('jets',      'eta',          'jet_eta'),
         ('jets',      'phi',          'jet_phi'),
-        ('jets',      'btagDeepFlavB','jet_btag'),
+        ('jets',      'btagScore',    'jet_btag'),
         ('bjets',     'pt',           'bjet_pt'),
         ('bjets',     'eta',          'bjet_eta'),
         ('bjets',     'phi',          'bjet_phi'),
@@ -234,6 +280,71 @@ def _jagged_variables(objects: Dict[str, Any]) -> Dict[str, ak.Array]:
         except Exception:
             pass
     return out
+
+
+# ---------------------------------------------------------------------------
+# Empty-schema helper (for zero-event ROOT files)
+# ---------------------------------------------------------------------------
+
+# Scalar branches: name → numpy dtype
+_SCALAR_BRANCHES: Dict[str, Any] = {
+    'event': np.int64, 'run': np.int64, 'luminosityBlock': np.int64,
+    'MET_pt': np.float32, 'MET_phi': np.float32, 'MET_significance': np.float32,
+    'Recoil': np.float32, 'RecoilPhi': np.float32,
+    'Recoil_JESUp': np.float32, 'Recoil_JESDown': np.float32,
+    'Recoil_JERUp': np.float32, 'Recoil_JERDown': np.float32,
+    'costheta_star': np.float32,
+    'Njets_PassID': np.int32, 'n_bjets': np.int32, 'n_muons': np.int32,
+    'n_electrons': np.int32, 'n_taus': np.int32, 'b_flavor_count': np.int32,
+    'n_z_muons': np.int32, 'n_z_electrons': np.int32, 'mll': np.float32,
+    'Jet1Pt': np.float32, 'Jet1Eta': np.float32, 'Jet1Phi': np.float32,
+    'Jet2Pt': np.float32, 'Jet2Eta': np.float32, 'Jet2Phi': np.float32,
+    'Jet3Pt': np.float32, 'Jet3Eta': np.float32, 'Jet3Phi': np.float32,
+    'JetHT': np.float32,
+    'ratioJet1PtMET': np.float32, 'ratioPtJet21': np.float32,
+    'dEtaJet12': np.float32, 'dPhiJet12': np.float32, 'dRJet12': np.float32,
+    'dPhiJet13': np.float32,
+    'M_Jet1Jet2': np.float32, 'pT_Jet1Jet2': np.float32,
+    'eta_Jet1Jet2': np.float32, 'phi_Jet1Jet2': np.float32,
+    'M_Jet1Jet3': np.float32,
+    'dPhi_jetMET': np.float32,
+    'muon_lep1_pt': np.float32, 'muon_lep1_phi': np.float32, 'muon_lep1_eta': np.float32,
+    'muon_lep2_pt': np.float32, 'muon_lep2_phi': np.float32, 'muon_lep2_eta': np.float32,
+    'electron_lep1_pt': np.float32, 'electron_lep1_phi': np.float32, 'electron_lep1_eta': np.float32,
+    'electron_lep2_pt': np.float32, 'electron_lep2_phi': np.float32, 'electron_lep2_eta': np.float32,
+    'full_event_weight': np.float32,
+    'weight_pdfUP': np.float32, 'weight_pdfDOWN': np.float32,
+    'weight_scaleUP': np.float32, 'weight_scaleDOWN': np.float32,
+    'pass_met_trigger': np.int32,
+    'pass_ele_trigger': np.int32,
+}
+
+# Jagged branches: name → numpy dtype of elements
+_JAGGED_BRANCHES: Dict[str, Any] = {
+    'muon_pt': np.float32, 'muon_eta': np.float32, 'muon_phi': np.float32,
+    'electron_pt': np.float32, 'electron_eta': np.float32, 'electron_phi': np.float32,
+    'jet_pt': np.float32, 'jet_eta': np.float32, 'jet_phi': np.float32,
+    'jet_btag': np.float32,
+    'bjet_pt': np.float32, 'bjet_eta': np.float32, 'bjet_phi': np.float32,
+}
+
+
+def get_empty_branch_types(config: Dict[str, Any] = None) -> Dict[str, Any]:
+    """Return uproot mktree-compatible branch type dict for an empty Events TTree.
+
+    Used to write an empty Events TTree when no events pass selection, so that
+    hadd can merge files regardless of whether any chunk had selected events.
+    The btag branch name is config-driven; all other names are fixed.
+    """
+    btag_algo = (config or {}).get('btagging', {}).get('algorithm', 'deepJet')
+    types: Dict[str, Any] = {}
+    for name, dtype in _SCALAR_BRANCHES.items():
+        types[name] = np.dtype(dtype)
+    for name in _JAGGED_BRANCHES:
+        types[name] = 'var * float32'
+    for idx in (1, 2, 3):
+        types[f'Jet{idx}{btag_algo}'] = np.dtype(np.float32)
+    return types
 
 
 # ---------------------------------------------------------------------------
@@ -263,6 +374,24 @@ def compute_event_variables(
         except Exception:
             out[field] = np.zeros(n_ev, dtype=np.int64)
 
+    # --- Per-trigger-group decisions (stored for per-region trigger requirement) ---
+    # MET trigger group: MET + SingleMuon (used for SR, muon CRs)
+    # EGamma trigger group: EGamma (used for electron CRs)
+    _met_trig_paths  = (config.get('triggers', {}).get('MET', [])
+                        + config.get('triggers', {}).get('SingleMuon', []))
+    _ele_trig_paths  = config.get('triggers', {}).get('EGamma', [])
+    def _trig_decision(paths):
+        mask = np.zeros(n_ev, dtype=np.int32)
+        for p in paths:
+            if p in events.fields:
+                try:
+                    mask = np.maximum(mask, ak.to_numpy(events[p]).astype(np.int32))
+                except Exception:
+                    pass
+        return mask
+    out['pass_met_trigger'] = _trig_decision(_met_trig_paths)
+    out['pass_ele_trigger'] = _trig_decision(_ele_trig_paths)
+
     # --- MET ---
     met_vars = _met_variables(events)
     out.update(met_vars)
@@ -291,7 +420,7 @@ def compute_event_variables(
 
     # --- Composite jet + MET variables ---
     out.update(_jet_composite_variables(jet_lead, met_vars))
-    out['dPhi_jetMET'] = _dphi_jet_met(objects, met_vars['PFMET_phi'])
+    out['dPhi_jetMET'] = _dphi_jet_met(objects, met_vars['MET_phi'])
 
     # --- Leading lepton scalar branches (needed for MT/Mll in CR cuts) ---
     for lep_key, prefix in (('muons', 'muon'), ('electrons', 'electron')):
@@ -307,6 +436,9 @@ def compute_event_variables(
 
     # --- Jagged object branches ---
     out.update(_jagged_variables(objects))
+
+    # --- GenModel grid-point flags (signal only; no-op for bkg/data) ---
+    out.update(_genmodel_variables(events))
 
     # --- Event weights ---
     if event_weights:

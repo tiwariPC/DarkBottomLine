@@ -246,10 +246,13 @@ def _load_single_root(path: Path, target_variables: Optional[Sequence[str]] = No
             except Exception as e:
                 print(f"Warning: Could not read branch {branch_name}: {e}")
 
-        # Get weighted_total_events — new format: flat TH1 at root level; legacy: Metadata TTree
+        # Get normalization events count. Prefer 'h_n_events_input' if present
+        # (new per-user request). Fall back to 'weighted_total_events' if not found.
         weighted_total_events = 0
         metadata_weighted_total_events_available = False
-        for _key in ('weighted_total_events', 'weighted_total_events;1'):
+
+        # Prefer flat TH1 'h_n_events_input' (root-level), then 'weighted_total_events'.
+        for _key in ('h_n_events_input', 'h_n_events_input;1', 'weighted_total_events', 'weighted_total_events;1'):
             if _key in f:
                 try:
                     weighted_total_events = int(round(float(f[_key].values()[0])))
@@ -257,12 +260,25 @@ def _load_single_root(path: Path, target_variables: Optional[Sequence[str]] = No
                     break
                 except Exception:
                     pass
+
+        # Metadata tree fallback: prefer Metadata.h_n_events_input, otherwise Metadata.weighted_total_events
         if not metadata_weighted_total_events_available and "Metadata" in f:
             meta_tree = f["Metadata"]
-            if "weighted_total_events" in meta_tree.keys():
-                weighted_total_events_arr = meta_tree["weighted_total_events"].array(library="np")
-                weighted_total_events = int(np.sum(weighted_total_events_arr)) if len(weighted_total_events_arr) > 0 else 0
-                metadata_weighted_total_events_available = weighted_total_events > 0
+            # try h_n_events_input first
+            if "h_n_events_input" in meta_tree.keys():
+                try:
+                    arr = meta_tree["h_n_events_input"].array(library="np")
+                    weighted_total_events = int(np.sum(arr)) if len(arr) > 0 else 0
+                    metadata_weighted_total_events_available = weighted_total_events > 0
+                except Exception:
+                    pass
+            if not metadata_weighted_total_events_available and "weighted_total_events" in meta_tree.keys():
+                try:
+                    weighted_total_events_arr = meta_tree["weighted_total_events"].array(library="np")
+                    weighted_total_events = int(np.sum(weighted_total_events_arr)) if len(weighted_total_events_arr) > 0 else 0
+                    metadata_weighted_total_events_available = weighted_total_events > 0
+                except Exception:
+                    pass
 
         # Do not fallback to selected entries for MC normalization.
         # If metadata is missing, keep weighted_total_events=0 and let caller decide whether to fail.
@@ -307,7 +323,7 @@ def _extract_cut_labels_from_tree(tree: Any, n_cuts: int) -> List[str]:
 
 
 _CUTFLOW_CUT_NAMES = [
-    'Total', 'Trigger', 'MET filters', 'Recoil',
+    'Total', 'OR Trigger', 'Noise filters', 'Recoil',
     'N_{#mu}', 'N_{e}', '#tau Veto', '#gamma Veto',
     'N_{j}', 'p_{T}^{Jet1}', '#Delta#phi',
 ]
@@ -689,7 +705,7 @@ def _extract_object_distributions(objects: Dict[str, Any]) -> Dict[str, np.ndarr
 _VARIABLE_BINS: Dict[str, np.ndarray] = {
     # ---- angular / delta-phi ----
     "METPhi":        np.linspace(-3.14, 3.14, 21),
-    "PFMET_phi":     np.linspace(-3.14, 3.14, 21),
+    "MET_phi":       np.linspace(-3.14, 3.14, 21),
     "dPhi_jetMET":   np.linspace(0.0, 3.2, 17),
     "dPhiJet12":     np.linspace(-7.5, 7.5, 31),
     "DetaJet12":     np.linspace(-7.5, 7.5, 31),
@@ -708,7 +724,7 @@ _VARIABLE_BINS: Dict[str, np.ndarray] = {
     "muon_phi":      np.linspace(-3.14, 3.14, 21),
     # ---- pT / energy  (variable bins, 250-1000 GeV) ----
     "MET":           np.array([250., 300., 400., 550., 1000.]),
-    "PFMET_pt":      np.array([250., 300., 400., 550., 1000.]),
+    "MET_pt":        np.array([250., 300., 400., 550., 1000.]),
     "recoil":        np.array([250., 300., 400., 550., 1000.]),
     "Jet1Pt":        np.linspace(30., 800., 32),
     "Jet2Pt":        np.linspace(30., 800., 32),
@@ -731,7 +747,7 @@ _VARIABLE_BINS: Dict[str, np.ndarray] = {
     "n_taus":        np.arange(-0.5, 10.5, 1.0),
     # ---- CTS / BDT score (variable bins, 0-1) ----
     "costheta_star": np.array([0.0, 0.25, 0.50, 0.75, 1.0]),
-    "PFMET_significance": np.linspace(0., 100., 26),
+    "MET_significance":   np.linspace(0., 100., 26),
 }
 
 # Case-insensitive suffix patterns that map to the MET variable-bin edges.
@@ -1011,9 +1027,9 @@ _AXIS_LABELS: Dict[str, str] = {
     "njet_btag": r"Jet b-tag (count)",
     "njet_eta": r"Jet $\eta$ (count)",
     "njet_phi": r"Jet $\phi$ (count)",
-    "PFMET_phi": r"$\phi(p_T^{miss})$ (PF)",
-    "PFMET_pt": r"$p_T^{miss}$ (PF) [GeV]",
-    "PFMET_significance": r"$p_T^{miss}$ significance",
+    "MET_phi": r"$\phi(p_T^{miss})$",
+    "MET_pt": r"$p_T^{miss}$ [GeV]",
+    "MET_significance": r"$p_T^{miss}$ significance",
     "recoil": r"Hadronic Recoil [GeV]",
 }
 

@@ -16,11 +16,17 @@ no_log_scale_vars:
   - isjet1_eta_match  # boolean flag (0/1)
   - isjet2_eta_match  # boolean flag (0/1)
 
+# Variables for which systematic up/down ROOT files are produced.
+# For weight systematics: same events, varied weight.
+# For kinematic systematics (JES/JER): varied Recoil_JESUp etc. branches used.
+systematic_variables:
+  - Recoil
+
 # Variables plotted in every region. Each region's final list = common + region-specific below.
 common_variables:
   - Recoil
-  - PFMET_pt
-  - PFMET_phi
+  - MET_pt
+  - MET_phi
   - Jet1Pt
   - Jet1Eta
   - Jet1Phi
@@ -184,8 +190,8 @@ event_selection_variables:
   # Recoil / MET
   - Recoil
   - RecoilPhi
-  - PFMET_pt
-  - PFMET_phi
+  - MET_pt
+  - MET_phi
   # Leading jets
   - Jet1Pt
   - Jet1Eta
@@ -247,6 +253,25 @@ uncertainty_label: "Stat. unc."
 # Default number of auto-bins when no variable_bins entry matches
 n_bins_default: 40
 
+# CMS label
+cms_label: "Work in progress"   # e.g. "Preliminary", "Simulation", "Work in progress"
+com_energy: 13.6                 # Centre-of-mass energy in TeV
+
+# Ratio panel
+ratio_ylim: [0.0, 2.0]          # [ymin, ymax] for Data/MC ratio panel
+
+# Data point style
+data_markersize: 5.5
+data_elinewidth: 1.2
+data_color: "black"
+
+# Signal overlay lines
+signal_linewidth: 2.0
+signal_colors: ["#000000", "#e31a1c", "#1f78b4", "#33a02c", "#ff7f00", "#6a3d9a"]
+
+# Legend
+legend_ncol: 2
+
 # Suffix patterns that map to MET-style variable bins (case-insensitive)
 met_suffix_patterns:
   - met_pt
@@ -258,7 +283,7 @@ met_suffix_patterns:
 variable_bins:
   # angular / delta variables
   METPhi:             {low: -3.14159, high: 3.14159, n: 15}
-  PFMET_phi:          {low: -3.14159, high: 3.14159, n: 15}
+  MET_phi:            {low: -3.14159, high: 3.14159, n: 15}
   RecoilPhi:          {low: -3.14159, high: 3.14159, n: 15}
   dPhi_jetMET:        {low: 0.0,      high: 3.2,     n: 17}
   dPhiJet12:          {low: -7.5,     high: 7.5,     n: 21}
@@ -279,7 +304,7 @@ variable_bins:
   muon_phi:           {low: -3.14159, high: 3.14159, n: 15}
   # pT / energy (variable-width where physics motivated)
   MET:                {edges: [100, 200, 300, 400, 500, 750, 1000]}
-  PFMET_pt:           {edges: [100, 200, 300, 400, 500, 750, 1000]}
+  MET_pt:             {edges: [100, 200, 300, 400, 500, 750, 1000]}
   Recoil:             {edges: [250, 300, 400, 550, 1000]}
   recoil:             {edges: [250, 300, 400, 550, 1000]}
   Jet1Pt:             {low: 30.,  high: 800.,  n: 24}
@@ -322,7 +347,7 @@ variable_bins:
   costheta_star:      {edges: [0.0, 0.25, 0.50, 0.75, 1.0]}
   dnn_score:          {low: 0.,   high: 1.,    n: 25}
   ml_score:           {low: 0.,   high: 1.,    n: 25}
-  PFMET_significance: {low: 0.,   high: 100.,  n: 26}
+  MET_significance:   {low: 0.,   high: 100.,  n: 26}
 
 
 # Process grouping
@@ -420,15 +445,14 @@ process_groups:
       - "ttHto2B_M-125"
       - "tHto2B_M-125"
 
-  # --- Signal process (drawn as a line, not a filled band) ---
-  # Uncomment and fill in for your signal sample(s).
-  # Signal_bbMET:
-  #   type: signal
-  #   color: "#000000"
-  #   label: "DM ($m_{med}=1$ TeV)"
-  #   patterns:
-  #     - "SVJ_mMed-1000"
-  #     - "SVJ_mMed-2000"
+  # --- Signal process (drawn as dashed lines, one per GenModel masspoint) ---
+  # PNG/PDF: first 3 masspoints overlaid as dashed lines.
+  # ROOT: all masspoints saved as individual TH1s (sig_MH3_..._MH4_...).
+  # Cross sections per masspoint: scripts/xsection_signal.json keyed by "MH3_600_MH4_200_Mchi_1" etc.
+  Signal_2HDMa:
+    type: signal
+    patterns:
+      - "BBDM-2HDMa"
 
   # --- Data (drawn as black points, no xsec normalization) ---
   # Two separate data groups: one for MET/JetMET (SR + muon CRs) and one for EGamma (electron CRs).

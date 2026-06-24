@@ -111,6 +111,14 @@ def _fix_binning_edges(node: Any) -> None:
     if not isinstance(node, dict):
         return
     nodetype = node.get("nodetype")
+    # Some correction JSONs use 'category' nodes that are structurally
+    # equivalent to binning nodes for the purposes of edges/content fixing.
+    # Treat 'category' as 'binning' here so we can repair non-monotonic edges
+    # and make the JSON acceptable to correctionlib.from_string.
+    if nodetype == "category":
+        node["nodetype"] = "binning"
+        nodetype = "binning"
+
     if nodetype == "binning":
         edges = node.get("edges")
         content = node.get("content")
@@ -662,7 +670,7 @@ class CorrectionManager:
             flavor = ak.zeros_like(jets.pt, dtype=np.int32)
         eta = np.asarray(ak.ravel(np.abs(jets.eta)), dtype=float)
         pt = np.asarray(ak.ravel(jets.pt), dtype=float)
-        discr = np.asarray(ak.ravel(jets.btagDeepFlavB), dtype=float)
+        discr = np.asarray(ak.ravel(jets.btagScore), dtype=float)
         flavor_flat = np.asarray(ak.ravel(flavor), dtype=np.int32)
         n = len(pt)
         if n == 0:
@@ -742,8 +750,28 @@ class CorrectionManager:
         cs = self.corrections["jetJEC"]
         corr_cfg = self.config.get("corrections", {})
         tag = corr_cfg.get("jetJEC_tag", "")
+        level = corr_cfg.get("jetJEC_level", "L1L2L3Res")
         algo = corr_cfg.get("jetJEC_algo", "AK4PFPuppi")
         unc_name = corr_cfg.get("jetJEC_unc", "Total")
+        is_data = bool(self.config.get("data", {}).get("is_data", False))
+        compound_keys = list(cs.compound.keys()) if hasattr(cs, "compound") else []
+        correction_keys = list(cs.keys())
+
+        def _pick_compound_key(name: str) -> Optional[str]:
+            exact_key = f"{tag}_{name}_{algo}" if tag else None
+            if exact_key and exact_key in cs.compound:
+                return exact_key
+
+            preferred_flavor = "_DATA_" if is_data else "_MC_"
+            for candidate in compound_keys:
+                if preferred_flavor in candidate and candidate.endswith(f"{name}_{algo}"):
+                    return candidate
+
+            for candidate in compound_keys:
+                if candidate.endswith(f"{name}_{algo}"):
+                    return candidate
+
+            return exact_key
 
         n_flat = len(ak.ravel(jets.pt))
         if n_flat == 0:
@@ -765,18 +793,17 @@ class CorrectionManager:
 
         # Compound JEC correction (central)
         jec_central = np.ones(n_flat, dtype=float)
-        compound_key = f"{tag}_L1L2L3Res_{algo}" if tag else None
+        compound_key = _pick_compound_key(level)
         try:
-            if compound_key:
+            if compound_key and compound_key in cs.compound:
                 sf_obj = cs.compound[compound_key]
             else:
-                keys = list(cs.compound.keys()) if hasattr(cs, "compound") else []
-                sf_obj = cs.compound[keys[0]] if keys else None
+                sf_obj = cs.compound[compound_keys[0]] if compound_keys else None
             if sf_obj is not None:
                 if isinstance(sf_obj, str):
                     sf_obj = cs.compound[sf_obj]
                 jec_central = np.asarray(
-                    sf_obj.evaluate(flat_pt, flat_eta, flat_area, flat_phi, flat_rho), dtype=float
+                    sf_obj.evaluate(flat_area, flat_eta, flat_pt, flat_rho), dtype=float
                 )
         except Exception as e:
             logging.warning(f"JEC compound correction evaluation failed: {e}")
@@ -784,11 +811,22 @@ class CorrectionManager:
         # JEC Total uncertainty (for up/down)
         jec_unc = np.zeros(n_flat, dtype=float)
         unc_key_full = f"{tag}_{unc_name}_{algo}" if tag else None
+        if not unc_key_full or unc_key_full not in correction_keys:
+            preferred_flavor = "_DATA_" if is_data else "_MC_"
+            for candidate in correction_keys:
+                if preferred_flavor in candidate and candidate.endswith(f"{unc_name}_{algo}"):
+                    unc_key_full = candidate
+                    break
+            else:
+                for candidate in correction_keys:
+                    if candidate.endswith(f"{unc_name}_{algo}"):
+                        unc_key_full = candidate
+                        break
         try:
-            unc_obj = cs[unc_key_full] if unc_key_full else None
+            unc_obj = cs[unc_key_full] if unc_key_full and unc_key_full in correction_keys else None
             if unc_obj is not None:
                 jec_unc = np.asarray(
-                    unc_obj.evaluate(flat_pt * jec_central, flat_eta), dtype=float
+                    unc_obj.evaluate(flat_eta, flat_pt * jec_central), dtype=float
                 )
         except Exception as e:
             logging.warning(f"JEC uncertainty evaluation failed: {e}")
@@ -916,6 +954,54 @@ class CorrectionManager:
         except Exception:
             return float(len(events))
 
+    def get_pdf_scale_weights(self, events: ak.Array) -> Dict[str, np.ndarray]:
+        """
+        PDF (envelope) and QCD scale (7-point) weights from LHEPdfWeight / LHEScaleWeight.
+
+        PDF: NNPDF envelope — max/min over replicas 1-100 (index 0 = nominal already = 1.0).
+        Scale: 7-point — indices [0,1,2,3,4,6,8], skip 5 (muR=2,muF=0.5) and 7 (muR=0.5,muF=2).
+        Returns ratio weights (multiplicative factor on full_event_weight), ones if branches absent.
+        """
+        n = len(events)
+        ones = np.ones(n, dtype=np.float32)
+
+        # --- PDF envelope ---
+        pdf_up = ones.copy()
+        pdf_down = ones.copy()
+        if "LHEPdfWeight" in events.fields:
+            try:
+                pdf_w = ak.to_numpy(events["LHEPdfWeight"])  # shape (n, 103)
+                # replicas are indices 1-100; index 0 = nominal (=1.0 already normalized)
+                replicas = pdf_w[:, 1:101]
+                pdf_up   = np.max(replicas, axis=1).astype(np.float32)
+                pdf_down = np.min(replicas, axis=1).astype(np.float32)
+            except Exception as e:
+                logging.debug("PDF weight failed: %s", e)
+
+        # --- QCD scale 7-point envelope ---
+        # Variations: (muR,muF) = (1,1)(1,2)(1,0.5)(2,1)(2,2)(skip:2,0.5)(0.5,1)(skip:0.5,2)(0.5,0.5)
+        # Indices:       0      1      2      3      4       5              6         7              8
+        # Skip 5 (muR=2,muF=0.5) and 7 (muR=0.5,muF=2). Exclude 0 (nominal=1.0) from envelope.
+        scale_up = ones.copy()
+        scale_down = ones.copy()
+        if "LHEScaleWeight" in events.fields:
+            try:
+                sc_w = ak.to_numpy(events["LHEScaleWeight"])  # shape (n, 9)
+                _idx = [1, 2, 3, 4, 6, 8]  # 6 non-central variations; skip 0 (nominal), 5, 7
+                _idx = [i for i in _idx if i < sc_w.shape[1]]
+                sc_sel = sc_w[:, _idx]
+                scale_up   = np.max(sc_sel, axis=1).astype(np.float32)
+                scale_down = np.min(sc_sel, axis=1).astype(np.float32)
+            except Exception as e:
+                logging.debug("Scale weight failed: %s", e)
+
+        return {
+            "pdf_up": pdf_up,
+            "pdf_down": pdf_down,
+            "scale_up": scale_up,
+            "scale_down": scale_down,
+        }
+
     def compute_event_weights(
         self,
         events: ak.Array,
@@ -990,14 +1076,20 @@ class CorrectionManager:
         else:
             w_jec = w_jec_up = w_jec_down = ones
 
-        full_event_weight = genweight * w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_jec
+        sf_weight = w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_jec
+        full_event_weight = genweight * sf_weight
 
         def _vary(total, central, variation):
             """Replace central component with variation: (total / central) * variation."""
             safe = ak.where(central != 0.0, central, ak.ones_like(central))
             return (total / safe) * variation
 
+        # PDF and QCD scale weights (multiplicative on full_event_weight)
+        pdf_scale = self.get_pdf_scale_weights(events)
+        _fw = ak.to_numpy(full_event_weight).astype(np.float32)
+
         return {
+            "sf_weight": sf_weight,
             "full_event_weight": full_event_weight,
             "weight_pileupUP": _vary(full_event_weight, w_pu, w_pu_up),
             "weight_pileupDOWN": _vary(full_event_weight, w_pu, w_pu_down),
@@ -1011,6 +1103,10 @@ class CorrectionManager:
             "weight_electronHLTDOWN": _vary(full_event_weight, w_ele_hlt, w_ele_hlt_down),
             "weight_JECUP": _vary(full_event_weight, w_jec, w_jec_up),
             "weight_JECDOWN": _vary(full_event_weight, w_jec, w_jec_down),
+            "weight_pdfUP":   (_fw * pdf_scale["pdf_up"]).astype(np.float32),
+            "weight_pdfDOWN": (_fw * pdf_scale["pdf_down"]).astype(np.float32),
+            "weight_scaleUP":   (_fw * pdf_scale["scale_up"]).astype(np.float32),
+            "weight_scaleDOWN": (_fw * pdf_scale["scale_down"]).astype(np.float32),
         }
 
     def get_systematic_variations(self) -> list:

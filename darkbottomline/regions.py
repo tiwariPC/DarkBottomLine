@@ -29,6 +29,7 @@ class Region:
         self.name = name
         self.description = config.get("description", "")
         self.cuts = config.get("cuts", {})
+        self.trigger = config.get("trigger", None)  # "met" | "ele" | None
         self.expected_backgrounds = config.get("expected_backgrounds", [])
         self.blind_data = config.get("blind_data", False)
         self.priority = config.get("priority", 1)
@@ -74,11 +75,8 @@ class Region:
 
         return parsed
 
-    def apply_cuts(self, events: ak.Array, objects: Dict[str, Any]) -> ak.Array:
-        """
-        Apply region cuts to events. Logs initial count and one line with events after each cut.
-        """
-        # Use any available field to initialise the per-event boolean mask
+    def _evaluate_cut_sequence(self, events: ak.Array, objects: Dict[str, Any]) -> tuple[ak.Array, Dict[str, int]]:
+        """Return the final mask and ordered cumulative cutflow counts for this region."""
         _ref_field = "event" if "event" in events.fields else (events.fields[0] if events.fields else None)
         if _ref_field is not None:
             mask = ak.ones_like(events[_ref_field], dtype=bool)
@@ -87,19 +85,36 @@ class Region:
         n_initial = int(ak.sum(mask))
         logging.debug(f"Region {self.name}: initial (preselected) events: {n_initial}")
 
+        cutflow: Dict[str, int] = {"Total events": n_initial}
+
+        # Apply per-region trigger requirement first
+        if self.trigger == "met":
+            _trig_branch = "pass_met_trigger"
+        elif self.trigger == "ele":
+            _trig_branch = "pass_ele_trigger"
+        else:
+            _trig_branch = None
+
+        if _trig_branch is not None:
+            if _trig_branch in events.fields:
+                mask = mask & (events[_trig_branch] == 1)
+                _trig_label = "MET trigger" if self.trigger == "met" else "EGamma trigger"
+                cutflow[_trig_label] = int(ak.sum(mask))
+            else:
+                logging.debug("Trigger branch %s not in events — skipping trigger cut for %s",
+                              _trig_branch, self.name)
+
         after_cuts = []
         for var, cut_info in self.parsed_cuts.items():
             operator = cut_info["operator"]
             value = cut_info["value"]
 
-            # Get variable value
             var_value = self._get_variable_value(events, objects, var)
-
             if var_value is None:
-                logging.warning(f"Variable {var} not found, skipping cut")
+                logging.warning(f"Variable {var} not found in region {self.name}, skipping cut")
+                cutflow[f"SKIPPED {var}"] = int(ak.sum(mask))
                 continue
 
-            # Apply cut
             if operator == ">":
                 cut_mask = var_value > value
             elif operator == ">=":
@@ -113,22 +128,40 @@ class Region:
             elif operator == "!=":
                 cut_mask = var_value != value
             else:
-                logging.warning(f"Unknown operator: {operator}")
+                logging.warning(f"Unknown operator {operator!r} for {var} in region {self.name}")
+                cutflow[f"SKIPPED {var}"] = int(ak.sum(mask))
                 continue
 
             mask = mask & ak.fill_none(cut_mask, False, axis=0)
             n_pass = int(ak.sum(mask))
+            cutflow[f"After {var}"] = n_pass
             after_cuts.append(f"{var}: {n_pass}")
 
         if after_cuts:
             logging.debug(" %s", ", ".join(after_cuts))
 
+        return mask, cutflow
+
+    def evaluate_cutflow(self, events: ak.Array, objects: Dict[str, Any]) -> Dict[str, int]:
+        """Public helper returning the cumulative cutflow for this region."""
+        _, cutflow = self._evaluate_cut_sequence(events, objects)
+        return cutflow
+
+    def apply_cuts(self, events: ak.Array, objects: Dict[str, Any]) -> ak.Array:
+        """Apply region cuts to events and return the final mask."""
+        mask, _ = self._evaluate_cut_sequence(events, objects)
         return mask
 
     def apply_cuts_with_yields(
         self, events: ak.Array, objects: Dict[str, Any], weight: Optional[np.ndarray] = None
     ) -> Dict[str, float]:
-        """Apply cuts sequentially; return ordered {cut_label: weighted_yield_after_cut}."""
+        """Apply cuts sequentially; return ordered {cut_label: weighted_yield_after_cut}.
+
+        Delegates to _evaluate_cut_sequence to ensure trigger cut and consistent labels.
+        The returned cutflow dict maps step label → weighted yield after that step.
+        """
+        # Build cumulative mask + cutflow labels via the canonical sequence
+        # We need per-step masks, so replay the sequence applying weight at each step.
         _ref_field = "event" if "event" in events.fields else (events.fields[0] if events.fields else None)
         if _ref_field is not None:
             mask = ak.ones_like(events[_ref_field], dtype=bool)
@@ -136,13 +169,31 @@ class Region:
             mask = ak.Array(np.ones(len(events), dtype=bool))
 
         yields: Dict[str, float] = {}
+
+        def _w_sum(m):
+            m_np = np.asarray(m, dtype=bool)
+            return float(weight[m_np].sum()) if weight is not None else float(m_np.sum())
+
+        # Trigger cut first (mirrors _evaluate_cut_sequence)
+        if self.trigger == "met":
+            _trig_branch, _trig_label = "pass_met_trigger", "MET trigger"
+        elif self.trigger == "ele":
+            _trig_branch, _trig_label = "pass_ele_trigger", "EGamma trigger"
+        else:
+            _trig_branch, _trig_label = None, None
+
+        if _trig_branch and _trig_branch in events.fields:
+            mask = mask & (events[_trig_branch] == 1)
+            yields[_trig_label] = _w_sum(mask)
+
+        # Region cuts
         for var, cut_info in self.parsed_cuts.items():
             operator = cut_info["operator"]
             value    = cut_info["value"]
             var_value = self._get_variable_value(events, objects, var)
             if var_value is None:
                 continue
-            if operator == ">":   cut_mask = var_value > value
+            if operator == ">":    cut_mask = var_value > value
             elif operator == ">=": cut_mask = var_value >= value
             elif operator == "<":  cut_mask = var_value < value
             elif operator == "<=": cut_mask = var_value <= value
@@ -150,11 +201,7 @@ class Region:
             elif operator == "!=": cut_mask = var_value != value
             else: continue
             mask = mask & ak.fill_none(cut_mask, False, axis=0)
-            mask_np = np.asarray(mask, dtype=bool)
-            if weight is not None:
-                yields[f"{var}{operator}{value}"] = float(weight[mask_np].sum())
-            else:
-                yields[f"{var}{operator}{value}"] = float(mask_np.sum())
+            yields[var] = _w_sum(mask)
         return yields
 
     def _zeros_like_events(self, events: ak.Array, n_ev: int, dtype=float) -> ak.Array:
@@ -184,7 +231,7 @@ class Region:
         # Special variables
         if var == "MET":
             # Raw MET (no lepton correction) — used for W CR MET > 100
-            met_pt = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
+            met_pt = next((events[v] for v in ("PuppiMET_pt", "PFMET_pt", "MET_pt") if v in events.fields), None)
             return ak.fill_none(met_pt, 0.0)
         if var == "Recoil":
             # Global recoil = |-(MET_vec + sum pT(loose leptons))|, precomputed in build_objects
@@ -201,14 +248,14 @@ class Region:
             # Flat-branch fallback: n_bjets scalar per event
             if "n_bjets" in events.fields:
                 return events["n_bjets"]
-            return ak.zeros(n_ev, dtype=np.int64)
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "Njets":
             if "jets" in objects:
                 return self._safe_num_axis1(objects["jets"], n_ev)
             for _fname in ("Njets_PassID", "n_jets"):
                 if _fname in events.fields:
                     return events[_fname]
-            return ak.zeros(n_ev, dtype=np.int64)
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "NjetsMin":
             # Lower bound on jet multiplicity — same variable as Njets, distinct key for clarity
             if "jets" in objects:
@@ -216,7 +263,7 @@ class Region:
             for _fname in ("Njets_PassID", "n_jets"):
                 if _fname in events.fields:
                     return events[_fname]
-            return ak.zeros(n_ev, dtype=np.int64)
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "Jet1Pt":
             jets = objects.get("jets", ak.Array([]))
             if len(ak.flatten(jets)) == 0:
@@ -232,34 +279,39 @@ class Region:
                 n_taus = self._safe_num_axis1(objects.get("tight_taus", ak.Array([])), n_ev)
                 return n_muons + n_electrons + n_taus
             # Flat-branch fallback
-            _nm = events["n_muons"] if "n_muons" in events.fields else ak.zeros(n_ev, dtype=np.int64)
-            _ne = events["n_electrons"] if "n_electrons" in events.fields else ak.zeros(n_ev, dtype=np.int64)
-            _nt = events["n_taus"] if "n_taus" in events.fields else ak.zeros(n_ev, dtype=np.int64)
+            _nm = events["n_muons"] if "n_muons" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64))
+            _ne = events["n_electrons"] if "n_electrons" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64))
+            _nt = events["n_taus"] if "n_taus" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64))
             return _nm + _ne + _nt
         if var == "Nmuons":
             if "tight_muons" in objects:
                 return self._safe_num_axis1(objects["tight_muons"], n_ev)
             if "n_muons" in events.fields:
                 return events["n_muons"]
-            return ak.zeros(n_ev, dtype=np.int64)
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "Nelectrons":
             if "tight_electrons" in objects:
                 return self._safe_num_axis1(objects["tight_electrons"], n_ev)
             if "n_electrons" in events.fields:
                 return events["n_electrons"]
-            return ak.zeros(n_ev, dtype=np.int64)
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "NmuonsZ":
-            # Z CR: 2 OS leptons, leading tight pt>30, subleading loose pt>10
             if "n_z_muons" in objects:
                 return objects["n_z_muons"]
-            # Flat-branch fallback for event-selection files
+            # Flat-branch from EVENTSELECTION.root (written by variables.py)
+            if "n_z_muons" in events.fields:
+                return events["n_z_muons"]
+            # Last resort: tight muon count (wrong for Z CR but better than zero)
             if "n_muons" in events.fields:
                 return events["n_muons"]
             return self._zeros_like_events(events, n_ev, dtype=int)
         if var == "NelectronsZ":
             if "n_z_electrons" in objects:
                 return objects["n_z_electrons"]
-            # Flat-branch fallback for event-selection files
+            # Flat-branch from EVENTSELECTION.root (written by variables.py)
+            if "n_z_electrons" in events.fields:
+                return events["n_z_electrons"]
+            # Last resort: tight electron count (wrong for Z CR but better than zero)
             if "n_electrons" in events.fields:
                 return events["n_electrons"]
             return self._zeros_like_events(events, n_ev, dtype=int)
@@ -268,7 +320,7 @@ class Region:
                 return self._safe_num_axis1(objects["tight_taus"], n_ev)
             if "n_taus" in events.fields:
                 return events["n_taus"]
-            return ak.zeros(n_ev, dtype=np.int64)
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "NAdditionalJets":
             if "jets" in objects or "bjets" in objects:
                 n_jets = self._safe_num_axis1(objects.get("jets", ak.Array([])), n_ev)
@@ -276,8 +328,8 @@ class Region:
                 return n_jets - n_bjets
             # Flat-branch fallback
             _nj = events["Njets_PassID"] if "Njets_PassID" in events.fields else (
-                events["n_jets"] if "n_jets" in events.fields else ak.zeros(n_ev, dtype=np.int64))
-            _nb = events["n_bjets"] if "n_bjets" in events.fields else ak.zeros(n_ev, dtype=np.int64)
+                events["n_jets"] if "n_jets" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64)))
+            _nb = events["n_bjets"] if "n_bjets" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64))
             return _nj - _nb
         if var == "MT":
             # Flat-branch fallback — event-selected files store precomputed mt
@@ -286,8 +338,8 @@ class Region:
                     if _fname in events.fields:
                         return ak.fill_none(events[_fname], 0.0)
                 # Compute from scalar leading-lepton branches + MET
-                met_pt_f  = events["PFMET_pt"]  if "PFMET_pt"  in events.fields else None
-                met_phi_f = events["PFMET_phi"] if "PFMET_phi" in events.fields else None
+                met_pt_f  = next((events[v] for v in ("PuppiMET_pt",  "PFMET_pt",  "MET_pt")  if v in events.fields), None)
+                met_phi_f = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
                 if met_pt_f is not None and met_phi_f is not None:
                     for pt_f, phi_f in (
                         ("muon_lep1_pt",     "muon_lep1_phi"),
@@ -314,8 +366,8 @@ class Region:
                             except Exception:
                                 pass
             # Transverse mass (tight pt>30 leptons for CR)
-            met_pt = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
-            met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
+            met_pt  = next((events[v] for v in ("PuppiMET_pt",  "PFMET_pt",  "MET_pt")  if v in events.fields), None)
+            met_phi = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
 
             muons = objects.get("tight_muons", ak.Array([]))
             electrons = objects.get("tight_electrons", ak.Array([]))
@@ -345,34 +397,51 @@ class Region:
                 pass
             return ak.fill_none(mt, 0.0, axis=0)
         if var in ("Mll", "MllMin", "MllMax"):
-            # Flat-branch fallback — event-selected files store precomputed mll
+            # Flat-branch path: reading from EVENTSELECTION.root (objects={})
             if "n_z_muons" not in objects and "n_z_electrons" not in objects:
                 for _fname in ("mll", "Mll", "z_mass"):
                     if _fname in events.fields:
-                        return ak.fill_none(events[_fname], 0.0)
-                # Compute from scalar leading-lepton branches if available
-                for l1pt_f, l1eta_f, l1phi_f, l2pt_f, l2eta_f, l2phi_f in (
-                    ("muon_lep1_pt",     "muon_lep1_eta",     "muon_lep1_phi",
-                     "muon_lep2_pt",     "muon_lep2_eta",     "muon_lep2_phi"),
-                    ("electron_lep1_pt", "electron_lep1_eta", "electron_lep1_phi",
-                     "electron_lep2_pt", "electron_lep2_eta", "electron_lep2_phi"),
-                ):
-                    if all(f in events.fields for f in (l1pt_f, l1eta_f, l1phi_f, l2pt_f, l2eta_f, l2phi_f)):
-                        try:
-                            l1pt  = events[l1pt_f];  l1eta = events[l1eta_f]; l1phi = events[l1phi_f]
-                            l2pt  = events[l2pt_f];  l2eta = events[l2eta_f]; l2phi = events[l2phi_f]
-                            has2  = (l1pt > 0) & (l2pt > 0)
-                            dphi  = abs(l1phi - l2phi)
-                            dphi  = ak.where(dphi > np.pi, 2 * np.pi - dphi, dphi)
-                            deta  = l1eta - l2eta
-                            mll   = ak.where(
-                                has2,
-                                np.sqrt(2 * l1pt * l2pt * (np.cosh(deta) - np.cos(dphi))),
-                                0.0,
-                            )
-                            return ak.fill_none(mll, 0.0, axis=0)
-                        except Exception:
-                            pass
+                        return ak.fill_none(ak.values_astype(events[_fname], float), 0.0)
+                # Pick lepton flavor using n_z_electrons/n_z_muons flat branches
+                # to avoid computing Mll from the wrong lepton pair.
+                nzm_flat = events["n_z_muons"]     if "n_z_muons"     in events.fields else None
+                nze_flat = events["n_z_electrons"] if "n_z_electrons" in events.fields else None
+
+                def _mll_from_branches(l1pt_f, l1eta_f, l1phi_f, l2pt_f, l2eta_f, l2phi_f):
+                    if not all(f in events.fields for f in (l1pt_f, l1eta_f, l1phi_f, l2pt_f, l2eta_f, l2phi_f)):
+                        return None
+                    try:
+                        l1pt  = events[l1pt_f];  l1eta = events[l1eta_f]; l1phi = events[l1phi_f]
+                        l2pt  = events[l2pt_f];  l2eta = events[l2eta_f]; l2phi = events[l2phi_f]
+                        has2  = (l1pt > 0) & (l2pt > 0)
+                        dphi  = abs(l1phi - l2phi)
+                        dphi  = ak.where(dphi > np.pi, 2 * np.pi - dphi, dphi)
+                        deta  = l1eta - l2eta
+                        mll   = ak.where(
+                            has2,
+                            np.sqrt(2 * l1pt * l2pt * (np.cosh(deta) - np.cos(dphi))),
+                            0.0,
+                        )
+                        return ak.fill_none(mll, 0.0, axis=0)
+                    except Exception:
+                        return None
+
+                mu_fields  = ("muon_lep1_pt",     "muon_lep1_eta",     "muon_lep1_phi",
+                              "muon_lep2_pt",     "muon_lep2_eta",     "muon_lep2_phi")
+                el_fields  = ("electron_lep1_pt", "electron_lep1_eta", "electron_lep1_phi",
+                              "electron_lep2_pt", "electron_lep2_eta", "electron_lep2_phi")
+
+                # Prefer the flavor matching the Z candidate in each event
+                mll_mu = _mll_from_branches(*mu_fields)
+                mll_el = _mll_from_branches(*el_fields)
+
+                if mll_mu is not None and mll_el is not None and nzm_flat is not None and nze_flat is not None:
+                    mll = ak.where(nzm_flat == 2, mll_mu, ak.where(nze_flat == 2, mll_el, 0.0))
+                    return ak.fill_none(mll, 0.0, axis=0)
+                elif mll_mu is not None and (nzm_flat is None or nze_flat is None):
+                    return mll_mu
+                elif mll_el is not None:
+                    return mll_el
             # Z candidate mass: muon pair if NmuonsZ==2 else electron pair if NelectronsZ==2
             n_z_mu = objects.get("n_z_muons", self._zeros_like_events(events, n_ev, dtype=int))
             n_z_el = objects.get("n_z_electrons", self._zeros_like_events(events, n_ev, dtype=int))
@@ -407,7 +476,7 @@ class Region:
             return np.zeros(n_ev, dtype=np.float64)
         if var == "DeltaPhi":
             jets = objects.get("jets", ak.Array([]))
-            met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
+            met_phi = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
 
             # Check if jets array is empty or has no structure
             if len(ak.flatten(jets)) == 0 or len(jets) == 0:
@@ -437,7 +506,7 @@ class Region:
                 return self._zeros_like_events(events, n_ev, dtype=float)
         if var == "metQuality":
             # MET Quality = (pfMET - caloMET) / Recoil
-            pf_met = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
+            pf_met = next((events[v] for v in ("PuppiMET_pt", "PFMET_pt", "MET_pt") if v in events.fields), None)
             calo_met = events.get("CaloMET_pt", pf_met)  # Fallback to pfMET if caloMET not available
             recoil = self._get_variable_value(events, objects, "Recoil")
 
@@ -497,6 +566,15 @@ class RegionManager:
             mask = region.apply_cuts(events, objects)
             region_masks[region_name] = ak.fill_none(mask, False, axis=0)
         return region_masks
+
+    def get_region_cutflows(self, events: ak.Array, objects: Dict[str, Any], only_control_regions: bool = True) -> Dict[str, Dict[str, int]]:
+        """Collect ordered cumulative cutflows for regions."""
+        cutflows: Dict[str, Dict[str, int]] = {}
+        for region_name, region in self.regions.items():
+            if only_control_regions and "CR_" not in region_name:
+                continue
+            cutflows[region_name] = region.evaluate_cutflow(events, objects)
+        return cutflows
 
     def validate_regions(self, events: ak.Array, objects: Dict[str, Any]) -> Dict[str, Any]:
         if not self.validation.get("check_orthogonality", True):

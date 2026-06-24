@@ -2,6 +2,7 @@
 Event selection functions for DarkBottomLine framework.
 """
 
+import logging
 import awkward as ak
 import numpy as np
 from typing import Dict, Any, List, Tuple
@@ -32,8 +33,8 @@ def _build_event_cut_masks(
             combined_trigger_mask = combined_trigger_mask | pass_triggers(events, trigger_paths)
     trigger_cut = combined_trigger_mask
 
-    # --- MET filters ---
-    filter_cut = pass_met_filters(events, config["met_filters"])
+    # --- Noise filters ---
+    filter_cut = pass_met_filters(events, config["noise_filters"])
 
     # Count objects per event
     n_muons = ak.num(objects["muons"], axis=1)
@@ -70,7 +71,9 @@ def _build_event_cut_masks(
     delta_phi_min = selection.get("delta_phi_min")
     if delta_phi_min is not None:
         jets = objects.get("jets", ak.Array([]))
-        met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
+        met_phi = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
+        if met_phi is None:
+            raise KeyError("No MET phi branch found (tried PuppiMET_phi, PFMET_phi, MET_phi)")
         if len(ak.flatten(jets)) > 0:
             dphi = np.abs(jets.phi - met_phi)
             dphi = np.where(dphi > np.pi, 2 * np.pi - dphi, dphi)
@@ -83,8 +86,8 @@ def _build_event_cut_masks(
 
     # Canonical order — trigger & filters first, then object cuts
     masks = {
-        "Trigger":          trigger_cut,
-        "MET filters":      filter_cut,
+        "OR Trigger":       trigger_cut,
+        "Noise filters":    filter_cut,
         "Recoil":           recoil_cut,
         "N_{#mu}":          muon_cut,
         "N_{e}":            electron_cut,
@@ -295,23 +298,21 @@ def apply_selection(
     """
     Apply complete event selection including triggers, filters, and cuts.
 
-    Args:
-        events: Awkward Array of events
-        objects: Dictionary containing selected objects
-        config: Configuration dictionary
-
     Returns:
         Tuple of (selected_events, selected_objects, cutflow)
     """
-    print("  Applying full selection (trigger → filters → object cuts)...")
+    logging.info("Applying full selection (trigger → filters → object cuts)...")
     all_masks, _ = _build_event_cut_masks(events, objects, config)
+
+    cutflow: Dict[str, int] = {"Total": int(len(events))}
     final_mask = ak.ones_like(events["event"], dtype=bool)
     for step_name, step_mask in all_masks.items():
         final_mask = final_mask & step_mask
-        print(f"    After {step_name}: {ak.sum(final_mask)}")
-    print(f"    Events passing all selections: {ak.sum(final_mask)}")
+        n = int(ak.sum(final_mask))
+        cutflow[step_name] = n
+        logging.info("    After %s: %d", step_name, n)
+    logging.info("    Events passing all selections: %d", int(ak.sum(final_mask)))
 
-    # Apply selection to events and objects
     selected_events = events[final_mask]
     selected_objects = {}
     for key, obj in objects.items():
@@ -319,8 +320,5 @@ def apply_selection(
             selected_objects[key] = obj[final_mask]
         else:
             selected_objects[key] = obj
-
-    # Calculate cutflow
-    cutflow = get_cutflow(events, objects, config)
 
     return selected_events, selected_objects, cutflow

@@ -467,6 +467,7 @@ def _run_analyzer_from_eventselection(args):
             os.makedirs(outdir, exist_ok=True)
 
     merged_result: Optional[Dict] = None
+    analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
 
     for file_path in input_files:
         stem = Path(file_path).stem
@@ -492,8 +493,6 @@ def _run_analyzer_from_eventselection(args):
 
         # Scale wte by xsec if provided (consistent with make-event-plots normalisation)
         effective_wte = wte if wte > 0 else 1.0
-
-        analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
         try:
             result = analyzer.process_from_eventselection(
                 branches=branches,
@@ -521,7 +520,6 @@ def _run_analyzer_from_eventselection(args):
         return
 
     if args.output:
-        analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
         analyzer.accumulator = merged_result
         analyzer.save_results(args.output, output_format=args.output_format)
         logging.info("Region analysis from event-selection saved to %s", args.output)
@@ -676,6 +674,17 @@ def run_analyzer(args):
         is_txt_input = len(args.input) == 1 and args.input[0].endswith(".txt")
         input_files = _get_input_files(args.input)
 
+        input_total_events = None
+        try:
+            input_total_events = 0
+            for file_path in input_files:
+                tree = uproot.open(f"{file_path}:Events")
+                input_total_events += int(tree.num_entries)
+            logging.info(f"Computed input_total_events={input_total_events} from input files")
+        except Exception as e:
+            logging.warning(f"Could not compute input_total_events from input files: {e}")
+            input_total_events = None
+
         # -1 (or any negative) means "no limit" — treat as None throughout
         if args.max_events is not None and args.max_events < 0:
             args.max_events = None
@@ -764,7 +773,8 @@ def run_analyzer(args):
             coffea_analyzer = DarkBottomLineAnalyzerCoffeaProcessor(
                 config, regions_config_for_coffea, event_selection_output=args.event_selection_output,
                 event_selection_only=event_selection_only, output_format=output_format_to_use,
-                max_events=args.max_events, total_events=total_events
+                max_events=args.max_events, total_events=total_events,
+                input_total_events=input_total_events
             )
 
             if args.executor == "futures":
@@ -880,7 +890,7 @@ def run_analyzer(args):
                     analyzer = DarkBottomLineAnalyzer(config, None)
                     results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                               event_selection_only=True, output_format=output_format_to_use,
-                                              total_events=total_events)
+                                              total_events=total_events, input_total_events=input_total_events)
                     logging.info(f"Event selection completed, saved to {args.event_selection_output}")
 
                 elif train_dnn_config:
@@ -1024,7 +1034,7 @@ def run_analyzer(args):
                 else:
                     results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                               event_selection_only=False, output_format=output_format_to_use,
-                                              total_events=total_events)
+                                              total_events=total_events, input_total_events=input_total_events)
                     if args.output:
                         outdir = os.path.dirname(args.output)
                         if outdir:
@@ -1508,6 +1518,23 @@ def make_event_plots(args):
                 # already flat: {stem: xsec}
                 cross_sections[_cat] = float(_entries)
 
+    # Signal cross sections: {model: {masspoint: xsec}} — flatten all models into cross_sections
+    if getattr(args, "xsection_signal_json", None):
+        with open(args.xsection_signal_json) as f:
+            _sig_raw = json.load(f)
+        for _model, _entries in _sig_raw.items():
+            if isinstance(_entries, dict):
+                for _k, _v in _entries.items():
+                    if _k.startswith("_"):
+                        continue  # skip _comment etc.
+                    if isinstance(_v, (int, float)):
+                        cross_sections[_k] = float(_v)
+            elif isinstance(_entries, (int, float)):
+                cross_sections[_model] = float(_entries)
+        logging.info("Loaded signal cross sections from %s (%d masspoints)",
+                     args.xsection_signal_json,
+                     sum(1 for k in cross_sections if k.startswith("MH")))
+
     version = args.version
     if not version:
         version = _default_version()
@@ -1529,6 +1556,8 @@ def make_event_plots(args):
         regions_config=getattr(args, "regions_config", None),
         weight_systematic=getattr(args, "weight_systematic", None),
         show_data=getattr(args, "show_data", False),
+        signal_scale=float(getattr(args, "signal_scale", 1.0) or 1.0),
+        make_syst_plots=getattr(args, "make_syst_plots", False),
     )
     logging.info(f"analyze-regions: {len(out_files)} plot(s) written to {args.output_dir}")
 
@@ -1689,6 +1718,12 @@ Examples:
                                help="Collision data: apply golden JSON lumi mask, skip MC weights")
     analyze_parser.add_argument("--xsection-json", default=None, metavar="JSON",
                                help="JSON mapping filename stem → cross-section in pb (region-analysis mode)")
+    analyze_parser.add_argument("--xsection-signal-json", default=None, metavar="JSON",
+                               help="JSON with signal cross sections: {model: {masspoint: xsec_pb}} e.g. scripts/xsection_signal.json")
+    analyze_parser.add_argument("--signal-scale", type=float, default=1.0, metavar="N",
+                               help="Multiply all signal histograms by N for shape visibility (shown as ×N in legend, default: 1)")
+    analyze_parser.add_argument("--make-syst-plots", action="store_true", default=False,
+                               help="Produce systematic comparison plots (central+up+down per uncertainty) in outputs/plots/{version}/systematics/")
     # Plotting flags
     analyze_parser.add_argument("--make-region-plots", action="store_true", default=False,
                                help="Produce stacked region plots (pdf/png/txt/root) — region-analysis and full modes")

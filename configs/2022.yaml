@@ -35,8 +35,8 @@ triggers:
    SingleMuon: ["HLT_IsoMu24", "HLT_IsoMu27"]
    EGamma: ["HLT_Ele30_WPTight_Gsf", "HLT_Photon200"]
 
-# MET filters
-met_filters:
+# Noise filters
+noise_filters:
    - "Flag_goodVertices"
    - "Flag_globalSuperTightHalo2016Filter"
    - "Flag_EcalDeadCellTriggerPrimitiveFilter"
@@ -98,10 +98,11 @@ objects:
 # B-tagging working points
 btagging:
    wp: "medium"   # loose, medium, tight
-   algorithm: "deepJet"   # deepJet, deepCSV
-   score_loose: 0.0490    # Run3 2022 deepJet WPs (BTV POG)
-   score_medium: 0.2783
-   score_tight: 0.7100
+   algorithm: "PNet"       # PNet, deepJet, deepCSV
+   branch: "Jet_btagPNetB"  # NanoAOD branch name
+   score_loose: 0.0499    # Run3 2022 PNet WPs (BTV POG)
+   score_medium: 0.2605
+   score_tight: 0.6915
 
 # Event selection (aligned with SUS-23-008 / JHEP02(2025)050)
 event_selection:

@@ -72,7 +72,7 @@ features:
   - "M_Jet1Jet2"
   - "dPhi_jetMET"
   - "dEtaJet12"
-  - "pfMetCorrSig"
+  - "MET_significance"
   - "pT_Jet1Jet2"
   - "rJet1PtMET"
   - "ratioPtJet21"

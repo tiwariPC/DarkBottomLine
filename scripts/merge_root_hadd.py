@@ -1,71 +1,514 @@
 #!/usr/bin/env python3
-"""Merge ROOT files with hadd, grouped by common prefix up to a marker token."""
+"""Parallel ROOT merger using hadd.
 
-import os
+Features:
+- Merge ROOT files in multiple input folders in parallel.
+- Merge all ROOT files inside each input folder into a single output file.
+- Write merged ROOT files to a configurable output directory.
+"""
+
+from __future__ import annotations
+
 import argparse
+import os
+import shutil
 import subprocess
-import re
+import tempfile
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Sequence, Tuple
 
 
-def execute(cmd, dry_run):
-    output = cmd[2]
-    inputs = cmd[3:]
+@dataclass
+class MergeTask:
+    folder: Path
+    group_key: str
+    files: List[Path]
+    input_bytes: int
+    output_root: Path
+
+
+class _ByteBudget:
+    """Simple byte budget gate to cap concurrent staging pressure."""
+
+    def __init__(self, total_bytes: int):
+        if total_bytes <= 0:
+            raise ValueError("total_bytes must be positive")
+        self._total = total_bytes
+        self._available = total_bytes
+        self._cond = threading.Condition()
+
+    def acquire(self, requested_bytes: int) -> int:
+        need = max(1, min(requested_bytes, self._total))
+        with self._cond:
+            while self._available < need:
+                self._cond.wait()
+            self._available -= need
+        return need
+
+    def release(self, used_bytes: int) -> None:
+        with self._cond:
+            self._available = min(self._total, self._available + max(0, used_bytes))
+            self._cond.notify_all()
+
+
+def _check_hadd_exists() -> None:
+    if shutil.which("hadd") is None:
+        raise RuntimeError("Cannot find 'hadd' in PATH. Please load ROOT environment first.")
+
+
+def _check_events_tree_readable(path: Path) -> Tuple[bool, str | None]:
+    """Return whether the file's Events tree can be read by uproot.
+
+    Files without an Events tree are kept, since they may still contribute summary
+    trees. Files that have an Events tree but fail a small read probe are skipped.
+    """
+    # Prefer a PyROOT-based probe when available because it exercises ROOT's
+    # native IO paths and can detect corruption that uproot may not report.
+    try:
+        import ROOT  # type: ignore
+        # Allow disabling PyROOT probe via environment variable to avoid
+        # crashes when reading corrupted baskets in multithreaded probes.
+        import os
+        if os.getenv("MERGE_DISABLE_PYROOT"):
+            root_available = False
+        else:
+            root_available = True
+    except Exception:
+        root_available = False
+
+    if root_available:
+        try:
+            tf = ROOT.TFile.Open(str(path), "READ")
+            if not tf or tf.IsZombie():
+                return False, "PyROOT: cannot open file"
+            if not tf.GetListOfKeys().Contains("Events"):
+                tf.Close()
+                return True, None
+
+            tree = tf.Get("Events")
+            n = int(tree.GetEntries())
+            probe_n = min(10, max(1, n))
+            # Try reading a few entries to exercise baskets.
+            for i in range(probe_n):
+                try:
+                    tree.GetEntry(i)
+                except Exception as e:
+                    tf.Close()
+                    return False, f"PyROOT:GetEntry error: {e}"
+            tf.Close()
+            return True, None
+        except Exception as exc:
+            return False, f"PyROOT: {type(exc).__name__}: {exc}".splitlines()[0]
+
+    # Fallback to uproot probe if PyROOT isn't available.
+    try:
+        import uproot  # type: ignore
+        import awkward as ak  # type: ignore
+    except Exception:
+        # If neither library is available, assume OK (can't check here).
+        return True, None
+
+    try:
+        with uproot.open(path) as f_in:
+            if "Events" not in f_in:
+                return True, None
+
+            events_tree = f_in["Events"]
+            events_tree.arrays(entry_start=0, entry_stop=10, library="ak")
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}".splitlines()[0]
+
+    return True, None
+
+
+def _collect_tasks(input_dirs: Sequence[Path], output_dir: Path) -> List[MergeTask]:
+    tasks: List[MergeTask] = []
+    for in_dir in input_dirs:
+        if not in_dir.is_dir():
+            raise FileNotFoundError(f"Input directory does not exist: {in_dir}")
+
+        root_files = sorted(p for p in in_dir.iterdir() if p.is_file() and p.suffix == ".root")
+        if not root_files:
+            continue
+
+        good_files: List[Path] = []
+        skipped_files: List[Tuple[Path, str]] = []
+        for root_file in root_files:
+            is_ok, reason = _check_events_tree_readable(root_file)
+            if is_ok:
+                good_files.append(root_file)
+            else:
+                skipped_files.append((root_file, reason or "unreadable Events tree"))
+
+        if skipped_files:
+            print(f"[SKIP] {in_dir.name}: ignoring {len(skipped_files)} file(s) with unreadable Events trees")
+            for bad_file, reason in skipped_files[:10]:
+                print(f"[SKIP] {in_dir.name}: {bad_file.name} -> {reason}")
+            if len(skipped_files) > 10:
+                print(f"[SKIP] {in_dir.name}: ... and {len(skipped_files) - 10} more")
+
+        if not good_files:
+            continue
+
+        input_bytes = sum((f.stat().st_size for f in good_files), 0)
+        out_root = output_dir / f"{in_dir.name}.root"
+        tasks.append(
+            MergeTask(
+                folder=in_dir,
+                group_key=in_dir.name,
+                files=good_files,
+                input_bytes=input_bytes,
+                output_root=out_root,
+            )
+        )
+    return tasks
+
+
+def _hadd_merge(task: MergeTask, dry_run: bool = False) -> None:
+    cmd = ["hadd", "-f", "-k", str(task.output_root)] + [str(p) for p in task.files]
     if dry_run:
-        print(f"  merge {len(inputs)} file(s) → {os.path.basename(output)}")
-        for f in inputs:
-            print(f"    {os.path.basename(f)}")
-    else:
-        print(f"  MERGING {len(inputs)} file(s) → {os.path.basename(output)} ...")
-        subprocess.run(cmd, check=True)
-        print(f"  done → {os.path.basename(output)}")
+        print("[DRY-RUN]", " ".join(cmd))
+        return
+
+    task.output_root.parent.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"hadd failed for {task.output_root.name} (folder={task.folder.name}):\n{proc.stdout}"
+        )
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Group and merge ROOT files by dataset name.")
-    parser.add_argument("-i", "--input", required=True, help="Input directory")
-    parser.add_argument("-o", "--output", required=True, help="Output directory")
-    parser.add_argument("--marker", required=True, help="Marker to filter files")
-    parser.add_argument("--dry-run", action="store_true", help="Print commands without executing")
-    args = parser.parse_args()
+def _probe_hadd_merge(files: Sequence[Path], workdir: Path, label: str) -> bool:
+    probe_root = workdir / f"probe_{label}.root"
+    probe_task = MergeTask(
+        folder=workdir,
+        group_key=label,
+        files=list(files),
+        input_bytes=sum((p.stat().st_size for p in files), 0),
+        output_root=probe_root,
+    )
+    try:
+        _hadd_merge(probe_task, dry_run=False)
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            if probe_root.exists():
+                probe_root.unlink()
+        except Exception:
+            pass
 
-    if not os.path.exists(args.output):
-        if args.dry_run:
-            print(f"[DRY-RUN] Create directory: {args.output}")
-        else:
-            os.makedirs(args.output)
 
-    pattern = re.compile(rf"^(.*)_{args.marker}")
+def _find_mergeable_files(files: Sequence[Path], workdir: Path, label: str) -> Tuple[List[Path], List[Path]]:
+    """Return (good_files, skipped_files) by isolating inputs that break hadd."""
+    ordered = list(files)
+    if not ordered:
+        return [], []
 
-    groups = {}
-    files = [f for f in os.listdir(args.input) if f.endswith(".root") and args.marker in f]
-    for f in files:
-        match = pattern.match(f)
-        if match:
-            dataset_name = match.group(1)
-            groups.setdefault(dataset_name, []).append(os.path.join(args.input, f))
+    if _probe_hadd_merge(ordered, workdir, label):
+        return ordered, []
 
-    mode = "DRY RUN" if args.dry_run else "RUNNING"
-    print(f"\n[{mode}] {len(groups)} dataset(s) to merge\n")
+    if len(ordered) == 1:
+        return [], ordered
 
-    batch_size = 500
-    for dataset, file_list in sorted(groups.items()):
-        print(f"[{dataset}]")
-        output_file = os.path.join(args.output, f"{dataset}.root")
+    mid = len(ordered) // 2
+    left_good, left_bad = _find_mergeable_files(ordered[:mid], workdir, f"{label}_L")
+    right_good, right_bad = _find_mergeable_files(ordered[mid:], workdir, f"{label}_R")
+    return left_good + right_good, left_bad + right_bad
 
-        if len(file_list) > batch_size:
-            intermediates = []
-            for i in range(0, len(file_list), batch_size):
-                batch = file_list[i : i + batch_size]
-                tmp = os.path.join(args.output, f"tmp_{dataset}_{i // batch_size}.root")
-                intermediates.append(tmp)
-                execute(["hadd", "-f", tmp] + batch, args.dry_run)
-            execute(["hadd", "-f", output_file] + intermediates, args.dry_run)
-            if not args.dry_run:
-                for tmp in intermediates:
-                    os.remove(tmp)
-        else:
-            execute(["hadd", "-f", output_file] + file_list, args.dry_run)
+
+def _is_eos_path(path: Path) -> bool:
+    return path.as_posix().startswith("/eos/")
+
+
+def _find_recoil_branch(branches: Sequence[str], preferred: str) -> str | None:
+    # uproot keys may include titles; keep only raw branch names for matching.
+    raw = [str(b) for b in branches]
+    lower_map = {b.lower(): b for b in raw}
+
+    pref = preferred.strip().lower()
+    if pref in lower_map:
+        return lower_map[pref]
+
+    # Exact aliases commonly seen in analyses.
+    for alias in ("recoil", "recoil_pt", "pfmet_pt", "met_pt"):
+        if alias in lower_map:
+            return lower_map[alias]
+
+    # Fallback: first branch containing requested token or recoil token.
+    for b in raw:
+        bl = b.lower()
+        if pref and pref in bl:
+            return b
+    for b in raw:
+        if "recoil" in b.lower():
+            return b
+    return None
+
+
+def _apply_recoil_filter(output_root: Path, recoil_min: float, recoil_branch: str) -> Tuple[int, int, str | None]:
+    """Filter merged Events tree in-place: keep events with recoil >= recoil_min.
+
+    Returns: (events_before, events_after, matched_branch_name)
+    """
+    try:
+        import awkward as ak  # type: ignore
+        import uproot  # type: ignore
+    except Exception as exc:
+        raise RuntimeError(
+            "Recoil filtering requested but required Python packages are missing (uproot, awkward)."
+        ) from exc
+
+    tmp_output = output_root.with_suffix(".tmp.root")
+    events_before = 0
+    events_after = 0
+    used_branch: str | None = None
+
+    with uproot.open(output_root) as f_in:
+        if "Events" not in f_in:
+            return 0, 0, None
+
+        events_tree = f_in["Events"]
+        used_branch = _find_recoil_branch(events_tree.keys(), recoil_branch)
+        if used_branch is None:
+            return events_tree.num_entries, events_tree.num_entries, None
+
+        recoil_arr = events_tree[used_branch].array(library="ak")
+        mask = ak.fill_none(recoil_arr >= float(recoil_min), False)
+        events_before = int(events_tree.num_entries)
+        events_after = int(ak.sum(mask))
+
+        with uproot.recreate(tmp_output) as f_out:
+            for key, classname in f_in.classnames().items():
+                obj_name = str(key).split(";")[0]
+                if not classname.startswith("TTree"):
+                    continue
+
+                tree = f_in[obj_name]
+                arrays = tree.arrays(library="ak")
+                if obj_name == "Events":
+                    filtered = {name: arr[mask] for name, arr in arrays.items()}
+                    f_out[obj_name] = filtered
+                else:
+                    f_out[obj_name] = arrays
+
+    tmp_output.replace(output_root)
+    return events_before, events_after, used_branch
+
+
+def _run_one_task(
+    task: MergeTask,
+    dry_run: bool = False,
+    recoil_min: float | None = None,
+    recoil_branch: str = "recoil",
+    work_dir: Path | None = None,
+    staging_budget: _ByteBudget | None = None,
+) -> str:
+    needs_staging = _is_eos_path(task.output_root)
+    working_task = task
+    temp_dir_cm = None
+    filter_note = ""
+    skip_note = ""
+    budget_used = 0
+
+    if not dry_run:
+        if needs_staging and staging_budget is not None:
+            budget_used = staging_budget.acquire(task.input_bytes)
+        staging_base = work_dir if work_dir is not None else Path("/eos/home-x/xdu/dbl_praveen/DarkBottomLine/.merge_root_hadd")
+        staging_base.mkdir(parents=True, exist_ok=True)
+        temp_dir_cm = tempfile.TemporaryDirectory(prefix="merge_root_hadd_", dir=str(staging_base))
+        staging_dir = Path(temp_dir_cm.name)
+        working_task = MergeTask(
+            folder=task.folder,
+            group_key=task.group_key,
+            files=task.files,
+            input_bytes=task.input_bytes,
+            output_root=(staging_dir / task.output_root.name) if needs_staging else task.output_root,
+        )
+
+    try:
+        if not dry_run:
+            good_files, skipped_files = _find_mergeable_files(working_task.files, working_task.output_root.parent, working_task.group_key)
+            if not good_files:
+                raise RuntimeError(f"All files were rejected while probing mergeability for {task.output_root.name}")
+            if skipped_files:
+                skip_note = f", skipped={len(skipped_files)} bad file(s)"
+                for bad_file in skipped_files[:10]:
+                    print(f"[SKIP] {task.folder.name}/{task.group_key}: {bad_file}")
+                if len(skipped_files) > 10:
+                    print(f"[SKIP] {task.folder.name}/{task.group_key}: ... and {len(skipped_files) - 10} more")
+            working_task = MergeTask(
+                folder=working_task.folder,
+                group_key=working_task.group_key,
+                files=good_files,
+                input_bytes=sum((p.stat().st_size for p in good_files), 0),
+                output_root=working_task.output_root,
+            )
+
+        _hadd_merge(working_task, dry_run=dry_run)
+        if not dry_run and recoil_min is not None:
+            before, after, used_branch = _apply_recoil_filter(working_task.output_root, recoil_min, recoil_branch)
+            if used_branch is None:
+                filter_note = f", recoil_filter=skipped(branch='{recoil_branch}' not found)"
+            else:
+                filter_note = f", recoil_filter={used_branch}>={recoil_min:g} ({before}->{after})"
+        if not dry_run and needs_staging:
+            task.output_root.parent.mkdir(parents=True, exist_ok=True)
+            if working_task.output_root.stat().st_dev == task.output_root.parent.stat().st_dev:
+                working_task.output_root.replace(task.output_root)
+            else:
+                shutil.copy2(working_task.output_root, task.output_root)
+                working_task.output_root.unlink(missing_ok=True)
+    finally:
+        if temp_dir_cm is not None:
+            temp_dir_cm.cleanup()
+        if budget_used and staging_budget is not None:
+            staging_budget.release(budget_used)
+
+    return f"{task.folder.name} -> {task.output_root} ({len(working_task.files)} files{skip_note}{filter_note})"
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Merge all ROOT files inside each input folder into one output ROOT file."
+        )
+    )
+    parser.add_argument(
+        "-i",
+        "--input-dir",
+        action="append",
+        default=[],
+        help=(
+            "Input directory containing ROOT files. Can be used multiple times. "
+            "If omitted, all first-level subdirectories of --input-root are used."
+        ),
+    )
+    parser.add_argument(
+        "--input-root",
+        default=None,
+        help="Parent directory containing multiple dataset folders.",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-dir",
+        required=True,
+        help="Output directory for merged ROOT files.",
+    )
+    parser.add_argument(
+        "-j",
+        "--workers",
+        type=int,
+        default=max(1, min(8, (os.cpu_count() or 1))),
+        help="Parallel workers across merge tasks.",
+    )
+    parser.add_argument(
+        "--recoil-min",
+        type=float,
+        default=None,
+        help="If set, keep only Events entries with recoil >= this value after merge.",
+    )
+    parser.add_argument(
+        "--recoil-branch",
+        default="recoil",
+        help="Preferred branch name used for recoil filtering (default: recoil).",
+    )
+    parser.add_argument(
+        "--work-dir",
+        default=None,
+        help=(
+            "Directory used for temporary merge staging. Defaults to the EOS-backed "
+            "/eos/home-x/xdu/dbl_praveen/DarkBottomLine/.merge_root_hadd directory."
+        ),
+    )
+    parser.add_argument(
+        "--max-staging-gb",
+        type=float,
+        default=8.0,
+        help=(
+            "Cap total concurrent temporary staging size in GB (default: 8). "
+            "Set <=0 to disable this limiter."
+        ),
+    )
+    parser.add_argument("--dry-run", action="store_true", help="Only print planned hadd commands.")
+    return parser.parse_args()
+
+
+def _resolve_input_dirs(input_dirs: Sequence[str], input_root: str | None) -> List[Path]:
+    if input_dirs:
+        return [Path(p).expanduser().resolve() for p in input_dirs]
+
+    if input_root is None:
+        raise ValueError("Provide either --input-dir (one or more) or --input-root.")
+
+    root = Path(input_root).expanduser().resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"input-root does not exist: {root}")
+
+    return sorted(p for p in root.iterdir() if p.is_dir())
+
+
+def main() -> int:
+    args = _parse_args()
+    _check_hadd_exists()
+
+    input_dirs = _resolve_input_dirs(args.input_dir, args.input_root)
+    output_dir = Path(args.output_dir).expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    work_dir = Path(args.work_dir).expanduser().resolve() if args.work_dir else Path("/eos/home-x/xdu/dbl_praveen/DarkBottomLine/.merge_root_hadd")
+    work_dir.mkdir(parents=True, exist_ok=True)
+    staging_budget = None
+    if args.max_staging_gb > 0:
+        staging_budget = _ByteBudget(int(args.max_staging_gb * 1024**3))
+
+    tasks = _collect_tasks(input_dirs, output_dir)
+    if not tasks:
+        print("No ROOT files found to merge.")
+        return 0
+
+    print(f"Planned merge tasks: {len(tasks)}")
+    for t in tasks:
+        print(f"  - {t.folder.name}/{t.group_key}: {len(t.files)} files")
+    if args.recoil_min is not None:
+        print(
+            f"Post-merge recoil filter enabled: {args.recoil_branch} >= {args.recoil_min:g}"
+        )
+
+    failures: List[str] = []
+    with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
+        future_map = {
+            pool.submit(
+                _run_one_task,
+                task,
+                args.dry_run,
+                args.recoil_min,
+                args.recoil_branch,
+                work_dir,
+                staging_budget,
+            ): task
+            for task in tasks
+        }
+        for fut in as_completed(future_map):
+            task = future_map[fut]
+            try:
+                msg = fut.result()
+                print(f"[OK] {msg}")
+            except Exception as exc:
+                failure = f"[FAIL] {task.folder.name}/{task.group_key}: {exc}"
+                print(failure)
+                failures.append(failure)
+
+    if failures:
+        print(f"\nCompleted with {len(failures)} failure(s).")
+        return 2
+
+    print("\nAll merge tasks completed successfully.")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
