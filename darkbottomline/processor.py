@@ -461,6 +461,13 @@ class DarkBottomLineProcessor:
                     branches = compute_event_variables(
                         events, objects, self.config, event_weights
                     )
+                    # Forward extra event fields (e.g. ml_score from DNN) not in standard variable set
+                    for _ef in ("ml_score",):
+                        if _ef in events.fields:
+                            try:
+                                branches[_ef] = np.asarray(ak.to_numpy(events[_ef]), dtype="f8")
+                            except Exception:
+                                pass
 
                 # Write to ROOT
                 outdir = os.path.dirname(output_file_root)

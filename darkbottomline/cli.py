@@ -241,7 +241,7 @@ def _build_dnn_feature_matrix_from_events(
     Uses the same variable computation pipeline as the EVENTSELECTION output
     (variables.py), ensuring DNN training/inference sees exactly the same
     features as the plotting and region-analysis code.  This resolves name
-    mismatches like "MET" → "PFMET_pt", "METPhi" → "PFMET_phi", etc.
+    mismatches like "MET" → "MET_pt", "METPhi" → "MET_phi", etc.
     """
     import pandas as _pd
     from .variables import compute_event_variables
@@ -255,8 +255,9 @@ def _build_dnn_feature_matrix_from_events(
     # DNN feature name → compute_event_variables output name
     btag_algo = config.get("btagging", {}).get("algorithm", "deepJet")
     _NAME_MAP: dict = {
-        "MET":          "PFMET_pt",
-        "METPhi":       "PFMET_phi",
+        "MET":          "MET_pt",
+        "METPhi":       "MET_phi",
+        "pfMetCorrSig": "MET_significance",
         "rJet1PtMET":   "ratioJet1PtMET",
         "Jet1deepCSV":  f"Jet1{btag_algo}",
         "Jet2deepCSV":  f"Jet2{btag_algo}",
@@ -371,7 +372,7 @@ def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args,
     feat_list = list(REQUESTED_FEATURES_25)
 
     if objects is not None and config is not None:
-        # Use standard variable-computation pipeline (resolves MET→PFMET_pt, etc.)
+        # Use standard variable-computation pipeline (resolves MET→MET_pt, etc.)
         X_full_df = _build_dnn_feature_matrix_from_events(
             events, objects, config, feat_list
         )
@@ -655,6 +656,16 @@ def run_analyzer(args):
     dnn_outdir = getattr(args, "dnn_outdir", "outputs_dnn")
     dnn_only = getattr(args, "dnn_only", False)
 
+    # DNN training requires full event set → fall back to iterative
+    if train_dnn_config and args.executor in ("futures", "dask"):
+        logging.warning(
+            "DNN training requested but Coffea %s executor cannot train. "
+            "Falling back to iterative executor.",
+            args.executor,
+        )
+        args.executor = "iterative"
+    # DNN scoring works per-chunk in Coffea path — no fallback needed
+
     event_selection_only = (mode == "event-selection")
 
     # Validate arguments
@@ -786,7 +797,8 @@ def run_analyzer(args):
                 config, regions_config_for_coffea, event_selection_output=args.event_selection_output,
                 event_selection_only=event_selection_only, output_format=output_format_to_use,
                 max_events=args.max_events, total_events=total_events,
-                input_total_events=input_total_events
+                input_total_events=input_total_events,
+                dnn_model=dnn_model, dnn_config=dnn_config,
             )
 
             if args.executor == "futures":
@@ -1070,7 +1082,7 @@ def run_analyzer(args):
                 elif dnn_model:
                     # Score with existing model → inject ml_score in-memory → optionally region analysis
                     logging.info("Scoring events with DNN model: %s", dnn_model)
-                    # Build objects for proper feature-name resolution (MET→PFMET_pt etc.)
+                    # Build objects for proper feature-name resolution (MET→MET_pt etc.)
                     from .objects import build_objects as _build_obj
                     _obj_for_dnn = _build_obj(events, config)
                     events = _add_dnn_scores_to_events(
