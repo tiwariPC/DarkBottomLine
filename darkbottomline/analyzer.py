@@ -507,9 +507,42 @@ class DarkBottomLineAnalyzer:
         if dnn_model:
             try:
                 from .dnn_inference import DNNInference
+                from dnn.feature_engineering import REQUESTED_FEATURES_25
+                from dnn.common import sanitize_feature_frame
+                import pandas as _pd
+
                 inferencer = DNNInference(dnn_model, dnn_config)
-                scores = inferencer.predict(events)
-                events = ak.with_field(events, scores, "ml_score")
+                model_info = inferencer.get_model_info()
+                features = model_info.get("features") or list(REQUESTED_FEATURES_25)
+
+                # Resolve DNN feature names to EVENTSELECTION branch names
+                # (same mapping as _build_dnn_feature_matrix_from_events in cli.py)
+                btag_algo = (self.base_processor.config.get("btagging", {})
+                             .get("algorithm", "deepJet"))
+                _NAME_MAP = {
+                    "MET":          "MET_pt",
+                    "METPhi":       "MET_phi",
+                    "pfMetCorrSig": "MET_significance",
+                    "rJet1PtMET":   "ratioJet1PtMET",
+                    "Jet1deepCSV":  f"Jet1{btag_algo}",
+                    "Jet2deepCSV":  f"Jet2{btag_algo}",
+                }
+
+                X_parts = {}
+                for feat in features:
+                    var_name = _NAME_MAP.get(feat, feat)
+                    if var_name in events.fields:
+                        X_parts[feat] = np.asarray(
+                            ak.to_numpy(events[var_name]), dtype="f8"
+                        )
+                    else:
+                        X_parts[feat] = np.full(n_ev, -9999.0, dtype="f8")
+
+                X_df = _pd.DataFrame(X_parts)
+                X_df = sanitize_feature_frame(X_df)
+                X = X_df.to_numpy(dtype="f8")
+                scores = inferencer.predict(X).ravel().astype("float32")
+                events = ak.with_field(events, ak.Array(scores), "ml_score")
                 logging.info("DNN scores added to events (ml_score)")
             except Exception as _dnn_exc:
                 logging.warning("DNN scoring failed, continuing without scores: %s", _dnn_exc)
@@ -999,16 +1032,20 @@ if COFFEA_AVAILABLE:
                         input_total_events: Optional[int] = None,
                         event_selection_only: bool = False,
                         output_format: Optional[str] = None,
-                        max_events: Optional[int] = None):
+                        max_events: Optional[int] = None,
+                        dnn_model: Optional[str] = None,
+                        dnn_config: Optional[str] = None):
             self.config = config
             self.regions_config_path = regions_config_path
             self.event_selection_output = event_selection_output
-            self.total_events = total_events  # Total events before selection
-            self.input_total_events = input_total_events  # Input-file total before any slicing
-            self.weighted_total_events = None  # Set on first chunk in process()
+            self.total_events = total_events
+            self.input_total_events = input_total_events
+            self.weighted_total_events = None
             self.event_selection_only = event_selection_only
-            self.max_events = max_events  # Maximum events to process
-            self.processed_events = 0  # Track number of events processed
+            self.max_events = max_events
+            self.processed_events = 0
+            self.dnn_model = dnn_model
+            self.dnn_config = dnn_config
             # Auto-detect output_format from event_selection_output extension if not specified
             if output_format is None and event_selection_output:
                 if event_selection_output.endswith('.root'):
@@ -1097,6 +1134,44 @@ if COFFEA_AVAILABLE:
                         pickle.dump({"weighted_total_events": float(chunk_h)}, _f, protocol=pickle.HIGHEST_PROTOCOL)
                 except Exception as _e:
                     logging.warning(f"Failed to persist wte chunk: {_e}")
+
+            # --- DNN scoring (per-chunk, before preselection) ---
+            if self.dnn_model:
+                try:
+                    from .objects import build_objects as _build_obj
+                    _obj = _build_obj(events_to_process, self.config)
+                    # Inline feature extraction + scoring (avoids cli.py import)
+                    from .dnn_inference import DNNInference
+                    from dnn.feature_engineering import REQUESTED_FEATURES_25
+                    from dnn.common import sanitize_feature_frame
+                    import pandas as _pd, awkward as _ak
+
+                    _inf = DNNInference(self.dnn_model, self.dnn_config)
+                    _info = _inf.get_model_info()
+                    _feats = _info.get("features") or list(REQUESTED_FEATURES_25)
+                    _btag = self.config.get("btagging", {}).get("algorithm", "deepJet")
+                    _MAP = {
+                        "MET": "MET_pt", "METPhi": "MET_phi",
+                        "pfMetCorrSig": "MET_significance",
+                        "rJet1PtMET": "ratioJet1PtMET",
+                        "Jet1deepCSV": f"Jet1{_btag}",
+                        "Jet2deepCSV": f"Jet2{_btag}",
+                    }
+                    from .variables import compute_event_variables
+                    _all_vars = compute_event_variables(events_to_process, _obj, self.config)
+                    _n_ch = len(events_to_process)
+                    _Xd = {}
+                    for _f in _feats:
+                        _vn = _MAP.get(_f, _f)
+                        _arr = _all_vars.get(_vn)
+                        _Xd[_f] = np.asarray(_arr, dtype="f8").ravel() if _arr is not None else np.full(_n_ch, -9999.0, dtype="f8")
+                    _Xdf = _pd.DataFrame(_Xd)
+                    _Xdf = sanitize_feature_frame(_Xdf)
+                    _scores = _inf.predict(_Xdf.to_numpy(dtype="f8")).ravel().astype("float32")
+                    events_to_process = _ak.with_field(events_to_process, _ak.Array(_scores), "ml_score")
+                    logging.info("DNN scored %d events in Coffea chunk", _n_ch)
+                except Exception as _de:
+                    logging.warning("DNN scoring failed in Coffea chunk, continuing: %s", _de)
 
             # Call analyzer.process() with appropriate parameters
             # In event_selection_only mode, analyzer will skip region analysis

@@ -308,6 +308,7 @@ _SCALAR_BRANCHES: Dict[str, Any] = {
     'eta_Jet1Jet2': np.float32, 'phi_Jet1Jet2': np.float32,
     'M_Jet1Jet3': np.float32,
     'dPhi_jetMET': np.float32,
+    'del_plus': np.float32, 'del_minus': np.float32,
     'muon_lep1_pt': np.float32, 'muon_lep1_phi': np.float32, 'muon_lep1_eta': np.float32,
     'muon_lep2_pt': np.float32, 'muon_lep2_phi': np.float32, 'muon_lep2_eta': np.float32,
     'electron_lep1_pt': np.float32, 'electron_lep1_phi': np.float32, 'electron_lep1_eta': np.float32,
@@ -421,6 +422,12 @@ def compute_event_variables(
     # --- Composite jet + MET variables ---
     out.update(_jet_composite_variables(jet_lead, met_vars))
     out['dPhi_jetMET'] = _dphi_jet_met(objects, met_vars['MET_phi'])
+
+    # --- Derived topological variables (same as dnn/feature_engineering.py) ---
+    dphi_jmet = out.get('dPhi_jetMET', np.zeros(n_ev, dtype=np.float32))
+    dphi_j12  = out.get('dPhiJet12',  np.zeros(n_ev, dtype=np.float32))
+    out['del_plus']  = np.abs(dphi_jmet + dphi_j12 - np.pi).astype(np.float32)
+    out['del_minus'] = (dphi_jmet - dphi_j12).astype(np.float32)
 
     # --- Leading lepton scalar branches (needed for MT/Mll in CR cuts) ---
     for lep_key, prefix in (('muons', 'muon'), ('electrons', 'electron')):

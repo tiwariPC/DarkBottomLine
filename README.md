@@ -443,28 +443,105 @@ Keys match the `GenModel_*` branch suffix (strip `GenModel_` prefix). All models
 
 ## DNN Integration
 
+The framework supports training a binary classifier and injecting per-event DNN scores (`ml_score`) into the analysis pipeline.
+
+### Workflow Overview
+
+```
+  signal MC + bkg MC                 data ROOT
+       │                                  │
+       ▼                                  │
+  ┌───────────┐                           │
+  │  train-dnn │ ──→ dnn_model.pt ────────┤
+  │  (once)    │                           │
+  └───────────┘                           ▼
+                                   ┌────────────┐
+                                   │  apply-dnn  │ ──→ ROOT + ml_score
+                                   └────────────┘
+```
+
+### Integrated mode (train + score in one command)
+
 ```bash
-# Train DNN then run full pipeline
+# Train DNN on preselected MC, score all events, then run region analysis
 darkbottomline analyze \
     --mode full \
     --config configs/2022.yaml \
     --regions-config configs/regions.yaml \
-    --input sample.root \
+    --input signal.root bkg1.root bkg2.root data.root \
     --event-selection-output outputs/eventsel/sample_EVENTSELECTION.root \
     --train-dnn configs/dnn.yaml \
-    --output-dir outputs/ \
-    --make-region-plots
+    --dnn-outdir outputs_dnn \
+    --signal-prefix "signal" \
+    --make-region-plots \
+    --output-dir outputs/
 
-# Apply trained model
+# Train only, skip region analysis
+darkbottomline analyze \
+    --mode full \
+    --config configs/2022.yaml \
+    --input signal.root bkg.root \
+    --train-dnn configs/dnn.yaml \
+    --dnn-outdir outputs_dnn \
+    --signal-prefix "signal" \
+    --dnn-only
+
+# Score with an existing model
 darkbottomline analyze \
     --mode region-analysis \
     --config configs/2022.yaml \
     --regions-config configs/regions.yaml \
     --input outputs/eventsel/ \
     --dnn-model outputs_dnn/dnn_model.pt \
-    --output-dir outputs/ \
-    --make-region-plots
+    --dnn-config configs/dnn.yaml \
+    --make-region-plots \
+    --output-dir outputs/
 ```
+
+### Standalone commands
+
+```bash
+# Train DNN from event-selection ROOT files (no intermediate ppbbchichi-trees.root)
+darkbottomline train-dnn \
+    --config configs/dnn.yaml \
+    --input signal_EVENTSELECTION.root bkg_EVENTSELECTION.root \
+    --signal-prefix "signal" \
+    --outdir outputs_dnn \
+    --max-events-per-sample 200000
+
+# Apply trained DNN to ROOT files (writes ml_score branch in-place or to --output-dir)
+darkbottomline apply-dnn \
+    --input data_EVENTSELECTION.root \
+    --model outputs_dnn/dnn_model.pt \
+    --score-branch ml_score \
+    --output-dir scored_outputs/
+```
+
+### Signal / background labelling
+
+| Flag | Description |
+|------|-------------|
+| `--signal-prefix PREFIX` | Filenames starting with `PREFIX` are signal (label=1), others are background (label=0) |
+| `--signal-pattern REGEX` | Filenames matching the regex are signal; repeatable with `--signal-pattern A --signal-pattern B` |
+| `--label-csv labels.csv` | CSV with columns `path,label` (1=signal, 0=background); overrides prefix/pattern |
+
+### Key DNN flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--train-dnn CONFIG` | — | DNN config YAML; triggers training before region analysis |
+| `--dnn-model PATH` | — | Pre-trained `.pt` checkpoint for scoring only |
+| `--dnn-config CONFIG` | — | DNN config for inference (feature list, etc.) |
+| `--dnn-outdir DIR` | `outputs_dnn` | Output directory for model + metrics + plots |
+| `--dnn-only` | `False` | Stop after DNN scoring, skip region analysis |
+
+### DNN configuration (`configs/dnn.yaml`)
+
+- **model**: architecture (hidden layers, dropout, parametric mass input)
+- **training**: batch size, learning rate, epochs, early stopping, class balancing
+- **feature_selection**: top-K by Asimov significance, single-feature scans
+- **topology_decorrelation**: penalty weight for score vs topology correlations
+- **features**: 25 input variables (MET, jet kinematics, angular variables, b-tag scores)
 
 ---
 
