@@ -279,12 +279,14 @@ def _build_dnn_feature_matrix_from_events(
 
 def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args,
                          objects: dict = None, config: dict = None,
-                         y_train: np.ndarray = None) -> Tuple[np.ndarray, str]:
+                         y_train: np.ndarray = None,
+                         dnn_plotdir: str = None) -> Tuple[np.ndarray, str]:
     """Train DNN on selected events (in-memory); return (scores, model_path).
 
     Scores array aligns 1:1 with events — same length, float32.
-    All training plots (AUC, ranking, score distributions, loss curves) are
-    written to dnn_outdir/plots/ by train_from_arrays.
+    Model artifacts (dnn_model.pt, scaler.json, features.json, train_metrics.json)
+    written to dnn_outdir (default: data/dnn).
+    Training plots written to dnn_plotdir (default: outputs/dnn).
 
     When *y_train* is provided, the internal per-file label-building and
     data-exclusion logic is skipped entirely — the caller guarantees that
@@ -399,12 +401,13 @@ def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args,
     else:
         w = np.ones(n_keep, dtype="f8")
 
+    _plot_dir = dnn_plotdir if dnn_plotdir is not None else "outputs/dnn"
     trainer = DNNTrainer(train_dnn_config)
     metrics = trainer.train_from_arrays(
         X=X_df, y=y, w=w,
         feature_sources={},
         outdir=dnn_outdir,
-        plot_dir=str(Path(dnn_outdir) / "plots"),
+        plot_dir=_plot_dir,
     )
     model_path = str(Path(dnn_outdir) / "dnn_model.pt")
     logging.info("DNN trained — AUC(val)=%.4f  model=%s", metrics.get("auc_val", float("nan")), model_path)
@@ -653,7 +656,8 @@ def run_analyzer(args):
     dnn_model = getattr(args, "dnn_model", None)
     dnn_config = getattr(args, "dnn_config", None)
     train_dnn_config = getattr(args, "train_dnn", None)
-    dnn_outdir = getattr(args, "dnn_outdir", "outputs_dnn")
+    dnn_outdir = getattr(args, "dnn_outdir", "data/dnn")
+    dnn_plotdir = getattr(args, "dnn_plotdir", "outputs/dnn")
     dnn_only = getattr(args, "dnn_only", False)
 
     # DNN training requires full event set → fall back to iterative
@@ -1024,6 +1028,7 @@ def run_analyzer(args):
                         selected_events_mc, train_dnn_config, dnn_outdir, args,
                         objects=selected_objects_mc, config=config,
                         y_train=y_train,
+                        dnn_plotdir=getattr(args, "dnn_plotdir", "outputs/dnn"),
                     )
 
                     # Step 4: Score ALL original events using the saved model
@@ -1055,12 +1060,10 @@ def run_analyzer(args):
                     )
 
                     if dnn_only:
-                        _plot_dnn_score_only(
-                            scores, str(Path(dnn_outdir) / "plots")
-                        )
+                        _plot_dnn_score_only(scores, dnn_plotdir)
                         logging.info(
                             "--dnn-only set: stopping after DNN scoring. "
-                            "Training plots in %s/plots/", dnn_outdir
+                            "Training plots in %s", dnn_plotdir
                         )
                     else:
                         results = analyzer.process(
@@ -1092,8 +1095,8 @@ def run_analyzer(args):
                     scores = np.asarray(ak.to_numpy(events["ml_score"]), dtype="f4")
 
                     if dnn_only:
-                        _plot_dnn_score_only(scores, str(Path(dnn_outdir) / "plots"))
-                        logging.info("--dnn-only set: stopping after DNN scoring. Plot in %s/plots/", dnn_outdir)
+                        _plot_dnn_score_only(scores, dnn_plotdir)
+                        logging.info("--dnn-only set: stopping after DNN scoring. Plots in %s", dnn_plotdir)
                     else:
                         results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                                   event_selection_only=False, output_format=output_format_to_use,
@@ -1833,8 +1836,12 @@ Examples:
         help="DNN config YAML path: train DNN on event-selection output before region analysis.",
     )
     analyze_parser.add_argument(
-        "--dnn-outdir", default="outputs_dnn",
-        help="Output directory for DNN model + metrics (default: outputs_dnn)",
+        "--dnn-outdir", default="data/dnn",
+        help="Output directory for DNN model artifacts: dnn_model.pt, scaler.json, etc. (default: data/dnn)",
+    )
+    analyze_parser.add_argument(
+        "--dnn-plotdir", default="outputs/dnn",
+        help="Output directory for DNN training plots (default: outputs/dnn)",
     )
     analyze_parser.add_argument(
         "--dnn-only", action="store_true",
@@ -1904,8 +1911,8 @@ Examples:
         help="Event-selection ROOT files (one per sample), or a .txt file listing paths",
     )
     train_dnn_parser.add_argument("--region", default="preselection", help="Region label (default: preselection)")
-    train_dnn_parser.add_argument("--outdir", default="outputs_dnn", help="Output directory for model + metrics (default: outputs_dnn)")
-    train_dnn_parser.add_argument("--plot-dir", default="outputs_dnn/plots", help="Output directory for plots (default: outputs_dnn/plots)")
+    train_dnn_parser.add_argument("--outdir", default="data/dnn", help="Output directory for model + metrics (default: data/dnn)")
+    train_dnn_parser.add_argument("--plot-dir", default="outputs/dnn", help="Output directory for plots (default: outputs/dnn)")
     train_dnn_parser.add_argument(
         "--signal-pattern", action="append", default=None, dest="signal_pattern",
         help="Regex to identify signal files (repeatable). Default: keyword heuristic",

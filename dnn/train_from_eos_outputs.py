@@ -142,8 +142,8 @@ def main() -> None:
     )
 
     ap.add_argument("--tag", default=None, help="Analyzer output tag (default auto)")
-    ap.add_argument("--outdir-root", default="outputs_dnn", help="Prefix for training output directory")
-    ap.add_argument("--plot-root", default="plot", help="Root plot directory")
+    ap.add_argument("--outdir-root", default="data/dnn", help="Prefix for training output directory")
+    ap.add_argument("--plot-root", default="outputs/dnn", help="Root plot directory")
     ap.add_argument("--clean-output", action="store_true", help="Remove existing output dirs for this tag")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()

@@ -116,7 +116,7 @@ def main():
     ap.add_argument("--exclude-prefixes", default="run")
     ap.add_argument("--label-csv", default=None)
     ap.add_argument("--background-prefix", default=None)
-    ap.add_argument("--outdir", default="plot", help="Output plot directory")
+    ap.add_argument("--outdir", default="outputs/dnn", help="Output plot directory")
     ap.add_argument("--n-bins", type=int, default=40)
     args = ap.parse_args()
 

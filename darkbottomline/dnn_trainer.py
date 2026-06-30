@@ -589,8 +589,8 @@ class DNNTrainer:
         y: np.ndarray,
         w: np.ndarray,
         feature_sources: Optional[Dict[str, str]] = None,
-        outdir: str = "outputs_dnn",
-        plot_dir: str = "plot",
+        outdir: str = "data/dnn",
+        plot_dir: str = "outputs/dnn",
     ) -> Dict[str, Any]:
         """Full training pipeline from pre-loaded (X, y, w) arrays.
 
@@ -618,8 +618,8 @@ class DNNTrainer:
         self,
         root_path: str,
         region: str = "preselection",
-        outdir: str = "outputs_dnn",
-        plot_dir: str = "plot",
+        outdir: str = "data/dnn",
+        plot_dir: str = "outputs/dnn",
         features: Optional[List[str]] = None,
         label_csv: Optional[str] = None,
         signal_patterns: Optional[List[str]] = None,

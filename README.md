@@ -471,7 +471,8 @@ darkbottomline analyze \
     --input signal.root bkg1.root bkg2.root data.root \
     --event-selection-output outputs/eventsel/sample_EVENTSELECTION.root \
     --train-dnn configs/dnn.yaml \
-    --dnn-outdir outputs_dnn \
+    --dnn-outdir data/dnn \
+    --dnn-plotdir outputs/dnn \
     --signal-prefix "signal" \
     --make-region-plots \
     --output-dir outputs/
@@ -482,7 +483,8 @@ darkbottomline analyze \
     --config configs/2022.yaml \
     --input signal.root bkg.root \
     --train-dnn configs/dnn.yaml \
-    --dnn-outdir outputs_dnn \
+    --dnn-outdir data/dnn \
+    --dnn-plotdir outputs/dnn \
     --signal-prefix "signal" \
     --dnn-only
 
@@ -492,7 +494,7 @@ darkbottomline analyze \
     --config configs/2022.yaml \
     --regions-config configs/regions.yaml \
     --input outputs/eventsel/ \
-    --dnn-model outputs_dnn/dnn_model.pt \
+    --dnn-model data/dnn/dnn_model.pt \
     --dnn-config configs/dnn.yaml \
     --make-region-plots \
     --output-dir outputs/
@@ -506,13 +508,14 @@ darkbottomline train-dnn \
     --config configs/dnn.yaml \
     --input signal_EVENTSELECTION.root bkg_EVENTSELECTION.root \
     --signal-prefix "signal" \
-    --outdir outputs_dnn \
+    --outdir data/dnn \
+    --plot-dir outputs/dnn \
     --max-events-per-sample 200000
 
 # Apply trained DNN to ROOT files (writes ml_score branch in-place or to --output-dir)
 darkbottomline apply-dnn \
     --input data_EVENTSELECTION.root \
-    --model outputs_dnn/dnn_model.pt \
+    --model data/dnn/dnn_model.pt \
     --score-branch ml_score \
     --output-dir scored_outputs/
 ```
@@ -532,7 +535,8 @@ darkbottomline apply-dnn \
 | `--train-dnn CONFIG` | — | DNN config YAML; triggers training before region analysis |
 | `--dnn-model PATH` | — | Pre-trained `.pt` checkpoint for scoring only |
 | `--dnn-config CONFIG` | — | DNN config for inference (feature list, etc.) |
-| `--dnn-outdir DIR` | `outputs_dnn` | Output directory for model + metrics + plots |
+| `--dnn-outdir DIR` | `data/dnn` | Model artifacts: `dnn_model.pt`, `scaler.json`, `features.json`, `train_metrics.json` |
+| `--dnn-plotdir DIR` | `outputs/dnn` | Training plots: ROC, loss, AUC, score distributions, feature significance |
 | `--dnn-only` | `False` | Stop after DNN scoring, skip region analysis |
 
 ### DNN configuration (`configs/dnn.yaml`)
@@ -542,6 +546,61 @@ darkbottomline apply-dnn \
 - **feature_selection**: top-K by Asimov significance, single-feature scans
 - **topology_decorrelation**: penalty weight for score vs topology correlations
 - **features**: 25 input variables (MET, jet kinematics, angular variables, b-tag scores)
+
+---
+
+## EGamma HLT Scale Factor Map
+
+Standalone script to plot the EGamma HLT trigger scale factor (SF) as a 2D map
+(electron pT vs η) from correctionlib JSON files.  Uses `mplhep` CMS style.
+Outputs PNG + PDF.
+
+```bash
+# Single HLT path
+python scripts/plot_egamma_hlt_sf.py \
+    --json data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_electronHlt.json.gz \
+    --path HLT_SF_Ele30_TightID \
+    --lumi 8.1 --com 13.6 \
+    --outdir outputs/hlt_sf/
+
+# All HLT paths in one go
+python scripts/plot_egamma_hlt_sf.py \
+    --json data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_electronHlt.json.gz \
+    --all-paths \
+    --lumi 109 --com 13.6 --label Internal \
+    --outdir outputs/hlt_sf/2024/
+
+# sfup / sfdown variations
+python scripts/plot_egamma_hlt_sf.py \
+    --json data/corrections/2022/Run3-22EFGSep23-Summer22EE-NanoAODv12_electronHlt.json.gz \
+    --path HLT_SF_Ele30_TightID \
+    --valtype sfup \
+    --lumi 26.7 --outdir outputs/hlt_sf/
+
+# List available HLT paths in a file (omit --path and --all-paths)
+python scripts/plot_egamma_hlt_sf.py \
+    --json data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_electronHlt.json.gz
+```
+
+### Key options
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--json` | — | Correctionlib `.json` or `.json.gz` file |
+| `--corr` | `Electron-HLT-SF` | Correction name inside the JSON |
+| `--year` | auto | Year key (auto-detected when only one present) |
+| `--path` | — | HLT path key, e.g. `HLT_SF_Ele30_TightID` |
+| `--all-paths` | — | Plot all available HLT paths |
+| `--valtype` | `sf` | `sf` \| `sfup` \| `sfdown` |
+| `--lumi` | — | Luminosity in fb⁻¹ for CMS header |
+| `--com` | `13.6` | Centre-of-mass energy in TeV |
+| `--label` | `Internal` | CMS label: `Internal` \| `Preliminary` \| `Work in Progress` |
+| `--pt-min` | `30.0` | Minimum pT to display [GeV] |
+| `--pt-max` | `500.0` | Maximum pT to display [GeV] |
+| `--outdir` | `plots/hlt_sf` | Output directory (PNG + PDF written here) |
+| `--vmin/--vmax` | auto | Manual color scale limits |
+
+Works with both 2022/2023 (float ±inf edges) and 2024 (string `'-inf'` edges) JSON formats.
 
 ---
 

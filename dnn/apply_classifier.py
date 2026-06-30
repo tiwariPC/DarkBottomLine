@@ -47,11 +47,11 @@ def main():
     ap.add_argument("--region", default="preselection", help="Which region tree to score")
     ap.add_argument(
         "--features",
-        default="outputs_dnn/features.json",
+        default="data/dnn/features.json",
         help="Path to features.json produced by training",
     )
-    ap.add_argument("--model", default="outputs_dnn/dnn_model.pt", help="Path to trained DNN checkpoint")
-    ap.add_argument("--scaler", default="outputs_dnn/scaler.json", help="Path to scaler.json produced by training")
+    ap.add_argument("--model", default="data/dnn/dnn_model.pt", help="Path to trained DNN checkpoint")
+    ap.add_argument("--scaler", default="data/dnn/scaler.json", help="Path to scaler.json produced by training")
     ap.add_argument("--device", choices=["auto", "cpu", "cuda"], default="auto")
     ap.add_argument("--out", default=None, help="Output ROOT path (default: <input> with -scored suffix)")
     ap.add_argument("--score-branch", default="ml_score", help="Name of the score branch to add")

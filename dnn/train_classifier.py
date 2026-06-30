@@ -708,10 +708,10 @@ def main():
     ap.add_argument("--max-events-per-sample", type=int, default=200000, help="Cap events per sample for training")
     ap.add_argument("--test-size", type=float, default=0.3, help="Fraction for test split")
     ap.add_argument("--seed", type=int, default=7)
-    ap.add_argument("--outdir", default="outputs_dnn", help="Output directory")
+    ap.add_argument("--outdir", default="data/dnn", help="Output directory")
     ap.add_argument(
         "--plot-dir",
-        default="plot",
+        default="outputs/dnn",
         help="Directory for training plots and feature significance outputs",
     )
     ap.add_argument("--hidden", default="128,128", help="Hidden layer sizes, e.g. '128,128'")
