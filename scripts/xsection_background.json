@@ -4,127 +4,127 @@
       "year": "2022",
       "process": "WtoLNu-2Jets_PTLNu-40to100",
       "xsection": 1598,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-40to100_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "WtoLNu-2Jets_PTLNu-100to200",
       "xsection": 421.9,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-100to200_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "WtoLNu-2Jets_PTLNu-200to400",
       "xsection": 54.77,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "WtoLNu-2Jets_PTLNu-400to600",
       "xsection": 3.119,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "WtoLNu-2Jets_PTLNu-600",
       "xsection": 0.5261,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "WtoLNu-2Jets_PTLNu-40to100",
       "xsection": 1598,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-40to100_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "WtoLNu-2Jets_PTLNu-100to200",
       "xsection": 421.9,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-100to200_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "WtoLNu-2Jets_PTLNu-200to400",
       "xsection": 54.77,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "WtoLNu-2Jets_PTLNu-200to400",
       "xsection": 54.77,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "WtoLNu-2Jets_PTLNu-400to600",
       "xsection": 3.119,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "WtoLNu-2Jets_PTLNu-400to600",
       "xsection": 3.119,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "WtoLNu-2Jets_PTLNu-600",
       "xsection": 0.5261,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "WtoLNu-2Jets_PTLNu-600",
       "xsection": 0.5261,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "WtoLNu-2Jets_PTLNu-40to100",
       "xsection": 1598,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-40to100_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "WtoLNu-2Jets_PTLNu-100to200",
       "xsection": 421.9,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-100to200_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "WtoLNu-2Jets_PTLNu-200to400",
       "xsection": 54.77,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "WtoLNu-2Jets_PTLNu-200to400",
       "xsection": 54.77,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "WtoLNu-2Jets_PTLNu-400to600",
       "xsection": 3.119,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "WtoLNu-2Jets_PTLNu-400to600",
       "xsection": 3.119,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "WtoLNu-2Jets_PTLNu-600",
       "xsection": 0.5261,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "WtoLNu-2Jets_PTLNu-600",
       "xsection": 0.5261,
-      "full_dataset": "WtoLNu-2Jets_PTLNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "WtoLNu-2Jets_PTLNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     }
   ],
   "Zto2Nu-2Jets": [
@@ -132,109 +132,109 @@
       "year": "2022",
       "process": "Zto2Nu-2Jets_PTNuNu-40to100",
       "xsection": 335.5,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-40to100_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "Zto2Nu-2Jets_PTNuNu-100to200",
       "xsection": 100.4,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-100to200_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "Zto2Nu-2Jets_PTNuNu-200to400",
       "xsection": 13.86,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "Zto2Nu-2Jets_PTNuNu-400to600",
       "xsection": 0.7816,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "Zto2Nu-2Jets_PTNuNu-600",
       "xsection": 0.1311,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "Zto2Nu-2Jets_PTNuNu-600",
       "xsection": 0.1311,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "Zto2Nu-2Jets_PTNuNu-40to100",
       "xsection": 335.5,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-40to100_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "Zto2Nu-2Jets_PTNuNu-100to200",
       "xsection": 100.4,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-100to200_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "Zto2Nu-2Jets_PTNuNu-200to400",
       "xsection": 13.86,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "Zto2Nu-2Jets_PTNuNu-400to600",
       "xsection": 0.7816,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "Zto2Nu-2Jets_PTNuNu-600",
       "xsection": 0.1311,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "Zto2Nu-2Jets_PTNuNu-600",
       "xsection": 0.1311,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "Zto2Nu-2Jets_PTNuNu-40to100",
       "xsection": 335.5,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-40to100_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "Zto2Nu-2Jets_PTNuNu-100to200",
       "xsection": 100.4,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-100to200_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "Zto2Nu-2Jets_PTNuNu-200to400",
       "xsection": 13.86,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "Zto2Nu-2Jets_PTNuNu-400to600",
       "xsection": 0.7816,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "Zto2Nu-2Jets_PTNuNu-600",
       "xsection": 0.1311,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "Zto2Nu-2Jets_PTNuNu-600",
       "xsection": 0.1311,
-      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "Zto2Nu-2Jets_PTNuNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     }
   ],
   "DYto2L-2Jets": [
@@ -242,127 +242,127 @@
       "year": "2022",
       "process": "DYto2L-2Jets_MLL-50_PTLL-40to100",
       "xsection": 179.3,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-40to100_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "DYto2L-2Jets_MLL-50_PTLL-100to200",
       "xsection": 51.68,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-100to200_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "DYto2L-2Jets_MLL-50_PTLL-200to400",
       "xsection": 7.159,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
       "xsection": 0.4157,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
       "xsection": 0.4157,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "DYto2L-2Jets_MLL-50_PTLL-600",
       "xsection": 0.07019,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022",
       "process": "DYto2L-2Jets_MLL-50_PTLL-600",
       "xsection": 0.07019,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "DYto2L-2Jets_MLL-50_PTLL-40to100",
       "xsection": 179.3,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-40to100_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "DYto2L-2Jets_MLL-50_PTLL-100to200",
       "xsection": 51.68,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-100to200_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "DYto2L-2Jets_MLL-50_PTLL-200to400",
       "xsection": 7.159,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
       "xsection": 0.4157,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
       "xsection": 0.4157,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "DYto2L-2Jets_MLL-50_PTLL-600",
       "xsection": 0.07019,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2022EE",
       "process": "DYto2L-2Jets_MLL-50_PTLL-600",
       "xsection": 0.07019,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "DYto2L-2Jets_MLL-50_PTLL-40to100",
       "xsection": 179.3,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-40to100_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "DYto2L-2Jets_MLL-50_PTLL-100to200",
       "xsection": 51.68,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-100to200_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "DYto2L-2Jets_MLL-50_PTLL-200to400",
       "xsection": 7.159,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
       "xsection": 0.4157,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
       "xsection": 0.4157,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "DYto2L-2Jets_MLL-50_PTLL-600",
       "xsection": 0.07019,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     },
     {
       "year": "2023",
       "process": "DYto2L-2Jets_MLL-50_PTLL-600",
       "xsection": 0.07019,
-      "full_dataset": "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      "full_dataset": "DYto2L-2Jets_MLL-50-PTLL-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
     }
   ],
   "Top": [
@@ -480,67 +480,67 @@
   "SingleTop_TBbarQ_t-channel": [
     {
       "year": "2022",
-      "process": "TBbarQ_t-channel",
+      "process": "TBbarQtoLNu-t-channel-4FS",
       "xsection": 123.8,
-      "full_dataset": "TBbarQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+      "full_dataset": "TBbarQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
       "type": "SingleTop"
     },
     {
       "year": "2022EE",
-      "process": "TBbarQ_t-channel",
+      "process": "TBbarQtoLNu-t-channel-4FS",
       "xsection": 123.8,
-      "full_dataset": "TBbarQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+      "full_dataset": "TBbarQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
       "type": "SingleTop"
     },
     {
       "year": "2023",
-      "process": "TBbarQ_t-channel",
+      "process": "TBbarQtoLNu-t-channel-4FS",
       "xsection": 123.8,
-      "full_dataset": "TBbarQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+      "full_dataset": "TBbarQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
       "type": "SingleTop"
     }
   ],
   "SingleTop_TbarBQ_t-channel": [
     {
       "year": "2022",
-      "process": "TbarBQ_t-channel",
+      "process": "TbarBQtoLNu-t-channel-4FS",
       "xsection": 75.47,
-      "full_dataset": "TbarBQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+      "full_dataset": "TbarBQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
       "type": "SingleTop"
     },
     {
       "year": "2022EE",
-      "process": "TbarBQ_t-channel",
+      "process": "TbarBQtoLNu-t-channel-4FS",
       "xsection": 75.47,
-      "full_dataset": "TbarBQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+      "full_dataset": "TbarBQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
       "type": "SingleTop"
     },
     {
       "year": "2023",
-      "process": "TbarBQ_t-channel",
+      "process": "TbarBQtoLNu-t-channel-4FS",
       "xsection": 75.47,
-      "full_dataset": "TbarBQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+      "full_dataset": "TbarBQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
       "type": "SingleTop"
     }
   ],
   "SingleTop_TbarWplus": [
     {
       "year": "2022",
-      "process": "TbarWplus",
+      "process": "TbarWplustoLNu2Q",
       "xsection": 36.05,
       "full_dataset": "TbarWplustoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SingleTop"
     },
     {
       "year": "2022EE",
-      "process": "TbarWplus",
+      "process": "TbarWplustoLNu2Q",
       "xsection": 36.05,
       "full_dataset": "TbarWplustoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SingleTop"
     },
     {
       "year": "2023",
-      "process": "TbarWplus",
+      "process": "TbarWplustoLNu2Q",
       "xsection": 36.05,
       "full_dataset": "TbarWplustoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SingleTop"
@@ -549,21 +549,21 @@
   "SingleTop_TWminus": [
     {
       "year": "2022",
-      "process": "TWminus",
+      "process": "TWminustoLNu2Q",
       "xsection": 35.99,
       "full_dataset": "TWminustoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SingleTop"
     },
     {
       "year": "2022EE",
-      "process": "TWminus",
+      "process": "TWminustoLNu2Q",
       "xsection": 35.99,
       "full_dataset": "TWminustoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SingleTop"
     },
     {
       "year": "2023",
-      "process": "TWminus",
+      "process": "TWminustoLNu2Q",
       "xsection": 35.99,
       "full_dataset": "TWminustoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SingleTop"
@@ -572,432 +572,432 @@
   "SMHiggs_GluGluHto2B": [
     {
       "year": "2022",
-      "process": "GluGluHto2B",
+      "process": "GluGluH-Hto2B_Par-M-125",
       "xsection": 30.2,
-      "full_dataset": "GluGluHto2B_M-125_TuneCP5_13p6TeV_powheg-minlo-pythia8",
+      "full_dataset": "GluGluH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "GluGluHto2B",
+      "process": "GluGluH-Hto2B_Par-M-125",
       "xsection": 30.2,
-      "full_dataset": "GluGluHto2B_M-125_TuneCP5_13p6TeV_powheg-minlo-pythia8",
+      "full_dataset": "GluGluH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "GluGluHto2B",
+      "process": "GluGluH-Hto2B_Par-M-125",
       "xsection": 30.2,
-      "full_dataset": "GluGluHto2B_M-125_TuneCP5_13p6TeV_powheg-minlo-pythia8",
+      "full_dataset": "GluGluH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     }
   ],
   "SMHiggs_VBFHto2B": [
     {
       "year": "2022",
-      "process": "VBFHto2B",
+      "process": "VBFH-Hto2B_Par-M-125",
       "xsection": 4.18,
-      "full_dataset": "VBFHto2B_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "VBFH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022",
-      "process": "VBFHto2B",
+      "process": "VBFH-Hto2B_Par-M-125",
       "xsection": 4.18,
-      "full_dataset": "VBFHto2B_M-125_dipoleRecoilOn_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "VBFH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "VBFHto2B",
+      "process": "VBFH-Hto2B_Par-M-125",
       "xsection": 4.18,
-      "full_dataset": "VBFHto2B_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "VBFH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "VBFHto2B",
+      "process": "VBFH-Hto2B_Par-M-125",
       "xsection": 4.18,
-      "full_dataset": "VBFHto2B_M-125_dipoleRecoilOn_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "VBFH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "VBFHto2B",
+      "process": "VBFH-Hto2B_Par-M-125",
       "xsection": 4.18,
-      "full_dataset": "VBFHto2B_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "VBFH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "VBFHto2B",
+      "process": "VBFH-Hto2B_Par-M-125",
       "xsection": 4.18,
-      "full_dataset": "VBFHto2B_M-125_dipoleRecoilOn_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "VBFH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SMHiggs"
     }
   ],
   "SMHiggs_WminusH_Hto2B_WtoLNu": [
     {
       "year": "2022",
-      "process": "WminusH_Hto2B_WtoLNu",
+      "process": "WminusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.1887,
-      "full_dataset": "WminusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WminusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022",
-      "process": "WminusH_Hto2B_WtoLNu",
+      "process": "WminusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.1887,
-      "full_dataset": "WminusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WminusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "WminusH_Hto2B_WtoLNu",
+      "process": "WminusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.1887,
-      "full_dataset": "WminusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WminusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "WminusH_Hto2B_WtoLNu",
+      "process": "WminusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.1887,
-      "full_dataset": "WminusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WminusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "WminusH_Hto2B_WtoLNu",
+      "process": "WminusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.1887,
-      "full_dataset": "WminusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WminusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "WminusH_Hto2B_WtoLNu",
+      "process": "WminusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.1887,
-      "full_dataset": "WminusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WminusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     }
   ],
   "SMHiggs_WplusH_Hto2B_WtoLNu": [
     {
       "year": "2022",
-      "process": "WplusH_Hto2B_WtoLNu",
+      "process": "WplusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.3001,
-      "full_dataset": "WplusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WplusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022",
-      "process": "WplusH_Hto2B_WtoLNu",
+      "process": "WplusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.3001,
-      "full_dataset": "WplusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WplusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "WplusH_Hto2B_WtoLNu",
+      "process": "WplusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.3001,
-      "full_dataset": "WplusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WplusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "WplusH_Hto2B_WtoLNu",
+      "process": "WplusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.3001,
-      "full_dataset": "WplusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WplusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "WplusH_Hto2B_WtoLNu",
+      "process": "WplusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.3001,
-      "full_dataset": "WplusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WplusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "WplusH_Hto2B_WtoLNu",
+      "process": "WplusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.3001,
-      "full_dataset": "WplusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WplusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     }
   ],
   "SMHiggs_ZH_Hto2B_Zto2L": [
     {
       "year": "2022",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ggZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ggZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ggZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ggZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ggZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ggZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     }
   ],
   "SMHiggs_ZH_Hto2B_Zto2Nu": [
     {
       "year": "2022",
-      "process": "ZH_Hto2B_Zto2Nu",
+      "process": "ZH-Zto2Nu-Hto2B_Par-M-125",
       "xsection": 0.168,
-      "full_dataset": "ZH_Hto2B_Zto2Nu_M-125_TuneCP5_13p6TeV_powheg-minlo-pythia8",
+      "full_dataset": "ZH-Zto2Nu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022",
-      "process": "ZH_Hto2B_Zto2Nu",
+      "process": "ZH-Zto2Nu-Hto2B_Par-M-125",
       "xsection": 0.168,
-      "full_dataset": "ggZH_Hto2B_Zto2Nu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2Nu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022",
-      "process": "ZH_Hto2B_Zto2Nu",
+      "process": "ZH-Zto2Nu-Hto2B_Par-M-125",
       "xsection": 0.168,
-      "full_dataset": "ggZH_Hto2B_Zto2Nu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2Nu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "ZH_Hto2B_Zto2Nu",
+      "process": "ZH-Zto2Nu-Hto2B_Par-M-125",
       "xsection": 0.168,
-      "full_dataset": "ZH_Hto2B_Zto2Nu_M-125_TuneCP5_13p6TeV_powheg-minlo-pythia8",
+      "full_dataset": "ZH-Zto2Nu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "ZH_Hto2B_Zto2Nu",
+      "process": "ZH-Zto2Nu-Hto2B_Par-M-125",
       "xsection": 0.168,
-      "full_dataset": "ggZH_Hto2B_Zto2Nu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2Nu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "ZH_Hto2B_Zto2Nu",
+      "process": "ZH-Zto2Nu-Hto2B_Par-M-125",
       "xsection": 0.168,
-      "full_dataset": "ggZH_Hto2B_Zto2Nu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2Nu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "ZH_Hto2B_Zto2Nu",
+      "process": "ZH-Zto2Nu-Hto2B_Par-M-125",
       "xsection": 0.168,
-      "full_dataset": "ZH_Hto2B_Zto2Nu_M-125_TuneCP5_13p6TeV_powheg-minlo-pythia8",
+      "full_dataset": "ZH-Zto2Nu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "ZH_Hto2B_Zto2Nu",
+      "process": "ZH-Zto2Nu-Hto2B_Par-M-125",
       "xsection": 0.168,
-      "full_dataset": "ggZH_Hto2B_Zto2Nu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2Nu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "ZH_Hto2B_Zto2Nu",
+      "process": "ZH-Zto2Nu-Hto2B_Par-M-125",
       "xsection": 0.168,
-      "full_dataset": "ggZH_Hto2B_Zto2Nu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2Nu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     }
   ],
   "SMHiggs_ttHto2B": [
     {
       "year": "2022",
-      "process": "ttHto2B",
+      "process": "TTH-Hto2B_Par-M-125",
       "xsection": 0.5742,
-      "full_dataset": "ttHto2B_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "TTH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2022EE",
-      "process": "ttHto2B",
+      "process": "TTH-Hto2B_Par-M-125",
       "xsection": 0.5742,
-      "full_dataset": "ttHto2B_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "TTH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2023",
-      "process": "ttHto2B",
+      "process": "TTH-Hto2B_Par-M-125",
       "xsection": 0.5742,
-      "full_dataset": "ttHto2B_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "TTH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SMHiggs"
     }
   ],
   "SMHiggs_GluGluH-Hto2B_Par": [
     {
       "year": "2024",
-      "process": "GluGluHto2B",
+      "process": "GluGluH-Hto2B_Par-M-125",
       "xsection": 30.2,
-      "full_dataset": "GluGluHto2B_M-125_TuneCP5_13p6TeV_powheg-minlo-pythia8",
+      "full_dataset": "GluGluH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     }
   ],
   "SMHiggs_ZH-Zto2L-Hto2B_Par": [
     {
       "year": "2024",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2024",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2024",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ggZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2024",
-      "process": "ZH_Hto2B_Zto2L",
+      "process": "ZH-Zto2L-Hto2B_Par-M-125",
       "xsection": 0.08545,
-      "full_dataset": "ggZH_Hto2B_Zto2L_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2L-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     }
   ],
   "SMHiggs_ZH-Zto2Nu-Hto2B_Par": [
     {
       "year": "2024",
-      "process": "ZH_Hto2B_Zto2Nu",
+      "process": "ZH-Zto2Nu-Hto2B_Par-M-125",
       "xsection": 0.168,
-      "full_dataset": "ZH_Hto2B_Zto2Nu_M-125_TuneCP5_13p6TeV_powheg-minlo-pythia8",
+      "full_dataset": "ZH-Zto2Nu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2024",
-      "process": "ZH_Hto2B_Zto2Nu",
+      "process": "ZH-Zto2Nu-Hto2B_Par-M-125",
       "xsection": 0.168,
-      "full_dataset": "ggZH_Hto2B_Zto2Nu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2Nu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2024",
-      "process": "ZH_Hto2B_Zto2Nu",
+      "process": "ZH-Zto2Nu-Hto2B_Par-M-125",
       "xsection": 0.168,
-      "full_dataset": "ggZH_Hto2B_Zto2Nu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "ZH-Zto2Nu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     }
   ],
   "SMHiggs_WplusH-WtoLNu-Hto2B_Par": [
     {
       "year": "2024",
-      "process": "WplusH_Hto2B_WtoLNu",
+      "process": "WplusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.3001,
-      "full_dataset": "WplusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WplusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2024",
-      "process": "WplusH_Hto2B_WtoLNu",
+      "process": "WplusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.3001,
-      "full_dataset": "WplusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WplusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     }
   ],
   "SMHiggs_WminusH-WtoLNu-Hto2B_Par": [
     {
       "year": "2024",
-      "process": "WminusH_Hto2B_WtoLNu",
+      "process": "WminusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.1887,
-      "full_dataset": "WminusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WminusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2024",
-      "process": "WminusH_Hto2B_WtoLNu",
+      "process": "WminusH-WtoLNu-Hto2B_Par-M-125",
       "xsection": 0.1887,
-      "full_dataset": "WminusH_Hto2B_WtoLNu_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "WminusH-WtoLNu-Hto2B_Par-M-125_TuneCP5_13p6TeV_powhegMINLO-pythia8",
       "type": "SMHiggs"
     }
   ],
   "SMHiggs_TTH-Hto2B": [
     {
       "year": "2024",
-      "process": "ttHto2B",
+      "process": "TTH-Hto2B_Par-M-125",
       "xsection": 0.5742,
-      "full_dataset": "ttHto2B_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "TTH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SMHiggs"
     }
   ],
@@ -1050,16 +1050,16 @@
   "SMHiggs_VBFH-Hto2B_Par": [
     {
       "year": "2024",
-      "process": "VBFHto2B",
+      "process": "VBFH-Hto2B_Par-M-125",
       "xsection": 4.18,
-      "full_dataset": "VBFHto2B_M-125_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "VBFH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SMHiggs"
     },
     {
       "year": "2024",
-      "process": "VBFHto2B",
+      "process": "VBFH-Hto2B_Par-M-125",
       "xsection": 4.18,
-      "full_dataset": "VBFHto2B_M-125_dipoleRecoilOn_TuneCP5_13p6TeV_powheg-pythia8",
+      "full_dataset": "VBFH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8",
       "type": "SMHiggs"
     }
   ]
