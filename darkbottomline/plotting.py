@@ -101,6 +101,8 @@ def _clean_sample_name(name: str) -> str:
         "_Run3Summer22", "_Run3Summer22EE", "_Run3Summer23",
     ]
     result = name
+    # Normalize v3 _Bin-2J naming (mid-name replacement, not truncation)
+    result = result.replace("_Bin-2J-", "_").replace("_Bin-2J", "")
     for suffix in suffixes:
         if suffix in result:
             result = result[:result.index(suffix)]

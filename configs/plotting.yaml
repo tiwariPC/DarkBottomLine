@@ -370,33 +370,33 @@ process_groups:
     color: "#bd1f01"
     label: "$W(\\ell\\nu)+$jets"
     patterns:
-      - "WtoLNu-2Jets_PTLNu-40to100_2J"
-      - "WtoLNu-2Jets_PTLNu-100to200_2J"
-      - "WtoLNu-2Jets_PTLNu-200to400_2J"
-      - "WtoLNu-2Jets_PTLNu-400to600_2J"
-      - "WtoLNu-2Jets_PTLNu-600_2J"
+      - "WtoLNu-2Jets_Bin-2J-PTLNu-40to100_TuneCP5"
+      - "WtoLNu-2Jets_Bin-2J-PTLNu-100to200_TuneCP5"
+      - "WtoLNu-2Jets_Bin-2J-PTLNu-200to400_TuneCP5"
+      - "WtoLNu-2Jets_Bin-2J-PTLNu-400to600_TuneCP5"
+      - "WtoLNu-2Jets_Bin-2J-PTLNu-600_TuneCP5"
 
   Zto2NuJets:
     type: background
     color: "#a96b59"
     label: "$Z(\\nu\\bar{\\nu})+$jets"
     patterns:
-      - "Zto2Nu-2Jets_PTNuNu-40to100_2J"
-      - "Zto2Nu-2Jets_PTNuNu-100to200_2J"
-      - "Zto2Nu-2Jets_PTNuNu-200to400_2J"
-      - "Zto2Nu-2Jets_PTNuNu-400to600_2J"
-      - "Zto2Nu-2Jets_PTNuNu-600_2J"
+      - "Zto2Nu-2Jets_Bin-2J-PTNuNu-40to100_TuneCP5"
+      - "Zto2Nu-2Jets_Bin-2J-PTNuNu-100to200_TuneCP5"
+      - "Zto2Nu-2Jets_Bin-2J-PTNuNu-200to400_TuneCP5"
+      - "Zto2Nu-2Jets_Bin-2J-PTNuNu-400to600_TuneCP5"
+      - "Zto2Nu-2Jets_Bin-2J-PTNuNu-600_TuneCP5"
 
   DYto2LJets:
     type: background
     color: "#3f90da"
     label: "$Z(\\ell\\ell)+$jets"
     patterns:
-      - "DYto2L-2Jets_MLL-50_PTLL-40to100_2J"
-      - "DYto2L-2Jets_MLL-50_PTLL-100to200_2J"
-      - "DYto2L-2Jets_MLL-50_PTLL-200to400_2J"
-      - "DYto2L-2Jets_MLL-50_PTLL-400to600_2J"
-      - "DYto2L-2Jets_MLL-50_PTLL-600_2J"
+      - "DYto2L-2Jets_Bin-2J-MLL-50-PTLL-40to100_TuneCP5"
+      - "DYto2L-2Jets_Bin-2J-MLL-50-PTLL-100to200_TuneCP5"
+      - "DYto2L-2Jets_Bin-2J-MLL-50-PTLL-200to400_TuneCP5"
+      - "DYto2L-2Jets_Bin-2J-MLL-50-PTLL-400to600_TuneCP5"
+      - "DYto2L-2Jets_Bin-2J-MLL-50-PTLL-600_TuneCP5"
 
   ttbar:
     type: background
@@ -412,10 +412,10 @@ process_groups:
     color: "#ffa90e"
     label: "Single $t$"
     patterns:
-      - "TBbarQ_t-channel"
-      - "TbarBQ_t-channel"
-      - "TBbartoLplusNuBbar-s-channel"
-      - "TbarBtoLminusNuB-s-channel"
+      - "TBbarQtoLNu-t-channel-4FS"
+      - "TbarBQtoLNu-t-channel-4FS"
+      - "TBbartoLplusNuBbar-s-channel-4FS"
+      - "TbarBtoLminusNuB-s-channel-4FS"
       - "TbarWplustoLNu2Q"
       - "TWminustoLNu2Q"
 
@@ -433,17 +433,19 @@ process_groups:
     color: "#b9ac70"
     label: "SM Higgs"
     patterns:
-      - "GluGluHto2B_M-125"
-      - "VBFHto2B_M-125_TuneCP5"
-      - "VBFHto2B_M-125_dipoleRecoilOn"
-      - "WminusH_Hto2B"
-      - "WplusH_Hto2B"
-      - "ZH_Hto2B_Zto2L"
-      - "ZH_Hto2B_Zto2Nu"
-      - "ggZH_Hto2B_Zto2L"
-      - "ggZH_Hto2B_Zto2Nu"
-      - "ttHto2B_M-125"
-      - "tHto2B_M-125"
+      - "GluGluH-Hto2B_Par-M-125"
+      - "VBFH-Hto2B_Par-M-125"
+      - "WminusH-WtoLNu-Hto2B_Par-M-125"
+      - "WplusH-WtoLNu-Hto2B_Par-M-125"
+      - "ZH-Zto2L-Hto2B_Par-M-125"
+      - "GluGluZH-Zto2L-Hto2B_Par-M-125"
+      - "TTH-Hto2B_Par-M-125"
+      - "ZH-Zto2Nu-Hto2B_Par-M-125"
+      - "GluGluZH-Zto2L-Hto2B_Par-M-125"
+      - "TTH-Hto2B_Par-M-125"
+      - "GluGluZH-Zto2L-Hto2B_Par-M-125"
+      - "TTH-Hto2B_Par-M-125"
+      - "TTH-Hto2B_Par-M-125"
 
   # --- Signal process (drawn as dashed lines, one per GenModel masspoint) ---
   # PNG/PDF: first 3 masspoints overlaid as dashed lines.
