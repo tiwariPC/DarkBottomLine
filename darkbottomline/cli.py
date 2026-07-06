@@ -1190,6 +1190,7 @@ def _load_training_data_from_eventsel(
 
     X_parts, y_parts, w_parts = [], [], []
     feature_sources: dict = {}
+    skipped_files: list = []  # (filepath, reason)
 
     for fpath in input_files:
         sample = _sample_name(fpath)
@@ -1208,26 +1209,33 @@ def _load_training_data_from_eventsel(
             logging.info("Skipping data file for DNN training: %s", fpath)
             continue
 
-        with uproot.open(fpath) as in_f:
-            if "Events" not in in_f:
-                raise KeyError(f"No 'Events' tree in {fpath}")
-            tree = in_f["Events"]
-            df, src, _ = build_feature_frame_from_tree(
-                tree, list(REQUESTED_FEATURES_25),
-                max_events=max_events_per_file,
-            )
-            df = sanitize_feature_frame(df)
-            n = len(df)
+        try:
+            with uproot.open(fpath) as in_f:
+                if "Events" not in in_f:
+                    logging.warning("No 'Events' tree in %s — skipping", fpath)
+                    skipped_files.append((fpath, "No Events tree"))
+                    continue
+                tree = in_f["Events"]
+                df, src, _ = build_feature_frame_from_tree(
+                    tree, list(REQUESTED_FEATURES_25),
+                    max_events=max_events_per_file,
+                )
+                df = sanitize_feature_frame(df)
+                n = len(df)
 
-            # weight
-            avail = set(tree.keys())
-            if weight_branch in avail:
-                w_arr = tree[weight_branch].array(entry_stop=n, library="np").astype("f8")
-                w_arr = np.where(np.isfinite(w_arr), np.maximum(w_arr, 0.0), 0.0)
-            else:
-                w_arr = np.ones(n, dtype="f8")
+                # weight
+                avail = set(tree.keys())
+                if weight_branch in avail:
+                    w_arr = tree[weight_branch].array(entry_stop=n, library="np").astype("f8")
+                    w_arr = np.where(np.isfinite(w_arr), np.maximum(w_arr, 0.0), 0.0)
+                else:
+                    w_arr = np.ones(n, dtype="f8")
 
-            n = min(n, len(w_arr))
+                n = min(n, len(w_arr))
+        except Exception as _exc:
+            logging.warning("Failed to read %s — skipping (%s)", fpath, _exc)
+            skipped_files.append((fpath, str(_exc)[:120]))
+            continue
 
         X_parts.append(df.iloc[:n])
         y_parts.append(np.full(n, int(sig_flag), dtype="i4"))
@@ -1239,7 +1247,22 @@ def _load_training_data_from_eventsel(
         logging.info("Loaded %s: n=%d signal=%d", sample, n, int(sig_flag))
 
     if not X_parts:
+        logging.error("No training events loaded — check input files and signal/background flags.")
+        if skipped_files:
+            logging.error("Skipped files summary (%d total):", len(skipped_files))
+            for fpath, reason in skipped_files:
+                logging.error("  SKIPPED: %s", fpath)
+                logging.error("    Reason: %s", reason)
         raise ValueError("No training events loaded — check input files and signal/background flags.")
+
+    # Report skipped files
+    if skipped_files:
+        logging.warning("=" * 60)
+        logging.warning("SKIPPED FILES SUMMARY (%d total):", len(skipped_files))
+        for fpath, reason in skipped_files:
+            logging.warning("  SKIP: %s", fpath)
+            logging.warning("        %s", reason)
+        logging.warning("=" * 60)
 
     import pandas as pd
     X = pd.concat(X_parts, axis=0, ignore_index=True)
