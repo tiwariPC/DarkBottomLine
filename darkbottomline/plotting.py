@@ -38,6 +38,37 @@ from utils.plot_utils import (
 
 _SENTINEL = -9.0
 
+# Pseudo-variables: plotted like a normal variable but sourced from a different
+# branch and/or weighted by a different weight branch. Used for cross-check plots
+# that reuse an existing quantity with an alternate event weight.
+#   _VAR_VALUE_ALIAS   : plot-variable name -> branch name to read values from
+#   _VAR_WEIGHT_OVERRIDE: plot-variable name -> weight branch to use (instead of
+#                         full_event_weight / the active systematic weight)
+# PV_npvsGood_noPU = PV_npvsGood weighted WITHOUT the pileup reweight (all other
+# SFs kept), via the weight_noPileup branch. Data/MC pileup validation: reweighted
+# MC (PV_npvsGood) and un-reweighted MC (PV_npvsGood_noPU) each compared to data.
+_VAR_VALUE_ALIAS: Dict[str, str] = {
+    "PV_npvsGood_noPU": "PV_npvsGood",
+}
+_VAR_WEIGHT_OVERRIDE: Dict[str, str] = {
+    "PV_npvsGood_noPU": "weight_noPileup",
+}
+
+
+def _value_branch(var: str) -> str:
+    """Branch to read plot values from (identity unless var is a pseudo-variable)."""
+    return _VAR_VALUE_ALIAS.get(var, var)
+
+
+def _bins_key(var: str) -> str:
+    """Config key for binning (pseudo-variables share their source var's bins)."""
+    return _VAR_VALUE_ALIAS.get(var, var)
+
+
+def _weight_branch_for(var: str, default_weight: str) -> str:
+    """Weight branch for this variable (override for pseudo-variables)."""
+    return _VAR_WEIGHT_OVERRIDE.get(var, default_weight)
+
 
 def _is_number(v: Any) -> bool:
     return isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool)
@@ -1982,8 +2013,10 @@ class PlotManager:
                         "weight_", "full_event_weight", "pass_met_trigger",
                         "pass_ele_trigger", "GenModel_", "event", "run",
                         # object counts for region cuts
-                        "n_bjets", "Njets_PassID", "n_muons", "n_electrons", "n_taus",
+                        "n_bjets", "njets", "n_muons", "n_electrons", "n_taus",
                         "n_z_muons", "n_z_electrons",
+                        # reco primary vertices (source for PV_npvsGood[_noPU] data/MC plots)
+                        "PV_npvsGood", "PV_npvs",
                         # MET branches for MT, Mll, Recoil cuts
                         "MET_pt", "MET_phi", "PuppiMET_pt", "PuppiMET_phi",
                         "Recoil", "Recoil_JES", "Recoil_JER",
@@ -2252,7 +2285,7 @@ class PlotManager:
                             continue
                         mask_np = _cached["mask_np"]
                         events_ak = _cached["events_ak"]
-                        vals_raw = br.get(var)
+                        vals_raw = br.get(_value_branch(var))
                         if vals_raw is None:
                             # Try computing derived variable (mt, z_mass, z_pt, etc.)
                             # that isn't stored as a flat branch but is derivable from
@@ -2263,7 +2296,7 @@ class PlotManager:
                                 "z_pt":   "Zpt",
                                 "mll":    "Mll",
                             }
-                            _canon = _var_map.get(var, var)
+                            _canon = _var_map.get(_value_branch(var), _value_branch(var))
                             try:
                                 _derived = region_obj._get_variable_value(events_ak, objects={}, var=_canon)
                                 if _derived is not None:
@@ -2293,7 +2326,7 @@ class PlotManager:
                         if vals.size == 0:
                             continue
 
-                        w_arr = br.get(weight_branch)
+                        w_arr = br.get(_weight_branch_for(var, weight_branch))
                         if w_arr is not None:
                             w = np.asarray(w_arr, dtype=float)[mask_np][sentinel_mask]
                         else:
@@ -2307,11 +2340,11 @@ class PlotManager:
                             all_vals_for_bins = []
                             for ee in bkg_entries.values():
                                 for e2 in ee:
-                                    v2 = e2["branches"].get(var, np.array([]))
+                                    v2 = e2["branches"].get(_value_branch(var), np.array([]))
                                     if isinstance(v2, np.ndarray) and v2.dtype != object:
-                                        all_vals_for_bins.append(_apply_variable_plot_filter(var, v2))
+                                        all_vals_for_bins.append(_apply_variable_plot_filter(_bins_key(var), v2))
                             bins_ref = _make_bins(all_vals_for_bins, self._build_bins_from_config,
-                                                  var, self._n_bins_default)
+                                                  _bins_key(var), self._n_bins_default)
                             if bins_ref is None or len(bins_ref) < 2:
                                 break
 
@@ -2366,10 +2399,10 @@ class PlotManager:
                                 continue
                             mask_d_np = _dcached["mask_np"]
                             _devents_ak = _dcached["events_ak"]
-                            _dvals_raw = br.get(var)
+                            _dvals_raw = br.get(_value_branch(var))
                             if _dvals_raw is None:
                                 _var_map = {"mt": "MT", "z_mass": "Mll", "z_pt": "Zpt", "mll": "Mll"}
-                                _canon = _var_map.get(var, var)
+                                _canon = _var_map.get(_value_branch(var), _value_branch(var))
                                 try:
                                     _derived = region_obj._get_variable_value(_devents_ak, objects={}, var=_canon)
                                     if _derived is not None:

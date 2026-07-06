@@ -122,7 +122,7 @@ def _multiplicity_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
             return None
 
     out = {
-        'Njets_PassID':   _num('jets'),
+        'njets':          _num('jets'),
         'n_bjets':        _num('bjets'),
         'n_muons':        _num('muons'),
         'n_electrons':    _num('electrons'),
@@ -147,6 +147,20 @@ def _multiplicity_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
                          np.float32(SENTINEL))
             )
             out['mll'] = ak.to_numpy(ak.fill_none(ak.values_astype(mll, np.float32), np.float32(SENTINEL)))
+        except Exception:
+            pass
+    # Z pT: muon-candidate pT if NmuonsZ==2 else electron-candidate pT.
+    # Same candidate leptons as mll (computed in build_z_candidates).
+    z_pt_mu = objects.get('z_pt_mu')
+    z_pt_el = objects.get('z_pt_el')
+    if z_pt_mu is not None and z_pt_el is not None and nzm is not None and nze is not None:
+        try:
+            zpt = ak.where(
+                ak.fill_none(ak.values_astype(nzm, np.int32), 0) == 2, z_pt_mu,
+                ak.where(ak.fill_none(ak.values_astype(nze, np.int32), 0) == 2, z_pt_el,
+                         np.float32(SENTINEL))
+            )
+            out['Zpt'] = ak.to_numpy(ak.fill_none(ak.values_astype(zpt, np.float32), np.float32(SENTINEL)))
         except Exception:
             pass
     return out
@@ -289,14 +303,16 @@ def _jagged_variables(objects: Dict[str, Any]) -> Dict[str, ak.Array]:
 # Scalar branches: name → numpy dtype
 _SCALAR_BRANCHES: Dict[str, Any] = {
     'event': np.int64, 'run': np.int64, 'luminosityBlock': np.int64,
+    'Pileup_nTrueInt': np.float32, 'Pileup_nPU': np.int32,
+    'PV_npvsGood': np.int32, 'PV_npvs': np.int32,
     'MET_pt': np.float32, 'MET_phi': np.float32, 'MET_significance': np.float32,
     'Recoil': np.float32, 'RecoilPhi': np.float32,
     'Recoil_JESUp': np.float32, 'Recoil_JESDown': np.float32,
     'Recoil_JERUp': np.float32, 'Recoil_JERDown': np.float32,
     'costheta_star': np.float32,
-    'Njets_PassID': np.int32, 'n_bjets': np.int32, 'n_muons': np.int32,
+    'njets': np.int32, 'n_bjets': np.int32, 'n_muons': np.int32,
     'n_electrons': np.int32, 'n_taus': np.int32, 'b_flavor_count': np.int32,
-    'n_z_muons': np.int32, 'n_z_electrons': np.int32, 'mll': np.float32,
+    'n_z_muons': np.int32, 'n_z_electrons': np.int32, 'mll': np.float32, 'Zpt': np.float32,
     'Jet1Pt': np.float32, 'Jet1Eta': np.float32, 'Jet1Phi': np.float32,
     'Jet2Pt': np.float32, 'Jet2Eta': np.float32, 'Jet2Phi': np.float32,
     'Jet3Pt': np.float32, 'Jet3Eta': np.float32, 'Jet3Phi': np.float32,
@@ -313,7 +329,7 @@ _SCALAR_BRANCHES: Dict[str, Any] = {
     'muon_lep2_pt': np.float32, 'muon_lep2_phi': np.float32, 'muon_lep2_eta': np.float32,
     'electron_lep1_pt': np.float32, 'electron_lep1_phi': np.float32, 'electron_lep1_eta': np.float32,
     'electron_lep2_pt': np.float32, 'electron_lep2_phi': np.float32, 'electron_lep2_eta': np.float32,
-    'full_event_weight': np.float32,
+    'full_event_weight': np.float32, 'weight_noPileup': np.float32,
     'weight_pdfUP': np.float32, 'weight_pdfDOWN': np.float32,
     'weight_scaleUP': np.float32, 'weight_scaleDOWN': np.float32,
     'pass_met_trigger': np.int32,
@@ -330,14 +346,16 @@ _JAGGED_BRANCHES: Dict[str, Any] = {
 }
 
 
-def get_empty_branch_types(config: Dict[str, Any] = None) -> Dict[str, Any]:
+def get_empty_branch_types(config: Dict[str, Any]) -> Dict[str, Any]:
     """Return uproot mktree-compatible branch type dict for an empty Events TTree.
 
     Used to write an empty Events TTree when no events pass selection, so that
     hadd can merge files regardless of whether any chunk had selected events.
     The btag branch name is config-driven; all other names are fixed.
     """
-    btag_algo = (config or {}).get('btagging', {}).get('algorithm', 'deepJet')
+    # Must match the algorithm used by compute_event_variables so empty-tree
+    # branch names (Jet1PNet, ...) align with filled trees for hadd. Loud on miss.
+    btag_algo = config["btagging"]["algorithm"]
     types: Dict[str, Any] = {}
     for name, dtype in _SCALAR_BRANCHES.items():
         types[name] = np.dtype(dtype)
@@ -364,7 +382,7 @@ def compute_event_variables(
     Returns flat dict: str → np.ndarray (scalar) or ak.Array (jagged).
     Sentinel -9.0 used for variables undefined on an event (e.g. < N jets).
     """
-    btag_algo = config.get('btagging', {}).get('algorithm', 'deepJet')
+    btag_algo = config["btagging"]["algorithm"]
     n_ev = len(events)
     out: Dict[str, Any] = {}
 
@@ -374,6 +392,25 @@ def compute_event_variables(
             out[field] = ak.to_numpy(events[field]).astype(np.int64)
         except Exception:
             out[field] = np.zeros(n_ev, dtype=np.int64)
+
+    # --- Pileup truth (MC only; absent on data → SENTINEL / -1) ---
+    if 'Pileup_nTrueInt' in events.fields:
+        out['Pileup_nTrueInt'] = ak.to_numpy(events['Pileup_nTrueInt']).astype(np.float32)
+    else:
+        out['Pileup_nTrueInt'] = np.full(n_ev, SENTINEL, dtype=np.float32)
+    if 'Pileup_nPU' in events.fields:
+        out['Pileup_nPU'] = ak.to_numpy(events['Pileup_nPU']).astype(np.int32)
+    else:
+        out['Pileup_nPU'] = np.full(n_ev, -1, dtype=np.int32)
+
+    # --- Reconstructed primary vertices (data + MC; pileup data/MC validation) ---
+    # PV_npvsGood plotted with PU-reweighted MC (full_event_weight) and un-reweighted
+    # MC (weight_noPileup, via pseudo-variable PV_npvsGood_noPU) against data.
+    for _pv in ('PV_npvsGood', 'PV_npvs'):
+        if _pv in events.fields:
+            out[_pv] = ak.to_numpy(events[_pv]).astype(np.int32)
+        else:
+            out[_pv] = np.full(n_ev, -1, dtype=np.int32)
 
     # --- Per-trigger-group decisions (stored for per-region trigger requirement) ---
     # MET trigger group: MET + SingleMuon (used for SR, muon CRs)

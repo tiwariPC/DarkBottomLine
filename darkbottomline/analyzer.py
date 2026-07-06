@@ -517,8 +517,7 @@ class DarkBottomLineAnalyzer:
 
                 # Resolve DNN feature names to EVENTSELECTION branch names
                 # (same mapping as _build_dnn_feature_matrix_from_events in cli.py)
-                btag_algo = (self.base_processor.config.get("btagging", {})
-                             .get("algorithm", "deepJet"))
+                btag_algo = self.base_processor.config["btagging"]["algorithm"]
                 _NAME_MAP = {
                     "MET":          "MET_pt",
                     "METPhi":       "MET_phi",
@@ -1149,7 +1148,7 @@ if COFFEA_AVAILABLE:
                     _inf = DNNInference(self.dnn_model, self.dnn_config)
                     _info = _inf.get_model_info()
                     _feats = _info.get("features") or list(REQUESTED_FEATURES_25)
-                    _btag = self.config.get("btagging", {}).get("algorithm", "deepJet")
+                    _btag = self.config["btagging"]["algorithm"]
                     _MAP = {
                         "MET": "MET_pt", "METPhi": "MET_phi",
                         "pfMetCorrSig": "MET_significance",

@@ -34,7 +34,9 @@ common_variables:
   - Jet1deepJet
   - dPhi_jetMET
   - n_bjets
-  - Njets_PassID
+  - njets
+  - PV_npvsGood
+  - PV_npvsGood_noPU
 
 # Per-region variable whitelists (region-specific additions to common_variables above).
 # Final plot list = common_variables + entries here for the matched region.
@@ -213,7 +215,7 @@ event_selection_variables:
   - electron_lep1_pt
   - electron_lep1_eta
   # Multiplicities
-  - Njets_PassID
+  - njets
   - n_bjets
   - n_muons
   - n_electrons
@@ -287,6 +289,8 @@ variable_bins:
   MET_phi:            {low: -3.14159, high: 3.14159, n: 15}
   RecoilPhi:          {low: -3.14159, high: 3.14159, n: 15}
   dPhi_jetMET:        {low: 0.0,      high: 3.2,     n: 17}
+  del_plus:           {low: 0.0,      high: 3.2,     n: 17}   # |dphi_jMET + dphi_j12 - pi| in [0, pi]
+  del_minus:          {low: -3.2,     high: 3.2,     n: 17}   # dphi_jMET - dphi_j12 in [-pi, pi]
   dPhiJet12:          {low: -7.5,     high: 7.5,     n: 21}
   dPhiJet13:          {low: -7.5,     high: 7.5,     n: 21}
   DetaJet12:          {low: -7.5,     high: 7.5,     n: 21}
@@ -329,8 +333,9 @@ variable_bins:
   n_electrons:        {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
   n_muons:            {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
   n_taus:             {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
-  Njets_PassID:       {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  njets:              {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
   b_flavor_count:     {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5]}
+  PV_npvsGood:        {low: 0.0, high: 80.0, n: 80}
   # lepton kinematics
   muon_lep1_pt:       {low: 20.,  high: 400.,  n: 20}
   muon_lep1_eta:      {low: -2.5, high: 2.5,   n: 15}

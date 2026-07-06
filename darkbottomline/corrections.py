@@ -635,54 +635,106 @@ class CorrectionManager:
             return var["down"]
         return var["central"]
 
-    def _get_btag_sf_correction(self):
-        """Return the b-tag SF correction (deepJet_shape). Safe lookup, no 'in cs'."""
-        if "btagSF" not in self.corrections:
+    def _btag_sf_config(self) -> Dict[str, Any]:
+        """Read b-tag SF settings from config.btagging (config-driven, no hardcoding).
+
+        sf_name: base correction name (e.g. 'particleNet', 'deepJet', 'UParTAK4').
+        sf_type: 'shape'    -> continuous, correction '{sf_name}_shape',
+                              evaluate(systematic, flavor, abseta, pt, discriminant).
+                 'fixed_wp' -> per-WP, corrections '{sf_name}_comb' (flavor 4,5) and
+                              '{sf_name}_light' (flavor 0),
+                              evaluate(systematic, sf_wp, flavor, abseta, pt).
+        sf_wp: WP letter (L/M/T/XT/XXT), required for fixed_wp.
+        """
+        btag = self.config.get("btagging", {})
+        return {
+            "name": btag.get("sf_name"),
+            "type": btag.get("sf_type", "shape"),
+            "wp": btag.get("sf_wp"),
+        }
+
+    def _get_btag_correction_by_name(self, name: str):
+        """Look up a single correction inside the btagSF CorrectionSet by name."""
+        if name is None or "btagSF" not in self.corrections:
             return None
         cs = self.corrections["btagSF"]
-        for name in ("deepJet_shape", "btagSF", "btag_sf", "BTV"):
-            try:
-                return cs[name]
-            except (IndexError, KeyError, TypeError):
-                continue
         try:
-            keys = list(cs.keys()) if hasattr(cs, "keys") else []
-            if keys:
-                return cs[keys[0]]
-        except Exception:
-            pass
-        return None
+            return cs[name]
+        except (IndexError, KeyError, TypeError):
+            return None
 
     def _evaluate_btag_sf(
         self,
         jets: ak.Array,
-        corr,
         systematic: str,
     ) -> Optional[ak.Array]:
         """
-        B-tag shape SF: evaluate(systematic, flavor, eta, pt, discriminator).
+        B-tag SF for one systematic. Dispatches on config sf_type:
+          shape    : one correction, evaluate(syst, flavor, abseta, pt, discr).
+          fixed_wp : flavor {4,5} -> comb, flavor {0} -> light,
+                     evaluate(syst, wp, flavor, abseta, pt); no discriminant.
         Flavor: 0=udsg, 4=c, 5=b (hadronFlavour). Returns jagged SF array or None.
         """
-        if corr is None:
+        cfg = self._btag_sf_config()
+        name = cfg["name"]
+        if name is None:
             return None
+
         flavor = getattr(jets, "hadronFlavour", None)
         if flavor is None:
             flavor = ak.zeros_like(jets.pt, dtype=np.int32)
         eta = np.asarray(ak.ravel(np.abs(jets.eta)), dtype=float)
         pt = np.asarray(ak.ravel(jets.pt), dtype=float)
-        discr = np.asarray(ak.ravel(jets.btagScore), dtype=float)
         flavor_flat = np.asarray(ak.ravel(flavor), dtype=np.int32)
         n = len(pt)
         if n == 0:
             return ak.ones_like(jets.pt, dtype=float)
+        counts = np.asarray(ak.num(jets.pt, axis=1))
+
         try:
-            sf = np.asarray(
-                corr.evaluate(systematic, flavor_flat, eta, pt, discr),
-                dtype=float,
-            )
+            if cfg["type"] == "shape":
+                corr = self._get_btag_correction_by_name(f"{name}_shape")
+                if corr is None:
+                    return None
+                discr = np.asarray(ak.ravel(jets.btagScore), dtype=float)
+                sf = np.asarray(
+                    corr.evaluate(systematic, flavor_flat, eta, pt, discr),
+                    dtype=float,
+                )
+            elif cfg["type"] == "fixed_wp":
+                wp = cfg["wp"]
+                if wp is None:
+                    return None
+                comb = self._get_btag_correction_by_name(f"{name}_comb")
+                light = self._get_btag_correction_by_name(f"{name}_light")
+                if comb is None or light is None:
+                    return None
+                # comb handles heavy flavor (b=5, c=4); light handles udsg (0).
+                # Evaluate the appropriate correction per jet flavor bucket.
+                sf = np.ones(n, dtype=float)
+                is_light = flavor_flat == 0
+                is_heavy = ~is_light
+                if np.any(is_heavy):
+                    sf[is_heavy] = np.asarray(
+                        comb.evaluate(
+                            systematic, wp,
+                            flavor_flat[is_heavy], eta[is_heavy], pt[is_heavy],
+                        ),
+                        dtype=float,
+                    )
+                if np.any(is_light):
+                    sf[is_light] = np.asarray(
+                        light.evaluate(
+                            systematic, wp,
+                            flavor_flat[is_light], eta[is_light], pt[is_light],
+                        ),
+                        dtype=float,
+                    )
+            else:
+                return None
+
             if sf.shape != (n,):
                 return None
-            counts = np.asarray(ak.num(jets.pt, axis=1))
             return ak.unflatten(ak.Array(sf), counts)
         except Exception:
             return None
@@ -693,28 +745,26 @@ class CorrectionManager:
         systematic: str = "central"
     ) -> ak.Array:
         """
-        Get b-tagging scale factors (deepJet_shape): evaluate(systematic, flavor, eta, pt, discriminator).
-        Central/up/down via systematic string.
+        Get b-tagging scale factors for one systematic (central/up/down).
+        SF type (shape vs fixed_wp) and correction name driven by config.btagging.
         """
         ones = ak.ones_like(jets.pt, dtype=float)
         if not jets.pt.layout or len(ak.ravel(jets.pt)) == 0:
             return ones
-        corr = self._get_btag_sf_correction()
-        out = self._evaluate_btag_sf(jets, corr, systematic)
+        out = self._evaluate_btag_sf(jets, systematic)
         if out is not None:
             return out
         logging.warning("B-tag SF evaluate failed")
         return ones
 
     def get_btag_sf_nominal_up_down(self, jets: ak.Array) -> Dict[str, ak.Array]:
-        """Get b-tag SF as central, up, down (deepJet_shape systematics)."""
+        """Get b-tag SF as central, up, down."""
         ones = ak.ones_like(jets.pt, dtype=float)
         out = {"central": ones, "up": ones, "down": ones}
-        corr = self._get_btag_sf_correction()
-        if corr is None:
+        if "btagSF" not in self.corrections:
             return out
         for key, syst in [("central", "central"), ("up", "up"), ("down", "down")]:
-            val = self._evaluate_btag_sf(jets, corr, syst)
+            val = self._evaluate_btag_sf(jets, syst)
             if val is not None:
                 out[key] = val
         return out
@@ -739,7 +789,8 @@ class CorrectionManager:
     ) -> Dict[str, ak.Array]:
         """
         Get per-event JEC weights (central, up, down) as product of per-jet JEC factors.
-        Central: compound L1L2L3Res correction evaluated with (JetPt, JetEta, JetA, JetPhi, Rho).
+        Central: compound L1L2L3Res correction. Inputs are read from the correction
+        object by name (MC: JetA, JetEta, JetPt, Rho, JetPhi; DATA adds run).
         Up/down: central factor * (1 ± Total uncertainty).
         """
         n_events = len(events)
@@ -802,9 +853,21 @@ class CorrectionManager:
             if sf_obj is not None:
                 if isinstance(sf_obj, str):
                     sf_obj = cs.compound[sf_obj]
-                jec_central = np.asarray(
-                    sf_obj.evaluate(flat_area, flat_eta, flat_pt, flat_rho), dtype=float
-                )
+                # Input order/count is correction-specific; read from the object.
+                # MC L1L2L3Res: JetA, JetEta, JetPt, Rho, JetPhi.
+                # DATA adds a trailing 'run' input.
+                input_names = [i.name for i in sf_obj.inputs]
+                arg_map = {
+                    "JetA": flat_area, "JetEta": flat_eta, "JetPt": flat_pt,
+                    "Rho": flat_rho, "JetPhi": flat_phi,
+                    "run": np.repeat(
+                        np.asarray(ak.to_numpy(events["run"]), dtype=float)
+                        if "run" in events.fields else np.ones(n_events),
+                        counts,
+                    ),
+                }
+                args = [arg_map[name] for name in input_names]
+                jec_central = np.asarray(sf_obj.evaluate(*args), dtype=float)
         except Exception as e:
             logging.warning(f"JEC compound correction evaluation failed: {e}")
 
@@ -1091,6 +1154,9 @@ class CorrectionManager:
         return {
             "sf_weight": sf_weight,
             "full_event_weight": full_event_weight,
+            # full_event_weight with the pileup SF removed (all other SFs kept).
+            # For the "no PU reweight" Pileup_nTrueInt cross-check plot.
+            "weight_noPileup": _vary(full_event_weight, w_pu, ones),
             "weight_pileupUP": _vary(full_event_weight, w_pu, w_pu_up),
             "weight_pileupDOWN": _vary(full_event_weight, w_pu, w_pu_down),
             "weight_btagUP": _vary(full_event_weight, w_btag, w_btag_up),

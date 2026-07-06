@@ -253,7 +253,7 @@ def _build_dnn_feature_matrix_from_events(
     all_vars = compute_event_variables(events, objects, config)
 
     # DNN feature name → compute_event_variables output name
-    btag_algo = config.get("btagging", {}).get("algorithm", "deepJet")
+    btag_algo = config["btagging"]["algorithm"]
     _NAME_MAP: dict = {
         "MET":          "MET_pt",
         "METPhi":       "MET_phi",
