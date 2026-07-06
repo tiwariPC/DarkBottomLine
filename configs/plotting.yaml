@@ -21,6 +21,7 @@ no_log_scale_vars:
 # For kinematic systematics (JES/JER): varied Recoil_JESUp etc. branches used.
 systematic_variables:
   - Recoil
+  - ml_score
 
 # Variables plotted in every region. Each region's final list = common + region-specific below.
 common_variables:

@@ -4,7 +4,7 @@
 model:
   type: "ParametricDNN"
   input_features: 20  # Number of input features
-  hidden_layers: [128, 64, 32]  # Hidden layer sizes
+  hidden_layers: "128,64,32"  # Hidden layer sizes
   activation: "relu"  # Activation function
   dropout: 0.2  # Dropout rate
   parametric_input: true  # Include mass parameter as input
@@ -35,7 +35,7 @@ training:
 # Feature selection
 feature_selection:
   # Train final model on top-K features by Asimov significance (0 = keep all)
-  top_k_significance: 5
+  top_k_significance: 0  # 0 = keep all 25 features
   # Epochs for per-feature 1D DNN scans
   single_feature_epochs: 20
   # Drop near-constant features (useful for LHEF inputs with placeholder btag)
