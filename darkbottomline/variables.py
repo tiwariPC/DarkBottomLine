@@ -188,6 +188,41 @@ def _jet_lead_variables(objects: Dict[str, Any], btag_algo: str) -> Dict[str, np
     }
 
 
+def _positional_btag_flags(objects: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    """Per-event positional b-tag flags + composite category conditions.
+
+    Compares the leading/subleading jet btagScore to the configured WP so the
+    b-tag requirement is positional (jet index 0/1), matching the Run2 SR/CR
+    definition. Events with < 1 (< 2) jets get flag 0.
+
+    Composite flags merge the b-count and positional requirement into a single
+    region cut (one cutflow step, matching the Run2 b-tag bin):
+      Bjet1bCond = (n_bjets == 1) & (leading jet b-tagged)
+      Bjet2bCond = (n_bjets == 2) & (leading & subleading jets b-tagged)
+    """
+    jets = objects.get('jets', ak.Array([]))
+    score = config["btagging"]["score"]
+    btag = jets.btagScore if hasattr(jets, 'btagScore') else ak.zeros_like(jets.pt)
+    # _lead fills missing (fewer jets) with SENTINEL (-9) → below WP → flag 0.
+    lead_score    = _lead(btag, 0, default=SENTINEL)
+    sublead_score = _lead(btag, 1, default=SENTINEL)
+    is_lead    = lead_score    > score
+    is_sublead = sublead_score > score
+
+    bjets = objects.get('bjets', ak.Array([]))
+    try:
+        n_bjets = ak.to_numpy(ak.num(bjets, axis=1)).astype(np.int32)
+    except Exception:
+        n_bjets = np.zeros(len(is_lead), dtype=np.int32)
+
+    return {
+        'is_lead_bjet':    is_lead.astype(np.int32),
+        'is_sublead_bjet': is_sublead.astype(np.int32),
+        'Bjet1bCond': ((n_bjets == 1) & is_lead).astype(np.int32),
+        'Bjet2bCond': ((n_bjets == 2) & is_lead & is_sublead).astype(np.int32),
+    }
+
+
 def _jet_composite_variables(
     jet_lead: Dict[str, np.ndarray],
     met_vars: Dict[str, np.ndarray],
@@ -312,6 +347,8 @@ _SCALAR_BRANCHES: Dict[str, Any] = {
     'costheta_star': np.float32,
     'njets': np.int32, 'n_bjets': np.int32, 'n_muons': np.int32,
     'n_electrons': np.int32, 'n_taus': np.int32, 'b_flavor_count': np.int32,
+    'is_lead_bjet': np.int32, 'is_sublead_bjet': np.int32,
+    'Bjet1bCond': np.int32, 'Bjet2bCond': np.int32,
     'n_z_muons': np.int32, 'n_z_electrons': np.int32, 'mll': np.float32, 'Zpt': np.float32,
     'Jet1Pt': np.float32, 'Jet1Eta': np.float32, 'Jet1Phi': np.float32,
     'Jet2Pt': np.float32, 'Jet2Eta': np.float32, 'Jet2Phi': np.float32,
@@ -445,6 +482,12 @@ def compute_event_variables(
 
     # --- Multiplicities ---
     out.update(_multiplicity_variables(objects))
+
+    # --- Positional b-tag flags (lead / sublead jet passes b-tag WP) ---
+    # Region-level cuts require the pt-leading (1b) or pt-leading+subleading (2b)
+    # jets to be the b-tagged ones. NanoAOD jets are pt-sorted and cleaning
+    # preserves order, so index 0/1 are the leading/subleading jets.
+    out.update(_positional_btag_flags(objects, config))
 
     # --- Leading jet scalars ---
     jets = objects.get('jets', ak.Array([]))

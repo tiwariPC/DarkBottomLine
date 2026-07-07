@@ -134,7 +134,7 @@ class Region:
 
             mask = mask & ak.fill_none(cut_mask, False, axis=0)
             n_pass = int(ak.sum(mask))
-            cutflow[f"After {var}"] = n_pass
+            cutflow[var] = n_pass
             after_cuts.append(f"{var}: {n_pass}")
 
         if after_cuts:
@@ -264,6 +264,42 @@ class Region:
                 if _fname in events.fields:
                     return events[_fname]
             return ak.Array(np.zeros(n_ev, dtype=np.int64))
+        if var in ("LeadingBjet", "SubleadingBjet", "Bjet1bCond", "Bjet2bCond"):
+            # Positional b-tag flags. LeadingBjet/SubleadingBjet: is the pt-leading
+            # (subleading) jet b-tagged. Bjet1bCond/Bjet2bCond: composite category
+            # condition merging the b-count with the positional requirement into a
+            # single region cut (one cutflow step):
+            #   Bjet1bCond = (Nbjets==1) & (lead jet b-tagged)
+            #   Bjet2bCond = (Nbjets==2) & (lead & sublead jets b-tagged)
+            _flat = {
+                "LeadingBjet": "is_lead_bjet", "SubleadingBjet": "is_sublead_bjet",
+                "Bjet1bCond": "Bjet1bCond", "Bjet2bCond": "Bjet2bCond",
+            }[var]
+            # Flat-branch path (EVENTSELECTION.root): use precomputed int flag.
+            if _flat in events.fields:
+                return ak.values_astype(events[_flat], np.int64)
+            # Objects path: recompute from jet btagScore vs WP.
+            jets = objects.get("jets", ak.Array([]))
+            if len(ak.flatten(jets)) == 0 or "btag_score" not in objects:
+                return ak.Array(np.zeros(n_ev, dtype=np.int64))
+            try:
+                wp = objects["btag_score"]
+                def _pos_b(idx):
+                    b = ak.pad_none(jets.btagScore, idx + 1, clip=True)[:, idx]
+                    return ak.fill_none(b, -9.0) > wp
+                if var == "LeadingBjet":
+                    flag = _pos_b(0)
+                elif var == "SubleadingBjet":
+                    flag = _pos_b(1)
+                else:
+                    nb = self._safe_num_axis1(objects.get("bjets", ak.Array([])), n_ev)
+                    if var == "Bjet1bCond":
+                        flag = (nb == 1) & _pos_b(0)
+                    else:
+                        flag = (nb == 2) & _pos_b(0) & _pos_b(1)
+                return ak.values_astype(ak.fill_none(flag, False, axis=0), np.int64)
+            except (Exception, BaseException):
+                return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "Jet1Pt":
             jets = objects.get("jets", ak.Array([]))
             if len(ak.flatten(jets)) == 0:

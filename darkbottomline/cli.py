@@ -462,7 +462,12 @@ def _run_analyzer_from_eventselection(args):
     cross_sections: Dict[str, float] = {}
     if getattr(args, "xsection_json", None):
         with open(args.xsection_json) as f:
-            cross_sections = json.load(f)
+            _raw_xsec = json.load(f)
+        # Flatten the nested {group: [{full_dataset, xsection, ...}]} JSON to a
+        # {full_dataset: xsec} dict so per-file lookup below works regardless of
+        # year (canonicalized via _find_xsec).
+        from darkbottomline.plotting import PlotManager
+        cross_sections = PlotManager._normalize_cross_sections(_raw_xsec)
 
     dnn_model  = getattr(args, "dnn_model",  None)
     dnn_config = getattr(args, "dnn_config", None)
@@ -485,9 +490,14 @@ def _run_analyzer_from_eventselection(args):
     merged_result: Optional[Dict] = None
     analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
 
+    from darkbottomline.plotting import _find_xsec
     for file_path in input_files:
         stem = Path(file_path).stem
-        xsec = cross_sections.get(stem) or cross_sections.get(Path(file_path).name)
+        # Canonicalized lookup so 2022/23 (_2J) and 2024 (Bin-2J-) stems, and the
+        # SMHiggs renames, all resolve to the right xsec.
+        xsec = _find_xsec(stem, cross_sections)
+        if xsec is None:
+            xsec = _find_xsec(stem.replace("_EVENTSELECTION", ""), cross_sections)
         try:
             with uproot.open(str(file_path)) as f:
                 wte = 0.0

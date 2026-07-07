@@ -113,27 +113,71 @@ def _should_load_key(key: str, variables: Optional[List[str]]) -> bool:
     return False
 
 
+# Some datasets were fully renamed between the 2022/2023 and 2024 campaigns
+# (not a simple token swap). Map each old core name to the canonical (2024 /
+# xsec-JSON) core so all years resolve to the same cross-section key.
+# Longer / more specific keys first — applied by substring, first match wins.
+_DATASET_ALIASES = [
+    # SM Higgs
+    ("ggZH_Hto2B_Zto2L_M-125",     "GluGluZH-Zto2L-Hto2B_Par-M-125"),
+    ("ggZH_Hto2B_Zto2Nu_M-125",    "GluGluZH-Zto2Nu-Hto2B_Par-M-125"),
+    ("WminusH_Hto2B_WtoLNu_M-125", "WminusH-WtoLNu-Hto2B_Par-M-125"),
+    ("WplusH_Hto2B_WtoLNu_M-125",  "WplusH-WtoLNu-Hto2B_Par-M-125"),
+    ("ZH_Hto2B_Zto2L_M-125",       "ZH-Zto2L-Hto2B_Par-M-125"),
+    ("ZH_Hto2B_Zto2Nu_M-125",      "ZH-Zto2Nu-Hto2B_Par-M-125"),
+    ("GluGluHto2B_M-125",          "GluGluH-Hto2B_Par-M-125"),
+    ("VBFHto2B_M-125",             "VBFH-Hto2B_Par-M-125"),
+    ("ttHto2B_M-125",              "TTH-Hto2B_Par-M-125"),
+    # Single top t-channel: 2022/23 "TBbarQ_t-channel_4FS" (underscore, no toLNu)
+    # → canonical 2024 "TBbarQtoLNu-t-channel-4FS".
+    ("TBbarQ_t-channel_4FS", "TBbarQtoLNu-t-channel-4FS"),
+    ("TbarBQ_t-channel_4FS", "TbarBQtoLNu-t-channel-4FS"),
+]
+
+
 def _clean_sample_name(name: str) -> str:
-    """Strip common suffixes (generator, tune, hadd, etc.) to get the core sample ID."""
+    """Canonicalize a dataset name to its cross-section-JSON core form.
+
+    Collapses the year-specific naming variants (V+jets jet-bin token, DY
+    dash/underscore, SM Higgs renames) and strips generator/tune/era suffixes so
+    that the 2022/2022EE/2023 and 2024 forms of a process — and the xsec JSON
+    ``full_dataset`` — all map to one identical string. Idempotent.
+    """
     # Ordered: longer/more specific first to avoid partial false matches
     suffixes = [
         "_EVENTSELECTION", "_hadd",
         "_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
         "_TuneCP5_13p6TeV_madgraphMLM-pythia8",
+        "_TuneCP5_13p6TeV_powhegMINLO-pythia8",
+        "_TuneCP5_13p6TeV_powheg-minlo-pythia8",
         "_TuneCP5_13p6TeV_powheg-pythia8",
         "_TuneCP5_13TeV_amcatnloFXFX-pythia8",
         "_TuneCP5_13TeV_madgraphMLM-pythia8",
         "_TuneCP5_13TeV_powheg-pythia8",
         "_TuneCUETP8M1_13TeV_amcatnloFXFX-pythia8",
         "_TuneCUETP8M1_13TeV_madgraphMLM-pythia8",
+        "_dipoleRecoilOn_TuneCP5_13p6TeV",
         "_TuneCP5_13p6TeV", "_TuneCP5_13TeV", "_TuneCUETP8M1_13TeV",
         "_13p6TeV", "_13TeV",
         "_nanoAOD", "_NANOAOD",
-        "_Run3Summer22", "_Run3Summer22EE", "_Run3Summer23",
+        "_Run3Summer22EE", "_Run3Summer22", "_Run3Summer23BPix",
+        "_Run3Summer23", "_RunIII2024Summer24",
     ]
     result = name
-    # Normalize v3 _Bin-2J naming (mid-name replacement, not truncation)
+    # 1. Old→canonical dataset renames (substring, most specific first)
+    for old, canon in _DATASET_ALIASES:
+        if old in result:
+            result = result.replace(old, canon)
+            break
+    # 2. V+jets jet-bin token → canonical (no bin token). Handles the 2024
+    #    "_Bin-2J-" prefix form and the 2022/2023 "_2J" infix/suffix form.
     result = result.replace("_Bin-2J-", "_").replace("_Bin-2J", "")
+    result = result.replace("_2J_", "_")
+    if result.endswith("_2J"):
+        result = result[:-len("_2J")]
+    # 3. DY dash/underscore: canonical JSON form uses MLL-50-PTLL (dash)
+    result = result.replace("MLL-50_PTLL", "MLL-50-PTLL")
+    # 4. Strip generator/tune/energy/era suffixes
     for suffix in suffixes:
         if suffix in result:
             result = result[:result.index(suffix)]
@@ -1456,12 +1500,18 @@ class PlotManager:
         )
         resolved: List[Path] = []
         matched_paths: set = set()
+        # Match on canonicalized forms so a pattern written in canonical form
+        # matches a file named in any year's convention (2J / Bin-2J / SMHiggs
+        # rename). Data patterns (JetMET-Run, EGamma-Run) are untouched by
+        # _clean_sample_name so they keep matching as before.
+        canon_names = {p: _clean_sample_name(p.name) for p in all_files}
         for pattern in patterns:
+            pat_canon = _clean_sample_name(pattern)
             pattern_hits = 0
             for p in all_files:
                 if p in matched_paths:
                     continue
-                if pattern in p.name:
+                if pat_canon in canon_names[p]:
                     resolved.append(p)
                     matched_paths.add(p)
                     pattern_hits += 1

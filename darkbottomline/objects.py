@@ -580,4 +580,5 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
         "z_pt_el": z_pt_el,
         "jets": cleaned_jets,
         "bjets": selected_bjets,
+        "btag_score": config["btagging"]["score"],
     }
