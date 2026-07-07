@@ -117,7 +117,7 @@ darkbottomline analyze \
     --config configs/2022.yaml \
     --input outputs/eventsel/ \
     --output-dir outputs/ \
-    --xsection-json scripts/xsection_background.json \
+    --xsection-json data/cross-section/xsection_background.json \
     --plot-config configs/plotting.yaml \
     --make-event-selection-plots
 ```
@@ -146,7 +146,7 @@ darkbottomline analyze \
     --regions-config configs/regions.yaml \
     --input outputs/eventsel/ \
     --output-dir outputs/ \
-    --xsection-json scripts/xsection_background.json \
+    --xsection-json data/cross-section/xsection_background.json \
     --plot-config configs/plotting.yaml \
     --make-region-plots
 
@@ -157,7 +157,7 @@ darkbottomline analyze \
     --regions-config configs/regions.yaml \
     --input outputs/eventsel/ \
     --output-dir outputs/ \
-    --xsection-json scripts/xsection_background.json \
+    --xsection-json data/cross-section/xsection_background.json \
     --plot-config configs/plotting.yaml \
     --make-region-plots \
     --plot-regions "1b:SR"
@@ -169,7 +169,7 @@ darkbottomline analyze \
     --regions-config configs/regions.yaml \
     --input outputs/eventsel/ \
     --output-dir outputs/ \
-    --xsection-json scripts/xsection_background.json \
+    --xsection-json data/cross-section/xsection_background.json \
     --plot-config configs/plotting.yaml \
     --make-region-plots \
     --plot-regions "1b:SR" "2b:SR" "1b:CR_Wmunu"
@@ -181,7 +181,7 @@ darkbottomline analyze \
     --regions-config configs/regions.yaml \
     --input outputs/eventsel/ \
     --output-dir outputs/ \
-    --xsection-json scripts/xsection_background.json \
+    --xsection-json data/cross-section/xsection_background.json \
     --plot-config configs/plotting.yaml \
     --make-region-plots \
     --show-data
@@ -193,7 +193,7 @@ darkbottomline analyze \
     --regions-config configs/regions.yaml \
     --input outputs/eventsel/ \
     --output-dir outputs/ \
-    --xsection-json scripts/xsection_background.json \
+    --xsection-json data/cross-section/xsection_background.json \
     --plot-config configs/plotting.yaml \
     --make-region-plots \
     --make-event-selection-plots
@@ -205,7 +205,7 @@ darkbottomline analyze \
     --regions-config configs/regions.yaml \
     --input outputs/eventsel/ \
     --output-dir outputs/ \
-    --xsection-json scripts/xsection_background.json \
+    --xsection-json data/cross-section/xsection_background.json \
     --plot-config configs/plotting.yaml \
     --make-region-plots \
     --plot-regions "1b:SR" \
@@ -217,8 +217,8 @@ darkbottomline analyze \
     --config configs/2022.yaml \
     --regions-config configs/regions.yaml \
     --input outputs/eventsel/ \
-    --xsection-json scripts/xsection_background.json \
-    --xsection-signal-json scripts/xsection_signal.json \
+    --xsection-json data/cross-section/xsection_background.json \
+    --xsection-signal-json data/cross-section/xsection_signal.json \
     --plot-config configs/plotting.yaml \
     --make-region-plots \
     --signal-scale 100 \
@@ -229,7 +229,7 @@ darkbottomline analyze \
 
 | Flag | Description |
 |------|-------------|
-| `--xsection-signal-json JSON` | Signal cross sections: `{model: {masspoint: xsec_pb}}` e.g. `scripts/xsection_signal.json` |
+| `--xsection-signal-json JSON` | Signal cross sections: `{model: {masspoint: xsec_pb}}` e.g. `data/cross-section/xsection_signal.json` |
 | `--signal-scale N` | Multiply all signal histograms by N for shape visibility (shown as `×N` in legend, default: 1) |
 | `--make-syst-plots` | Also produce central+UP+DOWN comparison plots per uncertainty (same output dirs as normal plots) |
 
@@ -271,7 +271,7 @@ darkbottomline analyze \
     --input /path/to/sample_NanoAOD.root \
     --event-selection-output outputs/eventsel/sample_EVENTSELECTION.root \
     --output-dir outputs/ \
-    --xsection-json scripts/xsection_background.json \
+    --xsection-json data/cross-section/xsection_background.json \
     --plot-config configs/plotting.yaml \
     --make-region-plots \
     [--make-event-selection-plots] \
@@ -322,7 +322,7 @@ process_groups:
     patterns: ["EGamma-Run"]
 ```
 
-Cross sections: `scripts/xsection_background.json` (keyed by filename stem).
+Cross sections: `data/cross-section/xsection_background.json` (keyed by filename stem).
 
 ### Signal group
 
@@ -425,7 +425,7 @@ recoil_600_200 = ev["Recoil"][mask]
 
 ### Cross sections
 
-Signal cross sections go in `scripts/xsection_signal.json`. Nested by model name (extensible for future signal models):
+Signal cross sections go in `data/cross-section/xsection_signal.json`. Nested by model name (extensible for future signal models):
 
 ```json
 {

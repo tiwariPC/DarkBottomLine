@@ -1819,7 +1819,7 @@ Examples:
     analyze_parser.add_argument("--xsection-json", default=None, metavar="JSON",
                                help="JSON mapping filename stem → cross-section in pb (region-analysis mode)")
     analyze_parser.add_argument("--xsection-signal-json", default=None, metavar="JSON",
-                               help="JSON with signal cross sections: {model: {masspoint: xsec_pb}} e.g. scripts/xsection_signal.json")
+                               help="JSON with signal cross sections: {model: {masspoint: xsec_pb}} e.g. data/cross-section/xsection_signal.json")
     analyze_parser.add_argument("--signal-scale", type=float, default=1.0, metavar="N",
                                help="Multiply all signal histograms by N for shape visibility (shown as ×N in legend, default: 1)")
     analyze_parser.add_argument("--make-syst-plots", action="store_true", default=False,

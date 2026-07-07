@@ -456,7 +456,7 @@ process_groups:
   # --- Signal process (drawn as dashed lines, one per GenModel masspoint) ---
   # PNG/PDF: first 3 masspoints overlaid as dashed lines.
   # ROOT: all masspoints saved as individual TH1s (sig_MH3_..._MH4_...).
-  # Cross sections per masspoint: scripts/xsection_signal.json keyed by "MH3_600_MH4_200_Mchi_1" etc.
+  # Cross sections per masspoint: data/cross-section/xsection_signal.json keyed by "MH3_600_MH4_200_Mchi_1" etc.
   Signal_2HDMa:
     type: signal
     patterns:
