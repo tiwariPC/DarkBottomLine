@@ -11,8 +11,9 @@ SENTINEL = -9.0  # fill value for variables undefined due to insufficient object
 
 # ---------------------------------------------------------------------------
 # Collection builders — single source of truth for each object's field list.
-# Both the select_* mask functions and build_objects zip via these, so the
-# field set never drifts between the two call sites.
+# build_objects zips the real collections once via these builders. The select_*
+# mask functions do NOT zip; they read the flat NanoAOD branches directly (same
+# pattern as select_jets), so each collection is zipped exactly once per chunk.
 # ---------------------------------------------------------------------------
 
 def build_muon_collection(events: ak.Array) -> ak.Array:
@@ -104,22 +105,22 @@ def select_muons(events: ak.Array, config: Dict[str, Any], wp: str = "loose") ->
     Returns:
         Boolean mask for selected muons
     """
-    muons = build_muon_collection(events)
-
+    # Mask reads flat branches directly (like select_jets) — no zip needed here.
+    # build_objects zips the real collection once via build_muon_collection.
     # Basic kinematic cuts: preselection uses pt_min_loose (default 10), region uses pt_min
     pt_min = config["pt_min_loose"] if wp == "loose" else config["pt_min"]
-    pt_mask = muons.pt > pt_min
-    eta_mask = abs(muons.eta) < config["eta_max"]
+    pt_mask = events["Muon_pt"] > pt_min
+    eta_mask = abs(events["Muon_eta"]) < config["eta_max"]
 
     # ID and isolation by working point. Both looseId and tightId are required
     # NanoAOD branches (loud KeyError if absent). tight muon is a strict subset
     # of loose, so tight WP uses tightId directly — no looseId fallback.
     iso_wp = config["iso_wp_loose"] if wp == "loose" else config["iso_wp_tight"]
-    iso_mask = muons.pfIsoId >= iso_wp
+    iso_mask = events["Muon_pfIsoId"] >= iso_wp
     if wp == "loose":
-        id_mask = muons.looseId == 1
+        id_mask = events["Muon_looseId"] == 1
     else:
-        id_mask = muons.tightId == 1
+        id_mask = events["Muon_tightId"] == 1
 
     selection_mask = pt_mask & eta_mask & id_mask & iso_mask
     return selection_mask
@@ -137,17 +138,18 @@ def select_electrons(events: ak.Array, config: Dict[str, Any], wp: str = "loose"
     Returns:
         Boolean mask for selected electrons
     """
-    electrons = build_electron_collection(events)
+    # Mask reads flat branches directly (like select_jets) — no zip needed here.
+    ele_eta = events["Electron_eta"]
 
     # Basic kinematic cuts: preselection uses pt_min_loose (default 10), region uses pt_min
     pt_min = config["pt_min_loose"] if wp == "loose" else config["pt_min"]
-    pt_mask = electrons.pt > pt_min
-    eta_mask = abs(electrons.eta) < config["eta_max"]
+    pt_mask = events["Electron_pt"] > pt_min
+    eta_mask = abs(ele_eta) < config["eta_max"]
 
     # ECAL barrel-endcap gap veto: exclude 1.4442 < |eta| < 1.566
     eta_gap_min = 1.4442
     eta_gap_max = 1.566
-    in_gap = (abs(electrons.eta) > eta_gap_min) & (abs(electrons.eta) < eta_gap_max)
+    in_gap = (abs(ele_eta) > eta_gap_min) & (abs(ele_eta) < eta_gap_max)
     gap_veto_mask = ~in_gap
 
     # ID + isolation by working point:
@@ -155,11 +157,11 @@ def select_electrons(events: ak.Array, config: Dict[str, Any], wp: str = "loose"
     #   tight  = cutBased >= id_wp_tight (4)  AND mvaIso_WP80
     if wp == "loose":
         id_wp = config["id_wp_loose"]
-        iso_mask = electrons.mvaIso_WP90 == 1
+        iso_mask = events["Electron_mvaIso_WP90"] == 1
     else:
         id_wp = config["id_wp_tight"]
-        iso_mask = electrons.mvaIso_WP80 == 1
-    id_mask = electrons.cutBased >= id_wp
+        iso_mask = events["Electron_mvaIso_WP80"] == 1
+    id_mask = events["Electron_cutBased"] >= id_wp
 
     selection_mask = pt_mask & eta_mask & gap_veto_mask & id_mask & iso_mask
     return selection_mask
@@ -177,37 +179,38 @@ def select_taus(events: ak.Array, config: Dict[str, Any], wp: str = "loose") -> 
     Returns:
         Boolean mask for selected taus
     """
-    taus = build_tau_collection(events)
-
+    # Mask reads flat branches directly (like select_jets) — no zip needed here.
     # Taus use single pt_min (20 GeV) for both loose and tight — no separate loose threshold
     pt_min = config["pt_min"]
-    pt_mask = taus.pt > pt_min
-    eta_mask = abs(taus.eta) < config["eta_max"]
+    pt_mask = events["Tau_pt"] > pt_min
+    eta_mask = abs(events["Tau_eta"]) < config["eta_max"]
 
     # Tau is a veto object — no tight WP. Single set of DeepTau2018v2p5 WPs
     # applied identically for both loose and tight calls:
     #   VSjet >= id_wp_vsjet (VLoose=3), VSe >= id_wp_vse (VVVLoose=1),
     #   VSmu >= id_wp_vsmu (VLoose=1). All three ANDed.
     id_mask = (
-        (taus.idDeepTau2018v2p5VSjet >= config["id_wp_vsjet"])
-        & (taus.idDeepTau2018v2p5VSe >= config["id_wp_vse"])
-        & (taus.idDeepTau2018v2p5VSmu >= config["id_wp_vsmu"])
+        (events["Tau_idDeepTau2018v2p5VSjet"] >= config["id_wp_vsjet"])
+        & (events["Tau_idDeepTau2018v2p5VSe"] >= config["id_wp_vse"])
+        & (events["Tau_idDeepTau2018v2p5VSmu"] >= config["id_wp_vsmu"])
     )
     # Check if decay mode is in allowed modes
-    decay_mode_mask = ak.zeros_like(taus.pt, dtype=bool)
+    tau_decay_mode = events["Tau_decayMode"]
+    decay_mode_mask = ak.zeros_like(tau_decay_mode, dtype=bool)
     for mode in config["decay_modes"]:
-        decay_mode_mask = decay_mode_mask | (taus.decayMode == mode)
+        decay_mode_mask = decay_mode_mask | (tau_decay_mode == mode)
 
     selection_mask = pt_mask & eta_mask & id_mask & decay_mode_mask
     return selection_mask
 
 
 def select_photons(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
-    """Select photons for veto: loose ID, pt > 15, |eta| < 2.5."""
-    photons = build_photon_collection(events)
-    pt_mask = photons.pt > config["pt_min"]
-    eta_mask = abs(photons.eta) < config["eta_max"]
-    id_mask = photons.cutBased >= config["id_wp_loose"]
+    """Select photons for veto: loose ID, pt > 15, |eta| < 2.5.
+
+    Mask reads flat branches directly (like select_jets) — no zip needed here."""
+    pt_mask = events["Photon_pt"] > config["pt_min"]
+    eta_mask = abs(events["Photon_eta"]) < config["eta_max"]
+    id_mask = events["Photon_cutBased"] >= config["id_wp_loose"]
     return pt_mask & eta_mask & id_mask
 
 
