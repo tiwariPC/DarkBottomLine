@@ -1620,10 +1620,17 @@ def make_event_plots(args):
                     _ds = _e.get("full_dataset") or _e.get("dataset")
                     _xsec = _e.get("xsection")
                     _yr = str(_e.get("year", ""))
-                    if _ds and _xsec is not None:
+                    if _ds is None or _xsec is None:
+                        continue
+                    # full_dataset may be a single name or a list of per-era
+                    # dataset-name variants — register each variant as a key.
+                    _names = _ds if isinstance(_ds, (list, tuple)) else [_ds]
+                    for _name in _names:
+                        if not _name:
+                            continue
                         # prefer matching year; always overwrite so last match wins
-                        if not year_str or _yr == year_str or _ds not in cross_sections:
-                            cross_sections[_ds] = float(_xsec)
+                        if not year_str or _yr == year_str or _name not in cross_sections:
+                            cross_sections[_name] = float(_xsec)
             elif isinstance(_entries, (int, float)):
                 # already flat: {stem: xsec}
                 cross_sections[_cat] = float(_entries)

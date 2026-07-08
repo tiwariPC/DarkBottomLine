@@ -1,0 +1,39 @@
+# ---------------------------------------------------------------------------
+# Condor submit: MET-trigger skim, one job per samplelist .txt.
+#
+# Each job runs `met_trigger_efficiency.py skim` on a single text file and writes
+# one skim ROOT per ROOT path listed inside it: <OUTDIR>/<txtstem>_<rootid>.root
+#
+# Edit the four variables below, then:  condor_submit submit.sub
+#
+#   REPO_DIR : absolute path to this DarkBottomLine checkout (on a shared FS)
+#   CONFIG   : year YAML (any era), e.g. configs/2024.yaml
+#   OUTDIR   : where skim ROOTs land (you set this; must be condor-visible)
+#   JOBLIST  : file with one "<kind> <txtpath>" per line (make_joblist.sh builds it)
+# ---------------------------------------------------------------------------
+
+REPO_DIR = /afs/cern.ch/user/CHANGE/ME/DarkBottomLine
+CONFIG   = configs/2024.yaml
+OUTDIR   = /eos/user/CHANGE/ME/met_trigger_skims/2024
+JOBLIST  = condorJobs/met_trigger/joblist.txt
+
+executable            = condorJobs/met_trigger/run_skim.sh
+arguments             = $(REPO_DIR) $(CONFIG) $(OUTDIR) $(KIND) $(TXTFILE)
+
+# Grid proxy for XRootD (create with voms-proxy-init before submitting).
+x509userproxy         = $ENV(X509_USER_PROXY)
+use_x509userproxy     = true
+
+universe              = vanilla
+output                = condorJobs/met_trigger/logs/skim_$(ClusterId)_$(ProcId).out
+error                 = condorJobs/met_trigger/logs/skim_$(ClusterId)_$(ProcId).err
+log                   = condorJobs/met_trigger/logs/skim_$(ClusterId).log
+
+# Resources — a skim over one samplelist's files; bump if the txt is large.
+request_cpus          = 1
+request_memory        = 4 GB
+request_disk          = 4 GB
++JobFlavour           = "workday"
+
+# One job per line of JOBLIST: first token = KIND (data|mc), second = TXTFILE.
+queue KIND, TXTFILE from $(JOBLIST)

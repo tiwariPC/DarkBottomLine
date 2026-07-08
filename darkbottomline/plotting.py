@@ -1478,7 +1478,14 @@ class PlotManager:
                     continue
                 _xs_f = float(_xs)
                 _fd = _entry.get("full_dataset")
-                if _fd:
+                # full_dataset may be a single name (str) or a list of
+                # per-era dataset-name variants — register every one so a
+                # match on any variant resolves to this process's xsec.
+                if isinstance(_fd, (list, tuple)):
+                    for _name in _fd:
+                        if _name:
+                            _flat_xs[str(_name)] = _xs_f
+                elif _fd:
                     _flat_xs[str(_fd)] = _xs_f
                 _proc = _entry.get("process")
                 if _proc:
