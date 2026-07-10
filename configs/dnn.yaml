@@ -7,7 +7,7 @@ model:
   hidden_layers: "128,64,32"  # Hidden layer sizes
   activation: "relu"  # Activation function
   dropout: 0.2  # Dropout rate
-  parametric_input: true  # Include mass parameter as input
+  parametric_input: false  # Include mass parameter as input
   output_activation: "sigmoid"  # Output activation (0-1 for binary classification)
 
 # Training parameters

@@ -1326,33 +1326,47 @@ def apply_dnn(args):
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    skipped = []
     for fpath in input_files:
-        with uproot.open(fpath) as in_f:
-            if "Events" not in in_f:
-                logging.warning("No 'Events' tree in %s, skipping", fpath)
-                continue
-            tree = in_f["Events"]
-            df, _, _ = build_feature_frame_from_tree(tree, features)
-            df = sanitize_feature_frame(df)
-            n = len(df)
-            X = df.to_numpy(dtype="f8")
-            masses = np.zeros(n, dtype="f8")
-            scores = inference.predict(X, masses).ravel()
+        try:
+            with uproot.open(fpath) as in_f:
+                if "Events" not in in_f:
+                    logging.warning("No 'Events' tree in %s, skipping", fpath)
+                    skipped.append((fpath, "No Events tree"))
+                    continue
+                tree = in_f["Events"]
+                df, _, _ = build_feature_frame_from_tree(tree, features)
+                df = sanitize_feature_frame(df)
+                n = len(df)
+                X = df.to_numpy(dtype="f8")
+                masses = np.zeros(n, dtype="f8")
+                scores = inference.predict(X, masses).ravel()
 
-            # Collect all existing branches
-            arrays = tree.arrays(library="np")
+                # Collect all existing branches
+                arrays = tree.arrays(library="np")
 
-        arrays[score_branch] = scores.astype("f4")
+            arrays[score_branch] = scores.astype("f4")
 
-        if output_dir:
-            out_path = output_dir / Path(fpath).name
-        else:
-            out_path = fpath  # overwrite in-place
+            if output_dir:
+                out_path = output_dir / Path(fpath).name
+            else:
+                out_path = fpath
 
-        with uproot.recreate(str(out_path)) as out_f:
-            out_f["Events"] = arrays
+            with uproot.recreate(str(out_path)) as out_f:
+                out_f["Events"] = arrays
 
-        logging.info("Scored %s: n=%d → %s (branch: %s)", Path(fpath).name, n, out_path, score_branch)
+            logging.info("Scored %s: n=%d → %s (branch: %s)", Path(fpath).name, n, out_path, score_branch)
+        except Exception as _exc:
+            logging.warning("Failed to score %s — skipping (%s)", fpath, _exc)
+            skipped.append((fpath, str(_exc)[:120]))
+
+    if skipped:
+        logging.warning("=" * 60)
+        logging.warning("SKIPPED FILES SUMMARY (%d total):", len(skipped))
+        for fpath, reason in skipped:
+            logging.warning("  SKIP: %s", fpath)
+            logging.warning("        %s", reason)
+        logging.warning("=" * 60)
 
 
 def make_plots(args):
