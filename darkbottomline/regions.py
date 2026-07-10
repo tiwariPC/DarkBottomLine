@@ -134,7 +134,7 @@ class Region:
 
             mask = mask & ak.fill_none(cut_mask, False, axis=0)
             n_pass = int(ak.sum(mask))
-            cutflow[f"After {var}"] = n_pass
+            cutflow[var] = n_pass
             after_cuts.append(f"{var}: {n_pass}")
 
         if after_cuts:
@@ -252,7 +252,7 @@ class Region:
         if var == "Njets":
             if "jets" in objects:
                 return self._safe_num_axis1(objects["jets"], n_ev)
-            for _fname in ("Njets_PassID", "n_jets"):
+            for _fname in ("njets", "n_jets"):
                 if _fname in events.fields:
                     return events[_fname]
             return ak.Array(np.zeros(n_ev, dtype=np.int64))
@@ -260,10 +260,46 @@ class Region:
             # Lower bound on jet multiplicity — same variable as Njets, distinct key for clarity
             if "jets" in objects:
                 return self._safe_num_axis1(objects["jets"], n_ev)
-            for _fname in ("Njets_PassID", "n_jets"):
+            for _fname in ("njets", "n_jets"):
                 if _fname in events.fields:
                     return events[_fname]
             return ak.Array(np.zeros(n_ev, dtype=np.int64))
+        if var in ("LeadingBjet", "SubleadingBjet", "Bjet1bCond", "Bjet2bCond"):
+            # Positional b-tag flags. LeadingBjet/SubleadingBjet: is the pt-leading
+            # (subleading) jet b-tagged. Bjet1bCond/Bjet2bCond: composite category
+            # condition merging the b-count with the positional requirement into a
+            # single region cut (one cutflow step):
+            #   Bjet1bCond = (Nbjets==1) & (lead jet b-tagged)
+            #   Bjet2bCond = (Nbjets==2) & (lead & sublead jets b-tagged)
+            _flat = {
+                "LeadingBjet": "is_lead_bjet", "SubleadingBjet": "is_sublead_bjet",
+                "Bjet1bCond": "Bjet1bCond", "Bjet2bCond": "Bjet2bCond",
+            }[var]
+            # Flat-branch path (EVENTSELECTION.root): use precomputed int flag.
+            if _flat in events.fields:
+                return ak.values_astype(events[_flat], np.int64)
+            # Objects path: recompute from jet btagScore vs WP.
+            jets = objects.get("jets", ak.Array([]))
+            if len(ak.flatten(jets)) == 0 or "btag_score" not in objects:
+                return ak.Array(np.zeros(n_ev, dtype=np.int64))
+            try:
+                wp = objects["btag_score"]
+                def _pos_b(idx):
+                    b = ak.pad_none(jets.btagScore, idx + 1, clip=True)[:, idx]
+                    return ak.fill_none(b, -9.0) > wp
+                if var == "LeadingBjet":
+                    flag = _pos_b(0)
+                elif var == "SubleadingBjet":
+                    flag = _pos_b(1)
+                else:
+                    nb = self._safe_num_axis1(objects.get("bjets", ak.Array([])), n_ev)
+                    if var == "Bjet1bCond":
+                        flag = (nb == 1) & _pos_b(0)
+                    else:
+                        flag = (nb == 2) & _pos_b(0) & _pos_b(1)
+                return ak.values_astype(ak.fill_none(flag, False, axis=0), np.int64)
+            except (Exception, BaseException):
+                return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "Jet1Pt":
             jets = objects.get("jets", ak.Array([]))
             if len(ak.flatten(jets)) == 0:
@@ -327,7 +363,7 @@ class Region:
                 n_bjets = self._safe_num_axis1(objects.get("bjets", ak.Array([])), n_ev)
                 return n_jets - n_bjets
             # Flat-branch fallback
-            _nj = events["Njets_PassID"] if "Njets_PassID" in events.fields else (
+            _nj = events["njets"] if "njets" in events.fields else (
                 events["n_jets"] if "n_jets" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64)))
             _nb = events["n_bjets"] if "n_bjets" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64))
             return _nj - _nb
@@ -457,22 +493,22 @@ class Region:
                 except (Exception, BaseException):
                     return np.zeros(n_ev, dtype=np.float64)
         if var == "Zpt":
-            # pT of dilepton system from scalar lep1/lep2 branches
-            for (l1pt_f, l1phi_f, l2pt_f, l2phi_f) in (
-                ("muon_lep1_pt",     "muon_lep1_phi",     "muon_lep2_pt",     "muon_lep2_phi"),
-                ("electron_lep1_pt", "electron_lep1_phi", "electron_lep2_pt", "electron_lep2_phi"),
-            ):
-                if all(f in events.fields for f in (l1pt_f, l1phi_f, l2pt_f, l2phi_f)):
-                    try:
-                        l1pt  = events[l1pt_f];  l1phi = events[l1phi_f]
-                        l2pt  = events[l2pt_f];  l2phi = events[l2phi_f]
-                        has2  = (l1pt > 0) & (l2pt > 0)
-                        px    = l1pt * np.cos(l1phi) + l2pt * np.cos(l2phi)
-                        py    = l1pt * np.sin(l1phi) + l2pt * np.sin(l2phi)
-                        zpt   = ak.where(has2, np.sqrt(px**2 + py**2), 0.0)
-                        return ak.fill_none(zpt, 0.0, axis=0)
-                    except Exception:
-                        pass
+            # pT of the Z candidate dilepton system, computed in build_z_candidates
+            # from the same candidate leptons as Mll.
+            # Flat-branch path (reading EVENTSELECTION.root): use the Zpt branch.
+            if "Zpt" in events.fields:
+                return ak.fill_none(ak.values_astype(events["Zpt"], float), 0.0)
+            # Objects path: merge muon/electron candidate pT by Z-candidate flavor.
+            z_pt_mu = objects.get("z_pt_mu")
+            z_pt_el = objects.get("z_pt_el")
+            if z_pt_mu is not None and z_pt_el is not None:
+                n_z_mu = objects.get("n_z_muons", self._zeros_like_events(events, n_ev, dtype=int))
+                n_z_el = objects.get("n_z_electrons", self._zeros_like_events(events, n_ev, dtype=int))
+                zpt = ak.where(n_z_mu == 2, z_pt_mu, ak.where(n_z_el == 2, z_pt_el, 0.0))
+                try:
+                    return ak.fill_none(zpt, 0.0, axis=0)
+                except (Exception, BaseException):
+                    return np.zeros(n_ev, dtype=np.float64)
             return np.zeros(n_ev, dtype=np.float64)
         if var == "DeltaPhi":
             jets = objects.get("jets", ak.Array([]))

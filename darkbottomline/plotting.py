@@ -38,6 +38,37 @@ from utils.plot_utils import (
 
 _SENTINEL = -9.0
 
+# Pseudo-variables: plotted like a normal variable but sourced from a different
+# branch and/or weighted by a different weight branch. Used for cross-check plots
+# that reuse an existing quantity with an alternate event weight.
+#   _VAR_VALUE_ALIAS   : plot-variable name -> branch name to read values from
+#   _VAR_WEIGHT_OVERRIDE: plot-variable name -> weight branch to use (instead of
+#                         full_event_weight / the active systematic weight)
+# PV_npvsGood_noPU = PV_npvsGood weighted WITHOUT the pileup reweight (all other
+# SFs kept), via the weight_noPileup branch. Data/MC pileup validation: reweighted
+# MC (PV_npvsGood) and un-reweighted MC (PV_npvsGood_noPU) each compared to data.
+_VAR_VALUE_ALIAS: Dict[str, str] = {
+    "PV_npvsGood_noPU": "PV_npvsGood",
+}
+_VAR_WEIGHT_OVERRIDE: Dict[str, str] = {
+    "PV_npvsGood_noPU": "weight_noPileup",
+}
+
+
+def _value_branch(var: str) -> str:
+    """Branch to read plot values from (identity unless var is a pseudo-variable)."""
+    return _VAR_VALUE_ALIAS.get(var, var)
+
+
+def _bins_key(var: str) -> str:
+    """Config key for binning (pseudo-variables share their source var's bins)."""
+    return _VAR_VALUE_ALIAS.get(var, var)
+
+
+def _weight_branch_for(var: str, default_weight: str) -> str:
+    """Weight branch for this variable (override for pseudo-variables)."""
+    return _VAR_WEIGHT_OVERRIDE.get(var, default_weight)
+
 
 def _is_number(v: Any) -> bool:
     return isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool)
@@ -82,25 +113,71 @@ def _should_load_key(key: str, variables: Optional[List[str]]) -> bool:
     return False
 
 
+# Some datasets were fully renamed between the 2022/2023 and 2024 campaigns
+# (not a simple token swap). Map each old core name to the canonical (2024 /
+# xsec-JSON) core so all years resolve to the same cross-section key.
+# Longer / more specific keys first — applied by substring, first match wins.
+_DATASET_ALIASES = [
+    # SM Higgs
+    ("ggZH_Hto2B_Zto2L_M-125",     "GluGluZH-Zto2L-Hto2B_Par-M-125"),
+    ("ggZH_Hto2B_Zto2Nu_M-125",    "GluGluZH-Zto2Nu-Hto2B_Par-M-125"),
+    ("WminusH_Hto2B_WtoLNu_M-125", "WminusH-WtoLNu-Hto2B_Par-M-125"),
+    ("WplusH_Hto2B_WtoLNu_M-125",  "WplusH-WtoLNu-Hto2B_Par-M-125"),
+    ("ZH_Hto2B_Zto2L_M-125",       "ZH-Zto2L-Hto2B_Par-M-125"),
+    ("ZH_Hto2B_Zto2Nu_M-125",      "ZH-Zto2Nu-Hto2B_Par-M-125"),
+    ("GluGluHto2B_M-125",          "GluGluH-Hto2B_Par-M-125"),
+    ("VBFHto2B_M-125",             "VBFH-Hto2B_Par-M-125"),
+    ("ttHto2B_M-125",              "TTH-Hto2B_Par-M-125"),
+    # Single top t-channel: 2022/23 "TBbarQ_t-channel_4FS" (underscore, no toLNu)
+    # → canonical 2024 "TBbarQtoLNu-t-channel-4FS".
+    ("TBbarQ_t-channel_4FS", "TBbarQtoLNu-t-channel-4FS"),
+    ("TbarBQ_t-channel_4FS", "TbarBQtoLNu-t-channel-4FS"),
+]
+
+
 def _clean_sample_name(name: str) -> str:
-    """Strip common suffixes (generator, tune, hadd, etc.) to get the core sample ID."""
+    """Canonicalize a dataset name to its cross-section-JSON core form.
+
+    Collapses the year-specific naming variants (V+jets jet-bin token, DY
+    dash/underscore, SM Higgs renames) and strips generator/tune/era suffixes so
+    that the 2022/2022EE/2023 and 2024 forms of a process — and the xsec JSON
+    ``full_dataset`` — all map to one identical string. Idempotent.
+    """
     # Ordered: longer/more specific first to avoid partial false matches
     suffixes = [
         "_EVENTSELECTION", "_hadd",
         "_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
         "_TuneCP5_13p6TeV_madgraphMLM-pythia8",
+        "_TuneCP5_13p6TeV_powhegMINLO-pythia8",
+        "_TuneCP5_13p6TeV_powheg-minlo-pythia8",
         "_TuneCP5_13p6TeV_powheg-pythia8",
         "_TuneCP5_13TeV_amcatnloFXFX-pythia8",
         "_TuneCP5_13TeV_madgraphMLM-pythia8",
         "_TuneCP5_13TeV_powheg-pythia8",
         "_TuneCUETP8M1_13TeV_amcatnloFXFX-pythia8",
         "_TuneCUETP8M1_13TeV_madgraphMLM-pythia8",
+        "_dipoleRecoilOn_TuneCP5_13p6TeV",
         "_TuneCP5_13p6TeV", "_TuneCP5_13TeV", "_TuneCUETP8M1_13TeV",
         "_13p6TeV", "_13TeV",
         "_nanoAOD", "_NANOAOD",
-        "_Run3Summer22", "_Run3Summer22EE", "_Run3Summer23",
+        "_Run3Summer22EE", "_Run3Summer22", "_Run3Summer23BPix",
+        "_Run3Summer23", "_RunIII2024Summer24",
     ]
     result = name
+    # 1. Old→canonical dataset renames (substring, most specific first)
+    for old, canon in _DATASET_ALIASES:
+        if old in result:
+            result = result.replace(old, canon)
+            break
+    # 2. V+jets jet-bin token → canonical (no bin token). Handles the 2024
+    #    "_Bin-2J-" prefix form and the 2022/2023 "_2J" infix/suffix form.
+    result = result.replace("_Bin-2J-", "_").replace("_Bin-2J", "")
+    result = result.replace("_2J_", "_")
+    if result.endswith("_2J"):
+        result = result[:-len("_2J")]
+    # 3. DY dash/underscore: canonical JSON form uses MLL-50-PTLL (dash)
+    result = result.replace("MLL-50_PTLL", "MLL-50-PTLL")
+    # 4. Strip generator/tune/energy/era suffixes
     for suffix in suffixes:
         if suffix in result:
             result = result[:result.index(suffix)]
@@ -1401,7 +1478,14 @@ class PlotManager:
                     continue
                 _xs_f = float(_xs)
                 _fd = _entry.get("full_dataset")
-                if _fd:
+                # full_dataset may be a single name (str) or a list of
+                # per-era dataset-name variants — register every one so a
+                # match on any variant resolves to this process's xsec.
+                if isinstance(_fd, (list, tuple)):
+                    for _name in _fd:
+                        if _name:
+                            _flat_xs[str(_name)] = _xs_f
+                elif _fd:
                     _flat_xs[str(_fd)] = _xs_f
                 _proc = _entry.get("process")
                 if _proc:
@@ -1423,12 +1507,18 @@ class PlotManager:
         )
         resolved: List[Path] = []
         matched_paths: set = set()
+        # Match on canonicalized forms so a pattern written in canonical form
+        # matches a file named in any year's convention (2J / Bin-2J / SMHiggs
+        # rename). Data patterns (JetMET-Run, EGamma-Run) are untouched by
+        # _clean_sample_name so they keep matching as before.
+        canon_names = {p: _clean_sample_name(p.name) for p in all_files}
         for pattern in patterns:
+            pat_canon = _clean_sample_name(pattern)
             pattern_hits = 0
             for p in all_files:
                 if p in matched_paths:
                     continue
-                if pattern in p.name:
+                if pat_canon in canon_names[p]:
                     resolved.append(p)
                     matched_paths.add(p)
                     pattern_hits += 1
@@ -1980,8 +2070,10 @@ class PlotManager:
                         "weight_", "full_event_weight", "pass_met_trigger",
                         "pass_ele_trigger", "GenModel_", "event", "run",
                         # object counts for region cuts
-                        "n_bjets", "Njets_PassID", "n_muons", "n_electrons", "n_taus",
+                        "n_bjets", "njets", "n_muons", "n_electrons", "n_taus",
                         "n_z_muons", "n_z_electrons",
+                        # reco primary vertices (source for PV_npvsGood[_noPU] data/MC plots)
+                        "PV_npvsGood", "PV_npvs",
                         # MET branches for MT, Mll, Recoil cuts
                         "MET_pt", "MET_phi", "PuppiMET_pt", "PuppiMET_phi",
                         "Recoil", "Recoil_JES", "Recoil_JER",
@@ -2250,7 +2342,7 @@ class PlotManager:
                             continue
                         mask_np = _cached["mask_np"]
                         events_ak = _cached["events_ak"]
-                        vals_raw = br.get(var)
+                        vals_raw = br.get(_value_branch(var))
                         if vals_raw is None:
                             # Try computing derived variable (mt, z_mass, z_pt, etc.)
                             # that isn't stored as a flat branch but is derivable from
@@ -2261,7 +2353,7 @@ class PlotManager:
                                 "z_pt":   "Zpt",
                                 "mll":    "Mll",
                             }
-                            _canon = _var_map.get(var, var)
+                            _canon = _var_map.get(_value_branch(var), _value_branch(var))
                             try:
                                 _derived = region_obj._get_variable_value(events_ak, objects={}, var=_canon)
                                 if _derived is not None:
@@ -2291,7 +2383,7 @@ class PlotManager:
                         if vals.size == 0:
                             continue
 
-                        w_arr = br.get(weight_branch)
+                        w_arr = br.get(_weight_branch_for(var, weight_branch))
                         if w_arr is not None:
                             w = np.asarray(w_arr, dtype=float)[mask_np][sentinel_mask]
                         else:
@@ -2305,11 +2397,11 @@ class PlotManager:
                             all_vals_for_bins = []
                             for ee in bkg_entries.values():
                                 for e2 in ee:
-                                    v2 = e2["branches"].get(var, np.array([]))
+                                    v2 = e2["branches"].get(_value_branch(var), np.array([]))
                                     if isinstance(v2, np.ndarray) and v2.dtype != object:
-                                        all_vals_for_bins.append(_apply_variable_plot_filter(var, v2))
+                                        all_vals_for_bins.append(_apply_variable_plot_filter(_bins_key(var), v2))
                             bins_ref = _make_bins(all_vals_for_bins, self._build_bins_from_config,
-                                                  var, self._n_bins_default)
+                                                  _bins_key(var), self._n_bins_default)
                             if bins_ref is None or len(bins_ref) < 2:
                                 break
 
@@ -2364,10 +2456,10 @@ class PlotManager:
                                 continue
                             mask_d_np = _dcached["mask_np"]
                             _devents_ak = _dcached["events_ak"]
-                            _dvals_raw = br.get(var)
+                            _dvals_raw = br.get(_value_branch(var))
                             if _dvals_raw is None:
                                 _var_map = {"mt": "MT", "z_mass": "Mll", "z_pt": "Zpt", "mll": "Mll"}
-                                _canon = _var_map.get(var, var)
+                                _canon = _var_map.get(_value_branch(var), _value_branch(var))
                                 try:
                                     _derived = region_obj._get_variable_value(_devents_ak, objects={}, var=_canon)
                                     if _derived is not None:

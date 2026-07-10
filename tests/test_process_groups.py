@@ -17,6 +17,8 @@ from darkbottomline.plotting import (
     _histogram_and_sumw2,
     _histogram_counts,
     _apply_variable_plot_filter,
+    _clean_sample_name,
+    _find_xsec,
 )
 
 
@@ -418,3 +420,133 @@ class TestPlotManagerDefaultYaml:
         for label, patterns in pm.process_groups.items():
             for p in patterns:
                 assert isinstance(p, str), f"{label}: pattern {p!r} is not a string"
+
+
+# ---------------------------------------------------------------------------
+# Cross-year dataset-name canonicalization (_clean_sample_name / _find_xsec)
+# ---------------------------------------------------------------------------
+
+_TUNE  = "_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+_POW   = "_TuneCP5_13p6TeV_powheg-pythia8"
+_MINLO = "_TuneCP5_13p6TeV_powhegMINLO-pythia8"
+_OLDMINLO = "_TuneCP5_13p6TeV_powheg-minlo-pythia8"
+
+
+class TestCrossYearCanonicalization:
+    """The 2022/2022EE/2023 (_2J) and 2024 (Bin-2J-) forms of each process, and
+    the SM Higgs old/new renames, must collapse to one canonical string equal to
+    the xsec-JSON full_dataset core."""
+
+    # (old 2022/23 name, new 2024 name, expected canonical core)
+    PAIRS = [
+        ("WtoLNu-2Jets_PTLNu-40to100_2J" + _TUNE,
+         "WtoLNu-2Jets_Bin-2J-PTLNu-40to100" + _TUNE,
+         "WtoLNu-2Jets_PTLNu-40to100"),
+        ("WtoLNu-2Jets_PTLNu-200to400_2J" + _TUNE,
+         "WtoLNu-2Jets_Bin-2J-PTLNu-200to400" + _TUNE,
+         "WtoLNu-2Jets_PTLNu-200to400"),
+        ("Zto2Nu-2Jets_PTNuNu-600_2J" + _TUNE,
+         "Zto2Nu-2Jets_Bin-2J-PTNuNu-600" + _TUNE,
+         "Zto2Nu-2Jets_PTNuNu-600"),
+        ("DYto2L-2Jets_MLL-50_PTLL-100to200_2J" + _TUNE,
+         "DYto2L-2Jets_Bin-2J-MLL-50-PTLL-100to200" + _TUNE,
+         "DYto2L-2Jets_MLL-50-PTLL-100to200"),
+        ("GluGluHto2B_M-125" + _OLDMINLO,
+         "GluGluH-Hto2B_Par-M-125" + _MINLO,
+         "GluGluH-Hto2B_Par-M-125"),
+        ("ZH_Hto2B_Zto2Nu_M-125" + _OLDMINLO,
+         "ZH-Zto2Nu-Hto2B_Par-M-125" + _MINLO,
+         "ZH-Zto2Nu-Hto2B_Par-M-125"),
+        ("WminusH_Hto2B_WtoLNu_M-125" + _POW,
+         "WminusH-WtoLNu-Hto2B_Par-M-125" + _MINLO,
+         "WminusH-WtoLNu-Hto2B_Par-M-125"),
+        ("ttHto2B_M-125" + _POW,
+         "TTH-Hto2B_Par-M-125" + _POW,
+         "TTH-Hto2B_Par-M-125"),
+        # Single top t-channel: 2022/23 underscore/no-toLNu vs 2024 dash/toLNu
+        ("TBbarQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+         "TBbarQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+         "TBbarQtoLNu-t-channel-4FS"),
+        ("TbarBQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+         "TbarBQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+         "TbarBQtoLNu-t-channel-4FS"),
+    ]
+
+    @pytest.mark.parametrize("old,new,canon", PAIRS)
+    def test_years_collapse_to_same_canonical(self, old, new, canon):
+        c_old = _clean_sample_name(old)
+        c_new = _clean_sample_name(new)
+        assert c_old == canon, f"{old} -> {c_old}, expected {canon}"
+        assert c_new == canon, f"{new} -> {c_new}, expected {canon}"
+
+    @pytest.mark.parametrize("old,new,canon", PAIRS)
+    def test_idempotent(self, old, new, canon):
+        for n in (old, new):
+            once = _clean_sample_name(n)
+            assert _clean_sample_name(once) == once
+
+    def test_data_names_untouched(self):
+        # Data primary datasets must keep their -Run tag (matched by data patterns)
+        for name in ("JetMET-Run2022C-22Sep2023-v1",
+                     "JetMET0-Run2024C-MINIv6NANOv15-v1",
+                     "EGamma0-Run2024D-MINIv6NANOv15-v1"):
+            assert "-Run" in _clean_sample_name(name)
+
+    def test_find_xsec_resolves_all_years(self):
+        json_path = (Path(__file__).parent.parent
+                     / "data" / "cross-section" / "xsection_background.json")
+        if not json_path.exists():
+            pytest.skip("xsection_background.json not found")
+        import json
+        raw = json.loads(json_path.read_text())
+        flat = PlotManager._normalize_cross_sections(raw)
+        # 2022/23 _2J and 2024 Bin-2J-  → same non-None xsec
+        for old, new, _canon in self.PAIRS:
+            x_old = _find_xsec(old, flat)
+            x_new = _find_xsec(new, flat)
+            # ggZH/GluGluZH have no JSON xsec; skip those (none in PAIRS)
+            assert x_old is not None, f"no xsec for {old}"
+            assert x_new is not None, f"no xsec for {new}"
+            assert abs(x_old - x_new) < 1e-6, f"{old} vs {new}: {x_old} != {x_new}"
+
+
+class TestCrossYearGrouping:
+    """Files named in any year's convention must land in the right process group."""
+
+    def test_multi_year_files_group_correctly(self):
+        cfg_path = Path(__file__).parent.parent / "configs" / "plotting.yaml"
+        if not cfg_path.exists():
+            pytest.skip("plotting.yaml not found")
+        cfg = yaml.safe_load(cfg_path.read_text())
+        pm = PlotManager(config=cfg)
+
+        files = {
+            "WtoLNu-2Jets_PTLNu-40to100_2J" + _TUNE + "_EVENTSELECTION.root": "WtoLNuJets",
+            "WtoLNu-2Jets_Bin-2J-PTLNu-600" + _TUNE + "_EVENTSELECTION.root": "WtoLNuJets",
+            "Zto2Nu-2Jets_PTNuNu-200to400_2J" + _TUNE + "_EVENTSELECTION.root": "Zto2NuJets",
+            "Zto2Nu-2Jets_Bin-2J-PTNuNu-40to100" + _TUNE + "_EVENTSELECTION.root": "Zto2NuJets",
+            "DYto2L-2Jets_MLL-50_PTLL-100to200_2J" + _TUNE + "_EVENTSELECTION.root": "DYto2LJets",
+            "DYto2L-2Jets_Bin-2J-MLL-50-PTLL-600" + _TUNE + "_EVENTSELECTION.root": "DYto2LJets",
+            "GluGluHto2B_M-125" + _OLDMINLO + "_EVENTSELECTION.root": "SMHiggs",
+            "ZH_Hto2B_Zto2Nu_M-125" + _OLDMINLO + "_EVENTSELECTION.root": "SMHiggs",
+            "GluGluH-Hto2B_Par-M-125" + _MINLO + "_EVENTSELECTION.root": "SMHiggs",
+            "TTto2L2Nu" + _POW + "_EVENTSELECTION.root": "ttbar",
+            "WZ_TuneCP5_13p6TeV_pythia8_EVENTSELECTION.root": "Diboson",
+            "TBbarQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8_EVENTSELECTION.root": "singletop",
+            "TbarBQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8_EVENTSELECTION.root": "singletop",
+            "JetMET-Run2022C-22Sep2023-v1_EVENTSELECTION.root": "MET_Data",
+            "EGamma0-Run2024D-MINIv6NANOv15-v1_EVENTSELECTION.root": "EGamma_Data",
+        }
+        with tempfile.TemporaryDirectory() as d:
+            for fn in files:
+                (Path(d) / fn).touch()
+            got = {}
+            all_groups = {**pm.process_groups, **pm.signal_groups, **pm.data_groups}
+            for label, patterns in all_groups.items():
+                for p in pm._resolve_group_files(d, patterns):
+                    got[p.name] = label
+
+        for fn, exp in files.items():
+            assert got.get(fn) == exp, f"{fn}: got {got.get(fn)}, expected {exp}"
+        # nothing left unmatched
+        assert set(got) == set(files)

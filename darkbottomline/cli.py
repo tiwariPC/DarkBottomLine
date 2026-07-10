@@ -253,7 +253,7 @@ def _build_dnn_feature_matrix_from_events(
     all_vars = compute_event_variables(events, objects, config)
 
     # DNN feature name → compute_event_variables output name
-    btag_algo = config.get("btagging", {}).get("algorithm", "deepJet")
+    btag_algo = config["btagging"]["algorithm"]
     _NAME_MAP: dict = {
         "MET":          "MET_pt",
         "METPhi":       "MET_phi",
@@ -462,7 +462,12 @@ def _run_analyzer_from_eventselection(args):
     cross_sections: Dict[str, float] = {}
     if getattr(args, "xsection_json", None):
         with open(args.xsection_json) as f:
-            cross_sections = json.load(f)
+            _raw_xsec = json.load(f)
+        # Flatten the nested {group: [{full_dataset, xsection, ...}]} JSON to a
+        # {full_dataset: xsec} dict so per-file lookup below works regardless of
+        # year (canonicalized via _find_xsec).
+        from darkbottomline.plotting import PlotManager
+        cross_sections = PlotManager._normalize_cross_sections(_raw_xsec)
 
     dnn_model  = getattr(args, "dnn_model",  None)
     dnn_config = getattr(args, "dnn_config", None)
@@ -485,9 +490,14 @@ def _run_analyzer_from_eventselection(args):
     merged_result: Optional[Dict] = None
     analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
 
+    from darkbottomline.plotting import _find_xsec
     for file_path in input_files:
         stem = Path(file_path).stem
-        xsec = cross_sections.get(stem) or cross_sections.get(Path(file_path).name)
+        # Canonicalized lookup so 2022/23 (_2J) and 2024 (Bin-2J-) stems, and the
+        # SMHiggs renames, all resolve to the right xsec.
+        xsec = _find_xsec(stem, cross_sections)
+        if xsec is None:
+            xsec = _find_xsec(stem.replace("_EVENTSELECTION", ""), cross_sections)
         try:
             with uproot.open(str(file_path)) as f:
                 wte = 0.0
@@ -1624,10 +1634,17 @@ def make_event_plots(args):
                     _ds = _e.get("full_dataset") or _e.get("dataset")
                     _xsec = _e.get("xsection")
                     _yr = str(_e.get("year", ""))
-                    if _ds and _xsec is not None:
+                    if _ds is None or _xsec is None:
+                        continue
+                    # full_dataset may be a single name or a list of per-era
+                    # dataset-name variants — register each variant as a key.
+                    _names = _ds if isinstance(_ds, (list, tuple)) else [_ds]
+                    for _name in _names:
+                        if not _name:
+                            continue
                         # prefer matching year; always overwrite so last match wins
-                        if not year_str or _yr == year_str or _ds not in cross_sections:
-                            cross_sections[_ds] = float(_xsec)
+                        if not year_str or _yr == year_str or _name not in cross_sections:
+                            cross_sections[_name] = float(_xsec)
             elif isinstance(_entries, (int, float)):
                 # already flat: {stem: xsec}
                 cross_sections[_cat] = float(_entries)
@@ -1833,7 +1850,7 @@ Examples:
     analyze_parser.add_argument("--xsection-json", default=None, metavar="JSON",
                                help="JSON mapping filename stem → cross-section in pb (region-analysis mode)")
     analyze_parser.add_argument("--xsection-signal-json", default=None, metavar="JSON",
-                               help="JSON with signal cross sections: {model: {masspoint: xsec_pb}} e.g. scripts/xsection_signal.json")
+                               help="JSON with signal cross sections: {model: {masspoint: xsec_pb}} e.g. data/cross-section/xsection_signal.json")
     analyze_parser.add_argument("--signal-scale", type=float, default=1.0, metavar="N",
                                help="Multiply all signal histograms by N for shape visibility (shown as ×N in legend, default: 1)")
     analyze_parser.add_argument("--make-syst-plots", action="store_true", default=False,

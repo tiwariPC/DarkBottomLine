@@ -34,7 +34,9 @@ common_variables:
   - Jet1deepJet
   - dPhi_jetMET
   - n_bjets
-  - Njets_PassID
+  - njets
+  - PV_npvsGood
+  - PV_npvsGood_noPU
 
 # Per-region variable whitelists (region-specific additions to common_variables above).
 # Final plot list = common_variables + entries here for the matched region.
@@ -213,7 +215,7 @@ event_selection_variables:
   - electron_lep1_pt
   - electron_lep1_eta
   # Multiplicities
-  - Njets_PassID
+  - njets
   - n_bjets
   - n_muons
   - n_electrons
@@ -287,6 +289,8 @@ variable_bins:
   MET_phi:            {low: -3.14159, high: 3.14159, n: 15}
   RecoilPhi:          {low: -3.14159, high: 3.14159, n: 15}
   dPhi_jetMET:        {low: 0.0,      high: 3.2,     n: 17}
+  del_plus:           {low: 0.0,      high: 3.2,     n: 17}   # |dphi_jMET + dphi_j12 - pi| in [0, pi]
+  del_minus:          {low: -3.2,     high: 3.2,     n: 17}   # dphi_jMET - dphi_j12 in [-pi, pi]
   dPhiJet12:          {low: -7.5,     high: 7.5,     n: 21}
   dPhiJet13:          {low: -7.5,     high: 7.5,     n: 21}
   DetaJet12:          {low: -7.5,     high: 7.5,     n: 21}
@@ -329,8 +333,9 @@ variable_bins:
   n_electrons:        {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
   n_muons:            {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
   n_taus:             {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
-  Njets_PassID:       {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
+  njets:              {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
   b_flavor_count:     {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5]}
+  PV_npvsGood:        {low: 0.0, high: 80.0, n: 80}
   # lepton kinematics
   muon_lep1_pt:       {low: 20.,  high: 400.,  n: 20}
   muon_lep1_eta:      {low: -2.5, high: 2.5,   n: 15}
@@ -370,53 +375,55 @@ process_groups:
     type: background
     color: "#bd1f01"
     label: "$W(\\ell\\nu)+$jets"
+    # Canonical (xsec-JSON) form; matched after _clean_sample_name normalization
+    # so 2022/23 (_2J) and 2024 (Bin-2J-) file names both match.
     patterns:
-      - "WtoLNu-2Jets_PTLNu-40to100_2J"
-      - "WtoLNu-2Jets_PTLNu-100to200_2J"
-      - "WtoLNu-2Jets_PTLNu-200to400_2J"
-      - "WtoLNu-2Jets_PTLNu-400to600_2J"
-      - "WtoLNu-2Jets_PTLNu-600_2J"
+      - "WtoLNu-2Jets_PTLNu-40to100"
+      - "WtoLNu-2Jets_PTLNu-100to200"
+      - "WtoLNu-2Jets_PTLNu-200to400"
+      - "WtoLNu-2Jets_PTLNu-400to600"
+      - "WtoLNu-2Jets_PTLNu-600"
 
   Zto2NuJets:
     type: background
     color: "#a96b59"
     label: "$Z(\\nu\\bar{\\nu})+$jets"
     patterns:
-      - "Zto2Nu-2Jets_PTNuNu-40to100_2J"
-      - "Zto2Nu-2Jets_PTNuNu-100to200_2J"
-      - "Zto2Nu-2Jets_PTNuNu-200to400_2J"
-      - "Zto2Nu-2Jets_PTNuNu-400to600_2J"
-      - "Zto2Nu-2Jets_PTNuNu-600_2J"
+      - "Zto2Nu-2Jets_PTNuNu-40to100"
+      - "Zto2Nu-2Jets_PTNuNu-100to200"
+      - "Zto2Nu-2Jets_PTNuNu-200to400"
+      - "Zto2Nu-2Jets_PTNuNu-400to600"
+      - "Zto2Nu-2Jets_PTNuNu-600"
 
   DYto2LJets:
     type: background
     color: "#3f90da"
     label: "$Z(\\ell\\ell)+$jets"
     patterns:
-      - "DYto2L-2Jets_MLL-50_PTLL-40to100_2J"
-      - "DYto2L-2Jets_MLL-50_PTLL-100to200_2J"
-      - "DYto2L-2Jets_MLL-50_PTLL-200to400_2J"
-      - "DYto2L-2Jets_MLL-50_PTLL-400to600_2J"
-      - "DYto2L-2Jets_MLL-50_PTLL-600_2J"
+      - "DYto2L-2Jets_MLL-50-PTLL-40to100"
+      - "DYto2L-2Jets_MLL-50-PTLL-100to200"
+      - "DYto2L-2Jets_MLL-50-PTLL-200to400"
+      - "DYto2L-2Jets_MLL-50-PTLL-400to600"
+      - "DYto2L-2Jets_MLL-50-PTLL-600"
 
   ttbar:
     type: background
     color: "#e76300"
     label: "$t\\bar{t}$"
     patterns:
-      - "TTto2L2Nu_TuneCP5"
-      - "TTtoLNu2Q_TuneCP5"
-      - "TTto4Q_TuneCP5"
+      - "TTto2L2Nu"
+      - "TTtoLNu2Q"
+      - "TTto4Q"
 
   singletop:
     type: background
     color: "#ffa90e"
     label: "Single $t$"
     patterns:
-      - "TBbarQ_t-channel"
-      - "TbarBQ_t-channel"
-      - "TBbartoLplusNuBbar-s-channel"
-      - "TbarBtoLminusNuB-s-channel"
+      - "TBbarQtoLNu-t-channel-4FS"
+      - "TbarBQtoLNu-t-channel-4FS"
+      - "TBbartoLplusNuBbar-s-channel-4FS"
+      - "TbarBtoLminusNuB-s-channel-4FS"
       - "TbarWplustoLNu2Q"
       - "TWminustoLNu2Q"
 
@@ -425,33 +432,37 @@ process_groups:
     color: "#832db6"
     label: "WW/WZ/ZZ"
     patterns:
-      - "WZ_TuneCP5"
-      - "WW_TuneCP5"
-      - "ZZ_TuneCP5"
+      - "WZ"
+      - "WW"
+      - "ZZ"
 
   SMHiggs:
     type: background
     color: "#b9ac70"
     label: "SM Higgs"
+    # Canonical (2024 / xsec-JSON) core forms; _clean_sample_name maps the
+    # 2022/23 old names (ggZH_Hto2B_Zto2L_M-125, ZH_Hto2B_Zto2Nu_M-125, ...) onto
+    # these before matching.
     patterns:
-      - "GluGluHto2B_M-125"
-      - "VBFHto2B_M-125_TuneCP5"
-      - "VBFHto2B_M-125_dipoleRecoilOn"
-      - "WminusH_Hto2B"
-      - "WplusH_Hto2B"
-      - "ZH_Hto2B_Zto2L"
-      - "ZH_Hto2B_Zto2Nu"
-      - "ggZH_Hto2B_Zto2L"
-      - "ggZH_Hto2B_Zto2Nu"
-      - "ttHto2B_M-125"
-      - "tHto2B_M-125"
+      - "GluGluH-Hto2B_Par-M-125"
+      - "VBFH-Hto2B_Par-M-125"
+      - "WminusH-WtoLNu-Hto2B_Par-M-125"
+      - "WplusH-WtoLNu-Hto2B_Par-M-125"
+      - "ZH-Zto2L-Hto2B_Par-M-125"
+      - "ZH-Zto2Nu-Hto2B_Par-M-125"
+      - "GluGluZH-Zto2L-Hto2B_Par-M-125"
+      - "GluGluZH-Zto2Nu-Hto2B_Par-M-125"
+      - "TTH-Hto2B_Par-M-125"
 
   # --- Signal process (drawn as dashed lines, one per GenModel masspoint) ---
   # PNG/PDF: first 3 masspoints overlaid as dashed lines.
   # ROOT: all masspoints saved as individual TH1s (sig_MH3_..._MH4_...).
-  # Cross sections per masspoint: scripts/xsection_signal.json keyed by "MH3_600_MH4_200_Mchi_1" etc.
+  # Cross sections per masspoint: data/cross-section/xsection_signal.json keyed by "MH3_600_MH4_200_Mchi_1" etc.
   Signal_2HDMa:
     type: signal
+    # Common signal identifier across naming variants: production
+    # "BBDM-2HDMa-5f_..." and full-sim "BBDM-2HDMa-fullsim_...". No background
+    # dataset contains "BBDM-2HDMa".
     patterns:
       - "BBDM-2HDMa"
 
@@ -469,6 +480,8 @@ process_groups:
       - "mumu"       # matches CR_Zmumu
     patterns:
       - "JetMET-Run"
+      - "JetMET0-Run"
+      - "JetMET1-Run"
       - "MET-Run"
 
   EGamma_Data:
@@ -479,3 +492,5 @@ process_groups:
       - "Zee"        # matches CR_Zee
     patterns:
       - "EGamma-Run"
+      - "EGamma0-Run"
+      - "EGamma1-Run"
