@@ -38,9 +38,10 @@ when_to_transfer_output = ON_EXIT
 transfer_output_files = ""
 transfer_input_files  = $(Proxy_path)
 
-output                = condorJobs/met_trigger/logs/skim_$(ClusterId)_$(ProcId).out
-error                 = condorJobs/met_trigger/logs/skim_$(ClusterId)_$(ProcId).err
-log                   = condorJobs/met_trigger/logs/skim_$(ClusterId).log
+# LOGDIR is the absolute ${SUBDIR}/logs passed (and created) by submit_all.sh.
+output                = $(LOGDIR)/skim_$(ClusterId)_$(ProcId).out
+error                 = $(LOGDIR)/skim_$(ClusterId)_$(ProcId).err
+log                   = $(LOGDIR)/skim_$(ClusterId).log
 
 # Resources — up to BATCH files per job, skimmed sequentially (one at a time in
 # memory). ~50 files x ~30s ~= 25 min/job; workday (8h) has ample headroom.

@@ -23,7 +23,12 @@ BATCH="${BATCH:-${2:-50}}"
 
 [[ -f "${JOBLIST}" ]] || { echo "ERROR: joblist not found: ${JOBLIST}" >&2; exit 1; }
 [[ "${BATCH}" -ge 1 ]] || { echo "ERROR: BATCH must be >= 1 (got ${BATCH})" >&2; exit 1; }
-mkdir -p "${SUBDIR}/logs"
+
+# Logs live next to these scripts (${SUBDIR}/logs), created here if missing. The
+# absolute LOGDIR is passed to submit.sub so condor writes there regardless of the
+# CWD condor_submit is invoked from — no hardcoded paths, no cd required.
+LOGDIR="${SUBDIR}/logs"
+mkdir -p "${LOGDIR}"
 echo "Batch size: ${BATCH} files/job"
 
 # Read the whole joblist into an array FIRST, then loop it. Streaming the file
@@ -57,7 +62,8 @@ for line in "${JOBLINES[@]}"; do
         -append "TXTFILE=${TXTFILE}" \
         -append "BATCH=${BATCH}" \
         -append "NJOBS=${NJOBS}" \
-        -append "USER_INITIAL=${USER:0:1}" </dev/null
+        -append "USER_INITIAL=${USER:0:1}" \
+        -append "LOGDIR=${LOGDIR}" </dev/null
     n_clusters=$((n_clusters + 1))
 done
 
