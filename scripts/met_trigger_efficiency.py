@@ -49,20 +49,30 @@ import argparse
 import glob
 import gzip
 import json
-import math
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
 import awkward as ak
 import matplotlib as mpl
-import matplotlib.pyplot as plt
-import mplhep as hep
+
+mpl.use("Agg")  # headless backend; must be set before pyplot is imported
+
+import matplotlib.pyplot as plt  # noqa: E402
+import mplhep as hep  # noqa: E402
 import numpy as np
 import uproot
 import yaml
 
-mpl.use("Agg")
 plt.style.use(hep.style.CMS)
+
+# Make the repo root importable when this file is run by path (python3 scripts/x.py),
+# where sys.path[0] is scripts/ rather than the repo root, so `darkbottomline` (a
+# repo-root package) would otherwise not be found.
+import sys as _sys
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _REPO_ROOT not in _sys.path:
+    _sys.path.insert(0, _REPO_ROOT)
 
 from darkbottomline.objects import (
     build_muon_collection,
@@ -84,7 +94,7 @@ SCALAR_BRANCHES = ("event", "run", "luminosityBlock", "genWeight")
 CHANNELS = ("wmn", "zmm")
 DEFAULT_RECOIL_BINS = [
     0, 20, 40, 60, 80, 100, 110, 120, 130, 140,
-    150, 160, 180, 200, 250, 300, 400, 600, 800, 1000, 1200,
+    150, 160, 180, 200, 250, 300, 400, 600, 800, 1000, 1200, 1300, 1400, 1500
 ]
 
 
@@ -145,14 +155,13 @@ def resolve_inputs(patterns: List[str]) -> List[Tuple[str, str]]:
     return resolved
 
 
-def mc_channels(stem: str, requested: List[str]) -> List[str]:
+def mc_channels(requested: List[str]) -> List[str]:
     """
-    Channels an MC sample contributes to. Every MC sample is evaluated against
-    ALL requested channels; each event lands in whichever channel's preselection
-    it passes (muon multiplicity decides). So DY populates mostly Zmm, W mostly
-    Wmn, and tt/single-top/diboson contaminate both — exactly as in data.
+    Channels an MC sample contributes to: ALL requested channels. Routing is NOT
+    per-sample — every MC event is tried against each channel's preselection and
+    lands wherever the muon multiplicity places it. So DY populates mostly Zmm, W
+    mostly Wmn, and tt/single-top/diboson contaminate both, exactly as in data.
     """
-    _ = stem
     return list(requested)
 
 
@@ -162,11 +171,12 @@ def mc_channels(stem: str, requested: List[str]) -> List[str]:
 
 def load_xsections(json_path: str) -> Dict[str, float]:
     """
-    Flatten the framework xsection JSON to {full_dataset: xsection}.
+    Flatten an xsection JSON to {full_dataset: xsection}.
 
-    The file is keyed by category -> list of {year, process, xsection, full_dataset}.
-    xsecs are identical across years for these samples, so we key on full_dataset and
-    keep the first value seen (year-agnostic; 2024 entries may be absent).
+    Keyed by category -> list of {process, xsection, full_dataset}. `full_dataset`
+    may be a single string OR a list of naming variants (the run3 file lists both the
+    '_2J_' and 'Bin-2J' dataset names per process) — every variant is registered so a
+    skim named with either convention resolves.
     """
     with open(json_path) as f:
         raw = json.load(f)
@@ -175,10 +185,14 @@ def load_xsections(json_path: str) -> Dict[str, float]:
         if not isinstance(entries, list):
             continue
         for e in entries:
-            ds = e.get("full_dataset")
             xs = e.get("xsection")
-            if ds and xs is not None and ds not in flat:
-                flat[ds] = float(xs)
+            ds = e.get("full_dataset")
+            if xs is None or not ds:
+                continue
+            names = ds if isinstance(ds, list) else [ds]
+            for name in names:
+                if name and name not in flat:
+                    flat[name] = float(xs)
     return flat
 
 
@@ -198,45 +212,61 @@ def _xsec_key(name: str) -> Tuple[str, str]:
         family = "wtolnu-2jets"
     else:
         family = low.split("_")[0]
-    m = re.search(r"(\d+to\d+|\bptll-?\d+\b|\bptlnu-?\d+\b|-(\d+)(?:_|$))", low)
     pt = ""
-    m2 = re.search(r"(\d+to\d+)", low)
-    if m2:
-        pt = m2.group(1)
+    m_range = re.search(r"(\d+to\d+)", low)
+    if m_range:
+        pt = m_range.group(1)
     else:
-        m3 = re.search(r"(?:ptll|ptlnu)-?(\d+)", low)
-        if m3:
-            pt = m3.group(1)
+        m_open = re.search(r"(?:ptll|ptlnu)-?(\d+)", low)
+        if m_open:
+            pt = m_open.group(1)
     return family, pt
 
 
 def find_xsec(stem: str, xsecs: Dict[str, float]) -> Optional[float]:
-    """Look up an xsection by sample stem: exact, substring, then (family, pt) key."""
+    """
+    Look up an xsection by sample stem. Order matters: exact match, then the
+    specific (family, pt-range) key, and only then a loose substring match as a
+    last resort (substring alone is ambiguous, e.g. 'WtoLNu' vs 'WtoLNu-4Jets').
+    """
     if stem in xsecs:
         return xsecs[stem]
-    for ds, xs in xsecs.items():
-        if ds == stem or ds in stem or stem in ds:
-            return xs
     key = _xsec_key(stem)
-    if key[0]:
+    if key[0] and key[1]:
         for ds, xs in xsecs.items():
             if _xsec_key(ds) == key:
                 return xs
+    for ds, xs in xsecs.items():
+        if ds == stem or ds in stem or stem in ds:
+            return xs
     return None
 
 
-def read_gensumw(tfile: "uproot.ReadOnlyDirectory") -> float:
-    """Sum genEventSumw from the Runs tree, for MC normalisation (0 if absent)."""
+def read_gensumw(tfile: "uproot.ReadOnlyDirectory") -> Tuple[float, float]:
+    """
+    Return (genTotalSumw, genTotalCount) over ALL events in the file:
+      genTotalSumw  = sum of sign(genWeight)  (effective event count; the norm
+                      denominator, consistent with the sign-only per-event weight),
+      genTotalCount = raw number of generated events.
+
+    We use the SIGN of genWeight, not its magnitude: the magnitude cancels in the
+    efficiency ratio anyway, and sign avoids the huge NLO weight scale. The Runs-tree
+    genEventSumw is magnitude-weighted, so it cannot be used here — instead we sum
+    sign(genWeight) over the full Events tree (NOT the entry_stop-limited slice).
+    """
     try:
-        if "Runs" not in tfile:
-            return 0.0
-        runs = tfile["Runs"]
-        if "genEventSumw" not in runs:
-            return 0.0
-        return float(ak.sum(runs["genEventSumw"].array()))
+        if "Events" not in tfile:
+            return 0.0, 0.0
+        events_tree = tfile["Events"]
+        count = float(events_tree.num_entries)
+        if "genWeight" not in events_tree:
+            return count, count  # no genWeight (e.g. data): treat every event as +1
+        gw = events_tree["genWeight"].array(library="np")
+        sumw = float(np.sign(gw).sum())
+        return sumw, count
     except Exception as exc:  # noqa: BLE001 - defensive, one bad file shouldn't kill run
-        print(f"WARNING: could not read genEventSumw: {exc}")
-        return 0.0
+        print(f"WARNING: could not read genWeight sum: {exc}")
+        return 0.0, 0.0
 
 
 def load_events(tfile: "uproot.ReadOnlyDirectory",
@@ -261,11 +291,17 @@ def load_events(tfile: "uproot.ReadOnlyDirectory",
 # Event-level preselection + recoil
 # ---------------------------------------------------------------------------
 
-def _leading_jet_pt(events: ak.Array) -> ak.Array:
-    """Leading AK4 jet pt per event (0 when no jets)."""
-    if "Jet_pt" not in events.fields:
+def _leading_jet_pt(events: ak.Array, jet_cfg: Dict[str, Any]) -> ak.Array:
+    """
+    Max pt among AK4 jets passing |eta| < eta_max (0 when none). Matches the
+    framework's select_jets, which cuts on pt/eta only — no jet-ID bit, as the
+    puId branch is absent in NanoAOD v12+ (see objects.py::select_jets).
+    """
+    if "Jet_pt" not in events.fields or "Jet_eta" not in events.fields:
         return ak.zeros_like(events["event"], dtype=np.float64)
-    return ak.fill_none(ak.max(events["Jet_pt"], axis=1), 0.0)
+    eta_ok = abs(events["Jet_eta"]) < jet_cfg["eta_max"]
+    jet_pt = ak.where(eta_ok, events["Jet_pt"], 0.0)
+    return ak.fill_none(ak.max(jet_pt, axis=1), 0.0)
 
 
 def preselection_mask(
@@ -306,9 +342,8 @@ def preselection_mask(
     else:
         raise ValueError(f"Unknown channel: {channel}")
 
-    # Leading AK4 jet pt > 50 GeV (pt_min for additional jets is the object default).
-    lead_jet_mask = _leading_jet_pt(events) > 50.0
-    _ = jet_cfg  # eta/id already folded into the flat Jet branches upstream
+    # Leading AK4 jet (|eta| < eta_max) with pt > 50 GeV.
+    lead_jet_mask = _leading_jet_pt(events, jet_cfg) > 50.0
 
     # Loose-electron veto.
     loose_ele_mask = select_electrons(events, ele_cfg, wp="loose")
@@ -322,11 +357,16 @@ def preselection_mask(
 
 def compute_recoil(events: ak.Array, tight_muons: ak.Array) -> np.ndarray:
     """Hadronic recoil U = |PuppiMET_vec + sum(mu pT_vec)| for the selected muons."""
-    # Empty per-event electron collection carrying pt/phi (recoil helper sums both
-    # muons and electrons; electrons are vetoed in preselection, so U == muon add-back).
-    empty_e = tight_muons[tight_muons.pt < -1.0]
+    # calculate_recoil sums pt/phi over BOTH the "muons" and "electrons" collections.
+    # We want a muon-only add-back (electrons are vetoed in preselection anyway), so
+    # we pass a genuinely empty electron collection. We derive it by masking the muon
+    # zip to nothing (tight_muons[all-False]) rather than ak.Array([]): this preserves
+    # the same record layout (pt/phi fields, correct per-event jaggedness), so
+    # calculate_recoil's ak.sum(...pt*cos(phi), axis=1) sees empty sublists (-> 0),
+    # not a fieldless array that would raise on `.pt`.
+    empty_electrons = tight_muons[tight_muons.pt < -1.0]
     recoil_pt, _ = calculate_recoil(
-        events, {"muons": tight_muons, "electrons": empty_e}
+        events, {"muons": tight_muons, "electrons": empty_electrons}
     )
     return ak.to_numpy(recoil_pt)
 
@@ -336,13 +376,13 @@ def compute_recoil(events: ak.Array, tight_muons: ak.Array) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 class BinCounts:
-    """Weighted numerator/denominator + sum-of-weights-squared per recoil bin."""
+    """Weighted numerator/denominator per recoil bin, plus sum-of-weights-squared
+    on the denominator for the effective-count (weighted) Clopper-Pearson errors."""
 
     def __init__(self, n_bins: int):
         self.den = np.zeros(n_bins, dtype=np.float64)
         self.num = np.zeros(n_bins, dtype=np.float64)
         self.den_w2 = np.zeros(n_bins, dtype=np.float64)
-        self.num_w2 = np.zeros(n_bins, dtype=np.float64)
 
     def fill(self, recoil: np.ndarray, passed: np.ndarray,
              weights: np.ndarray, edges: np.ndarray) -> None:
@@ -354,96 +394,108 @@ class BinCounts:
         np.add.at(self.den, idx, w)
         np.add.at(self.den_w2, idx, w * w)
         np.add.at(self.num, idx, w * p)
-        np.add.at(self.num_w2, idx, (w * p) ** 2)
-
-
-def _event_weight(events: ak.Array, tfile: "uproot.ReadOnlyDirectory",
-                  stem: str, is_mc: bool, xsecs: Dict[str, float],
-                  lumi: float) -> np.ndarray:
-    """Per-event base weight: 1.0 for data, sign(genWeight)*xsec*lumi/sumw for MC."""
-    if not is_mc:
-        return np.ones(len(events), dtype=np.float64)
-    xsec = find_xsec(stem, xsecs)
-    if xsec is None:
-        print(f"WARNING: no xsection for '{stem}' - using weight 1.0")
-    sumw = read_gensumw(tfile) if xsec is not None else 0.0
-    if "genWeight" in events.fields:
-        gen_sign = np.sign(ak.to_numpy(events["genWeight"]))
-    else:
-        gen_sign = np.ones(len(events), dtype=np.float64)
-    if xsec is not None and sumw > 0:
-        return gen_sign * (xsec * lumi / sumw)
-    return gen_sign
 
 
 def compute_event_rows(
     root_path: str,
-    stem: str,
     channels: List[str],
     cfg: Dict[str, Any],
     is_mc: bool,
-    xsecs: Dict[str, float],
-    lumi: float,
     max_events: Optional[int],
-) -> Optional[Dict[str, np.ndarray]]:
+) -> Optional[Dict[str, Any]]:
     """
     Load one ROOT file, apply preselection per channel, and return the per-event
-    skim rows (one row per surviving (event, channel) pair): recoil U, met_pass,
-    weight, and the channel label. Returns None on an unreadable file.
+    skim rows plus the file's total generator weight.
+
+    Deliberately NO cross-section / luminosity / sumw normalisation here: the skim
+    stores only the per-event sign(genWeight) (1.0 for data) and the file's total
+    sum of sign(genWeight) (as a scalar). Step 2 (analyze) applies xsec*lumi/SUMW
+    once, with SUMW = sum of file_sumw over ALL files of the sample. That makes the
+    weight of an event independent of which file it landed in, so skims of one sample
+    can be hadd-merged and analysed correctly.
+
+    Returns dict {recoil, met_pass, genweight, channel, file_sumw} or None on failure.
     """
     try:
         tfile = uproot.open(root_path)
     except Exception as exc:  # noqa: BLE001 - skip bad XRootD files, keep going
         print(f"WARNING: skipping unopenable file {root_path}: {exc}")
         return None
-    try:
-        events = load_events(tfile, max_events)
-    except Exception as exc:  # noqa: BLE001
-        print(f"WARNING: skipping unreadable file {root_path}: {exc}")
-        tfile.close()
-        return None
 
-    met_triggers = _require(cfg, "triggers", "MET")
-    met_pass = ak.to_numpy(pass_triggers(events, met_triggers))
-    base_weight = _event_weight(events, tfile, stem, is_mc, xsecs, lumi)
+    # Context-manage the open file so the descriptor is always released, even if
+    # load_events or the per-channel processing raises (important at 1000s of files).
+    with tfile:
+        try:
+            events = load_events(tfile, max_events)
+        except Exception as exc:  # noqa: BLE001
+            print(f"WARNING: skipping unreadable file {root_path}: {exc}")
+            return None
 
-    rec_all: List[np.ndarray] = []
-    pass_all: List[np.ndarray] = []
-    w_all: List[np.ndarray] = []
-    ch_all: List[np.ndarray] = []
-    for ci, channel in enumerate(channels):
-        mask, tight_muons = preselection_mask(events, cfg, channel)
-        mask_np = ak.to_numpy(mask)
-        if not mask_np.any():
-            continue
-        rec_all.append(compute_recoil(events, tight_muons)[mask_np])
-        pass_all.append(met_pass[mask_np].astype(np.float64))
-        w_all.append(base_weight[mask_np])
-        ch_all.append(np.full(int(mask_np.sum()), ci, dtype=np.int32))
+        met_triggers = _require(cfg, "triggers", "MET")
+        met_pass = ak.to_numpy(pass_triggers(events, met_triggers))
 
-    tfile.close()
+        # Per-event weight = SIGN of genWeight (+/-1), 1.0 for data / no branch. We use
+        # the sign only: the genWeight magnitude cancels in the efficiency ratio, and
+        # the sumw denominator below is likewise sum of sign(genWeight).
+        if is_mc and "genWeight" in events.fields:
+            genweight = np.sign(ak.to_numpy(events["genWeight"])).astype(np.float64)
+        else:
+            genweight = np.ones(len(events), dtype=np.float64)
+
+        # File-total sum of sign(genWeight) + raw event count over ALL events in the
+        # file. 0 for data (unused there).
+        file_sumw, file_count = read_gensumw(tfile) if is_mc else (0.0, 0.0)
+
+        rec_all: List[np.ndarray] = []
+        pass_all: List[np.ndarray] = []
+        w_all: List[np.ndarray] = []
+        ch_all: List[np.ndarray] = []
+        for ci, channel in enumerate(channels):
+            mask, tight_muons = preselection_mask(events, cfg, channel)
+            mask_np = ak.to_numpy(mask)
+            if not mask_np.any():
+                continue
+            rec_all.append(compute_recoil(events, tight_muons)[mask_np])
+            pass_all.append(met_pass[mask_np].astype(np.float64))
+            w_all.append(genweight[mask_np])
+            ch_all.append(np.full(int(mask_np.sum()), ci, dtype=np.int32))
+
     if not rec_all:
         return {"recoil": np.array([]), "met_pass": np.array([]),
-                "weight": np.array([]), "channel": np.array([], dtype=np.int32)}
+                "genweight": np.array([]), "channel": np.array([], dtype=np.int32),
+                "file_sumw": file_sumw, "file_count": file_count}
     return {
         "recoil": np.concatenate(rec_all),
         "met_pass": np.concatenate(pass_all),
-        "weight": np.concatenate(w_all),
+        "genweight": np.concatenate(w_all),
         "channel": np.concatenate(ch_all),
+        "file_sumw": file_sumw,
+        "file_count": file_count,
     }
 
 
-def accumulate_rows(rows: Dict[str, np.ndarray], channels: List[str],
+def accumulate_rows(rows: Dict[str, Any], weight: np.ndarray, channels: List[str],
                     edges: np.ndarray, counts: Dict[str, BinCounts]) -> None:
-    """Fill per-channel BinCounts from a skim-row dict (channel index -> channels[i])."""
+    """
+    Fill per-channel BinCounts from a skim-row dict, using a caller-supplied final
+    per-event weight array (already = genweight * xsec * lumi / SUMW for MC, or all
+    ones for data). channel index i maps to channels[i].
+    """
     ch = rows["channel"]
     for ci, channel in enumerate(channels):
         sel = ch == ci
         if not sel.any():
             continue
         counts[channel].fill(
-            rows["recoil"][sel], rows["met_pass"][sel], rows["weight"][sel], edges
+            rows["recoil"][sel], rows["met_pass"][sel], weight[sel], edges
         )
+
+
+def norm_factor(sumw: float, xsec: Optional[float], lumi: float) -> float:
+    """MC normalisation xsec*lumi/SUMW (1.0 when xsec/sumw unavailable, i.e. data)."""
+    if xsec is not None and sumw > 0:
+        return xsec * lumi / sumw
+    return 1.0
 
 
 def accumulate_file(
@@ -458,11 +510,25 @@ def accumulate_file(
     lumi: float,
     max_events: Optional[int],
 ) -> None:
-    """Single-pass: load a NanoAOD file and fill num/den counts directly."""
-    rows = compute_event_rows(root_path, stem, channels, cfg, is_mc, xsecs,
-                              lumi, max_events)
-    if rows is not None:
-        accumulate_rows(rows, channels, edges, counts)
+    """
+    Single-pass (one-shot 'run' mode): load a NanoAOD file, normalise, fill counts.
+
+    Here one file = one sample instance, so the file's own genEventSumw IS the sample
+    SUMW (single-file normalisation). For the multi-file two-step path use skim +
+    analyze, which sums SUMW across a sample's files.
+    """
+    rows = compute_event_rows(root_path, channels, cfg, is_mc, max_events)
+    if rows is None:
+        return
+    if is_mc:
+        xsec = find_xsec(stem, xsecs)
+        if xsec is None:
+            print(f"WARNING: no xsection for '{stem}' - using norm 1.0")
+        norm = norm_factor(rows["file_sumw"], xsec, lumi)
+    else:
+        norm = 1.0
+    weight = rows["genweight"] * norm
+    accumulate_rows(rows, weight, channels, edges, counts)
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +536,8 @@ def accumulate_file(
 # ---------------------------------------------------------------------------
 
 SKIM_TREE = "MetTriggerSkim"
+SUMW_HIST = "genTotalSumw"
+COUNT_HIST = "genTotalCount"
 
 
 def skim_output_name(outdir: str, txt_stem: str, root_path: str) -> str:
@@ -483,35 +551,62 @@ def skim_output_name(outdir: str, txt_stem: str, root_path: str) -> str:
     return os.path.join(outdir, f"{txt_stem}_{root_id}.root")
 
 
-def write_skim(rows: Dict[str, np.ndarray], out_path: str) -> None:
-    """Write the per-event skim rows to a flat ROOT TTree via uproot."""
+def write_skim(rows: Dict[str, Any], out_path: str) -> None:
+    """
+    Write the per-event skim (recoil, met_pass, genweight, channel) plus the file's
+    total generator weight as a 1-bin TH1 (genTotalSumw). Storing the sumw as a
+    histogram means `hadd` sums it automatically across a sample's files, so a merged
+    skim carries the correct sample-total SUMW for step 2.
+    """
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
     with uproot.recreate(out_path) as f:
         f[SKIM_TREE] = {
             "recoil": rows["recoil"].astype(np.float64),
             "met_pass": rows["met_pass"].astype(np.float64),
-            "weight": rows["weight"].astype(np.float64),
+            "genweight": rows["genweight"].astype(np.float64),
             "channel": rows["channel"].astype(np.int32),
         }
+        # 1-bin TH1s: signed genEventSumw (used for norm) and raw genEventCount
+        # (reference only — shows the effect of negative NLO weights). Both hadd-sum.
+        f[SUMW_HIST] = (
+            np.array([float(rows["file_sumw"])], dtype=np.float64),
+            np.array([0.0, 1.0], dtype=np.float64),
+        )
+        f[COUNT_HIST] = (
+            np.array([float(rows["file_count"])], dtype=np.float64),
+            np.array([0.0, 1.0], dtype=np.float64),
+        )
     print(f"Saved: {out_path}")
 
 
-def read_skim(path: str) -> Optional[Dict[str, np.ndarray]]:
-    """Read a skim ROOT back into a row dict (None if unreadable/empty)."""
+def read_skim(path: str) -> Optional[Dict[str, Any]]:
+    """
+    Read a skim ROOT into {recoil, met_pass, genweight, channel, sumw}. `sumw` is the
+    integral of the genTotalSumw histogram (sample-total when the skim is a hadd of a
+    sample's files). None on unreadable/missing tree.
+    """
     try:
         with uproot.open(path) as f:
             if SKIM_TREE not in f:
                 print(f"WARNING: no '{SKIM_TREE}' tree in {path}")
                 return None
             arr = f[SKIM_TREE].arrays(library="np")
+            sumw = 0.0
+            if SUMW_HIST in f:
+                sumw = float(np.sum(f[SUMW_HIST].values()))
+            else:
+                print(f"WARNING: no '{SUMW_HIST}' histogram in {path}; sumw=0")
+            count = float(np.sum(f[COUNT_HIST].values())) if COUNT_HIST in f else 0.0
     except Exception as exc:  # noqa: BLE001
         print(f"WARNING: skipping unreadable skim {path}: {exc}")
         return None
     return {
         "recoil": arr["recoil"],
         "met_pass": arr["met_pass"],
-        "weight": arr["weight"],
+        "genweight": arr["genweight"],
         "channel": arr["channel"].astype(np.int32),
+        "sumw": sumw,
+        "count": count,
     }
 
 
@@ -540,16 +635,20 @@ def efficiency_with_errors(
     Data (weighted=False): Clopper-Pearson on raw integer counts.
     MC (weighted=True): effective-count Clopper-Pearson (n_eff = (sum w)^2 / sum w^2).
     """
-    with np.errstate(divide="ignore", invalid="ignore"):
-        eff = np.where(c.den > 0, c.num / c.den, 0.0)
+    eff = np.divide(c.num, c.den, out=np.zeros_like(c.num), where=c.den > 0)
 
     if not weighted:
-        k = c.num.astype(np.int64)
-        n = c.den.astype(np.int64)
+        # Data weights are all 1.0, so num/den are integer counts; round before the
+        # int cast so float accumulation (e.g. 41.9999999) doesn't truncate down.
+        k = np.rint(c.num).astype(np.int64)
+        n = np.rint(c.den).astype(np.int64)
     else:
-        n_eff = np.where(c.den_w2 > 0, c.den ** 2 / c.den_w2, 0.0)
+        n_eff = np.divide(c.den ** 2, c.den_w2,
+                          out=np.zeros_like(c.den), where=c.den_w2 > 0)
         n = n_eff
-        k = eff * n_eff
+        # k = eff * n_eff can slightly exceed n_eff from float rounding, which makes
+        # beta.ppf(..., n-k+1) receive a non-positive shape -> NaN. Clamp k <= n.
+        k = np.minimum(eff * n_eff, n)
 
     lo, hi = clopper_pearson(k, n)
     err_lo = np.clip(eff - lo, 0.0, None)
@@ -562,12 +661,13 @@ def scale_factor(
     eff_m: np.ndarray, em_lo: np.ndarray, em_hi: np.ndarray,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """SF = eff_data / eff_mc with symmetrised errors propagated in quadrature."""
-    with np.errstate(divide="ignore", invalid="ignore"):
-        sf = np.where(eff_m > 0, eff_d / eff_m, 0.0)
+    # np.divide(..., where=) computes only where the denominator is > 0 (no
+    # divide-by-zero even under warnings); elsewhere the preset 0.0 output stands.
+    sf = np.divide(eff_d, eff_m, out=np.zeros_like(eff_d), where=eff_m > 0)
     ed = 0.5 * (ed_lo + ed_hi)
     em = 0.5 * (em_lo + em_hi)
-    rel_d = np.where(eff_d > 0, ed / eff_d, 0.0)
-    rel_m = np.where(eff_m > 0, em / eff_m, 0.0)
+    rel_d = np.divide(ed, eff_d, out=np.zeros_like(ed), where=eff_d > 0)
+    rel_m = np.divide(em, eff_m, out=np.zeros_like(em), where=eff_m > 0)
     sf_err = np.abs(sf) * np.sqrt(rel_d ** 2 + rel_m ** 2)
     return sf, sf_err, sf_err
 
@@ -641,7 +741,8 @@ def plot_scale_factor(
         )
     ax.set_xlabel(r"Hadronic recoil $U$ [GeV]", fontsize=18)
     ax.set_ylabel("Data / MC scale factor", fontsize=18)
-    ax.set_ylim(0.8, 1.2)
+    # Wide enough for the turn-on region where data/MC can disagree by >20%.
+    ax.set_ylim(0.5, 1.5)
     ax.set_xlim(edges[0], edges[-1])
     ax.axhline(1.0, color="grey", ls="--", lw=1)
     ax.legend(loc="lower right", fontsize=16)
@@ -664,13 +765,14 @@ def build_correction_set(
     category on ValType (sf/sfup/sfdown) -> multibinning over the recoil axis.
     """
     def _edges_json(e: np.ndarray) -> List[Any]:
-        out: List[Any] = []
-        for v in e:
-            if math.isinf(v):
-                out.append("inf" if v > 0 else "-inf")
-            else:
-                out.append(float(v))
-        return out
+        # The recoil binning is finite by construction. Reject infinite edges rather
+        # than emit them: out-of-range recoil is already handled by flow="clamp".
+        if not np.all(np.isfinite(e)):
+            raise ValueError(
+                "infinite recoil bin edges are not supported "
+                "(out-of-range values are clamped via flow='clamp')"
+            )
+        return [float(v) for v in e]
 
     def _leaf(content: np.ndarray) -> Dict[str, Any]:
         return {
@@ -769,10 +871,17 @@ def make_plots_and_json(
     # correctionlib: nominal SF + systematic from the W->munu vs Z->mumu difference.
     nominal_ch = "wmn" if "wmn" in channels else channels[0]
     sf_nom = sf_values[nominal_ch]
+    stat_err = sf_per_channel[nominal_ch][1]
     if "wmn" in sf_values and "zmm" in sf_values:
-        syst = np.abs(sf_values["wmn"] - sf_values["zmm"])
+        # Channel difference as the systematic — but only where BOTH channels have a
+        # valid (non-zero) SF. In sparse high-U bins one channel can be empty (SF=0),
+        # which would fake a huge |wmn-zmm|; there, fall back to the statistical error.
+        both_valid = (sf_values["wmn"] > 0) & (sf_values["zmm"] > 0)
+        syst = np.where(
+            both_valid, np.abs(sf_values["wmn"] - sf_values["zmm"]), stat_err
+        )
     else:
-        syst = sf_per_channel[nominal_ch][1]
+        syst = stat_err
     write_correction(
         build_correction_set(edges, sf_nom, sf_nom + syst, sf_nom - syst),
         json_out,
@@ -784,11 +893,13 @@ def _resolve_channels(channel: str) -> List[str]:
 
 
 def cmd_skim(args: argparse.Namespace) -> None:
-    """Step 1: preselect NanoAOD, write one skim ROOT per input file."""
+    """
+    Step 1: preselect NanoAOD, write one skim ROOT per input file. The skim stores
+    raw per-event genWeight + the file's total genEventSumw only (NO xsec/lumi/sumw
+    normalisation — that is applied in analyze, after summing SUMW over the sample).
+    """
     cfg = load_config(args.config)
-    lumi = args.lumi if args.lumi is not None else float(_require(cfg, "lumi"))
     channels = _resolve_channels(args.channel)
-    xsecs = load_xsections(args.xsection_json)
 
     data_inputs = resolve_inputs(args.data_files) if args.data_files else []
     mc_inputs = resolve_inputs(args.mc_files) if args.mc_files else []
@@ -800,22 +911,27 @@ def cmd_skim(args: argparse.Namespace) -> None:
 
     for i, (root_path, stem) in enumerate(data_inputs):
         print(f"[data {i + 1}/{len(data_inputs)}] {root_path}")
-        rows = compute_event_rows(root_path, stem, channels, cfg, False, xsecs,
-                                  lumi, args.max_events)
+        rows = compute_event_rows(root_path, channels, cfg, False, args.max_events)
         if rows is not None:
             write_skim(rows, skim_output_name(args.outdir, stem, root_path))
 
     for i, (root_path, stem) in enumerate(mc_inputs):
-        target = mc_channels(stem, channels)
+        target = mc_channels(channels)
         print(f"[mc {i + 1}/{len(mc_inputs)}] ({'+'.join(target)}) {root_path}")
-        rows = compute_event_rows(root_path, stem, target, cfg, True, xsecs,
-                                  lumi, args.max_events)
+        rows = compute_event_rows(root_path, target, cfg, True, args.max_events)
         if rows is not None:
             write_skim(rows, skim_output_name(args.outdir, stem, root_path))
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
-    """Step 2: read skim ROOTs, fill counts, make plots + JSON."""
+    """
+    Step 2: read skim ROOTs, normalise, fill counts, make plots + JSON.
+
+    Each MC skim is expected to be ONE merged file per sample (hadd of that sample's
+    per-file skims): its genTotalSumw histogram then holds the sample-total SUMW, and
+    the xsec is looked up from the file name. Final MC weight per event is
+    genweight * xsec * lumi / SUMW. Data skims are unweighted.
+    """
     cfg = load_config(args.config)
     lumi = args.lumi if args.lumi is not None else float(_require(cfg, "lumi"))
     edges = np.array(
@@ -823,6 +939,7 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     )
     n_bins = len(edges) - 1
     channels = _resolve_channels(args.channel)
+    xsecs = load_xsections(args.xsection_json)
 
     data_skims = [p for pat in args.data_skims for p in (sorted(glob.glob(pat)) or [pat])]
     mc_skims = [p for pat in args.mc_skims for p in (sorted(glob.glob(pat)) or [pat])]
@@ -834,11 +951,19 @@ def cmd_analyze(args: argparse.Namespace) -> None:
     for p in data_skims:
         rows = read_skim(p)
         if rows is not None:
-            accumulate_rows(rows, channels, edges, data_counts)
+            accumulate_rows(rows, rows["genweight"], channels, edges, data_counts)
     for p in mc_skims:
         rows = read_skim(p)
-        if rows is not None:
-            accumulate_rows(rows, channels, edges, mc_counts)
+        if rows is None:
+            continue
+        stem = os.path.splitext(os.path.basename(p))[0]
+        xsec = find_xsec(stem, xsecs)
+        if xsec is None:
+            print(f"WARNING: no xsection for skim '{stem}' - using norm 1.0")
+        norm = norm_factor(rows["sumw"], xsec, lumi)
+        print(f"[mc] {stem}: xsec={xsec} sumw={rows['sumw']:.4g} "
+              f"count={rows['count']:.4g} norm={norm:.4g}")
+        accumulate_rows(rows, rows["genweight"] * norm, channels, edges, mc_counts)
 
     make_plots_and_json(data_counts, mc_counts, channels, edges,
                         args.outdir, lumi, args.com, args.label, args.json_out)
@@ -871,7 +996,7 @@ def cmd_run(args: argparse.Namespace) -> None:
                         is_mc=False, xsecs=xsecs, lumi=lumi,
                         max_events=args.max_events)
     for i, (root_path, stem) in enumerate(mc_inputs):
-        target = mc_channels(stem, channels)
+        target = mc_channels(channels)
         print(f"[mc {i + 1}/{len(mc_inputs)}] ({'+'.join(target)}) {root_path}")
         accumulate_file(root_path, stem, target, cfg, edges, mc_counts,
                         is_mc=True, xsecs=xsecs, lumi=lumi,
@@ -887,7 +1012,7 @@ def _add_common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--lumi", type=float, default=None,
                    help="Luminosity fb^-1 (default: cfg 'lumi')")
     p.add_argument("--xsection-json",
-                   default="data/cross-section/xsection_background.json")
+                   default="data/cross-section/xsection_background_run3.json")
     p.add_argument("--max-events", type=int, default=None,
                    help="entry_stop per file (fast test slices)")
     p.add_argument("--max-files", type=int, default=None,

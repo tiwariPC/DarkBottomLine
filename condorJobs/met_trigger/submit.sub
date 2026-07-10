@@ -1,39 +1,56 @@
 # ---------------------------------------------------------------------------
-# Condor submit: MET-trigger skim, one job per samplelist .txt.
+# Condor submit: MET-trigger skim, ONE cluster per samplelist .txt, ONE job per
+# BATCH-sized slice of ROOT files. ProcId selects the slice; each job skims up to
+# BATCH files to <OUTDIR>/<txtstem>/<txtstem>_<rootid>.root.
 #
-# Each job runs `met_trigger_efficiency.py skim` on a single text file and writes
-# one skim ROOT per ROOT path listed inside it: <OUTDIR>/<txtstem>_<rootid>.root
+# This file is submitted once per .txt by condorJobs/met_trigger/submit_all.sh,
+# which passes KIND / TXTFILE / BATCH / NJOBS so each .txt becomes its own
+# ClusterId (NJOBS = ceil(NFILES/BATCH) jobs; e.g. 594 files / 50 -> 12 jobs).
 #
-# Edit the four variables below, then:  condor_submit submit.sub
+# Vars passed by submit_all.sh via -append (do not hardcode here):
+#   KIND, TXTFILE, BATCH, NJOBS
 #
-#   REPO_DIR : absolute path to this DarkBottomLine checkout (on a shared FS)
-#   CONFIG   : year YAML (any era), e.g. configs/2024.yaml
-#   OUTDIR   : where skim ROOTs land (you set this; must be condor-visible)
-#   JOBLIST  : file with one "<kind> <txtpath>" per line (make_joblist.sh builds it)
+# Static vars below use $(USER_INITIAL)/$ENV(USER) so they resolve to YOUR paths
+# with no editing — only change them if your checkout / output / proxy live
+# somewhere other than the standard CERN AFS+EOS home layout:
+#   REPO_DIR   : this DarkBottomLine checkout (default: AFS home/DarkBottomLine)
+#   CONFIG     : year YAML (any era), e.g. configs/2024.yaml
+#   OUTDIR     : where skim ROOTs land (job-visible: AFS/EOS)
+#   Proxy_path : AFS path to your x509 proxy (create it first, see README);
+#                must be a FULL resolved AFS path (NOT $HOME / ~ / /eos).
 # ---------------------------------------------------------------------------
 
-REPO_DIR = /afs/cern.ch/user/CHANGE/ME/DarkBottomLine
+REPO_DIR = /CHANGE/ME/DarkBottomLine
 CONFIG   = configs/2024.yaml
-OUTDIR   = /eos/user/CHANGE/ME/met_trigger_skims/2024
-JOBLIST  = condorJobs/met_trigger/joblist.txt
+OUTDIR   = /CHANGE/ME/met_trigger_skims/2024
+
+# x509 proxy: shipped into the job sandbox and used for XRootD reads.
+# The AFS path is built from your username: /afs/cern.ch/user/<initial>/<user>/private/.
+Proxy_filename = x509up_u$(id -u)
+Proxy_path     = /afs/cern.ch/user/$(USER_INITIAL)/$ENV(USER)/private/$(Proxy_filename)
 
 executable            = condorJobs/met_trigger/run_skim.sh
-arguments             = $(REPO_DIR) $(CONFIG) $(OUTDIR) $(KIND) $(TXTFILE)
+# Args: proxy filename, repo, config, outdir, kind, txtfile, ProcId, batch size.
+arguments             = $(Proxy_filename) $(REPO_DIR) $(CONFIG) $(OUTDIR) $(KIND) $(TXTFILE) $(ProcId) $(BATCH)
 
-# Grid proxy for XRootD (create with voms-proxy-init before submitting).
-x509userproxy         = $ENV(X509_USER_PROXY)
-use_x509userproxy     = true
+should_transfer_files = YES
+when_to_transfer_output = ON_EXIT
+transfer_output_files = ""
+transfer_input_files  = $(Proxy_path)
 
-universe              = vanilla
 output                = condorJobs/met_trigger/logs/skim_$(ClusterId)_$(ProcId).out
 error                 = condorJobs/met_trigger/logs/skim_$(ClusterId)_$(ProcId).err
 log                   = condorJobs/met_trigger/logs/skim_$(ClusterId).log
 
-# Resources — a skim over one samplelist's files; bump if the txt is large.
-request_cpus          = 1
-request_memory        = 4 GB
-request_disk          = 4 GB
+# Resources — up to BATCH files per job, skimmed sequentially (one at a time in
+# memory). ~50 files x ~30s ~= 25 min/job; workday (8h) has ample headroom.
+request_memory = 4000
+request_cpus = 1
 +JobFlavour           = "workday"
 
-# One job per line of JOBLIST: first token = KIND (data|mc), second = TXTFILE.
-queue KIND, TXTFILE from $(JOBLIST)
+# Hold on failure; retry every 10 min up to 3 starts.
+on_exit_hold     = (ExitBySignal == True) || (ExitCode != 0)
+periodic_release = (NumJobStarts < 3) && ((CurrentTime - EnteredCurrentStatus) > 600)
+
+# NJOBS jobs (ProcId 0 .. NJOBS-1), each a BATCH-sized slice of TXTFILE.
+queue $(NJOBS)
