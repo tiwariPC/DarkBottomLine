@@ -895,6 +895,16 @@ def _save(fig: plt.Figure, outpath: str) -> None:
     print(f"Saved: {pdf_path}")
 
 
+def _cms_label(label: str, data: bool, lumi: Optional[float], com: float,
+               ax: "plt.Axes") -> None:
+    """hep.cms.label across mplhep versions: newer wants text=, older (LCG_109)
+    wants label=. Try text= first, fall back to label=."""
+    try:
+        hep.cms.label(text=label, data=data, lumi=lumi, com=com, ax=ax, fontsize=18)
+    except TypeError:
+        hep.cms.label(label=label, data=data, lumi=lumi, com=com, ax=ax, fontsize=18)
+
+
 def plot_efficiency(
     edges: np.ndarray,
     per_channel: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]],
@@ -920,7 +930,7 @@ def plot_efficiency(
     ax.set_xlim(edges[0], edges[-1])
     ax.axhline(1.0, color="grey", ls="--", lw=1)
     ax.legend(loc="lower right", fontsize=16)
-    hep.cms.label(text=label, data=is_data, lumi=lumi, com=com, ax=ax, fontsize=18)
+    _cms_label(label, is_data, lumi, com, ax)
     _save(fig, outpath)
 
 
@@ -957,7 +967,7 @@ def plot_efficiency_all(
     ax.set_xlim(edges[0], edges[-1])
     ax.axhline(1.0, color="grey", ls="--", lw=1)
     ax.legend(loc="lower right", fontsize=14, ncol=2)
-    hep.cms.label(text=label, data=True, lumi=lumi, com=com, ax=ax, fontsize=18)
+    _cms_label(label, True, lumi, com, ax)
     _save(fig, outpath)
 
 
@@ -986,7 +996,7 @@ def plot_scale_factor(
     ax.set_xlim(edges[0], edges[-1])
     ax.axhline(1.0, color="grey", ls="--", lw=1)
     ax.legend(loc="lower right", fontsize=16)
-    hep.cms.label(text=label, data=True, lumi=lumi, com=com, ax=ax, fontsize=18)
+    _cms_label(label, True, lumi, com, ax)
     _save(fig, outpath)
 
 
