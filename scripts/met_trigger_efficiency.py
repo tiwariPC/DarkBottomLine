@@ -237,6 +237,52 @@ def _require(cfg: Dict[str, Any], *keys: str) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Golden-JSON (certified lumi) mask — data only
+# ---------------------------------------------------------------------------
+
+def load_golden_json(path: Optional[str]) -> Optional[Dict[int, List[List[int]]]]:
+    """
+    Load a CMS golden JSON {run: [[lo,hi], ...]} of certified lumisection ranges.
+    Returns {int(run): [[lo,hi],...]} or None if path is None/missing (mask disabled).
+    """
+    if not path or not os.path.isfile(path):
+        if path:
+            print(f"WARNING: golden JSON not found: {path} — lumi mask disabled")
+        return None
+    with open(path) as f:
+        raw = json.load(f)
+    return {int(run): ranges for run, ranges in raw.items()}
+
+
+def golden_mask(events: ak.Array,
+                golden: Optional[Dict[int, List[List[int]]]]) -> np.ndarray:
+    """
+    Per-event boolean: True if (run, luminosityBlock) is in a certified range. Removes
+    events from lumisections where the detector / triggers were not good — the proper
+    fix for run-era data-quality dips (e.g. a MET-trigger-off period). All-True when no
+    golden JSON (MC, or mask disabled).
+    """
+    n = len(events["event"])
+    if golden is None or "run" not in events.fields or "luminosityBlock" not in events.fields:
+        return np.ones(n, dtype=bool)
+    run = ak.to_numpy(events["run"]).astype(np.int64)
+    lumi = ak.to_numpy(events["luminosityBlock"]).astype(np.int64)
+    mask = np.zeros(n, dtype=bool)
+    # Group by unique run so each run's ranges are checked once.
+    for r in np.unique(run):
+        ranges = golden.get(int(r))
+        if not ranges:
+            continue
+        in_run = run == r
+        lr = lumi[in_run]
+        good = np.zeros(lr.shape, dtype=bool)
+        for lo, hi in ranges:
+            good |= (lr >= lo) & (lr <= hi)
+        mask[in_run] = good
+    return mask
+
+
+# ---------------------------------------------------------------------------
 # File-list resolution
 # ---------------------------------------------------------------------------
 
@@ -468,6 +514,7 @@ def build_event_rows(
     events: ak.Array,
     cfg: Dict[str, Any],
     channels: List[str],
+    golden: Optional[Dict[int, List[List[int]]]] = None,
 ) -> Dict[str, np.ndarray]:
     """
     Evaluate every event for the W->munu and Z->mumu preselections and return ONE
@@ -478,8 +525,8 @@ def build_event_rows(
     The two channels are selected via disjoint muon-count cuts:
       wmu: exactly 1 tight muon and no second loose muon (n_tight==1, n_loose==1)
       zmu: 1 tight + exactly one extra loose muon           (n_tight==1, n_loose==2)
-    Both also require: reference IsoMu trigger, MET filters, leading jet pt>50, and a
-    loose-electron veto.
+    Both also require: certified lumi (golden JSON, data only), reference IsoMu
+    trigger, MET filters, leading jet pt>50, and a loose-electron veto.
     """
     muon_cfg = _require(cfg, "objects", "muons")
     ele_cfg = _require(cfg, "objects", "electrons")
@@ -508,7 +555,9 @@ def build_event_rows(
     lead_jet_mask = ak.to_numpy(_leading_jet_pt(events, jet_cfg) > 50.0)
     loose_ele = select_electrons(events, ele_cfg, wp="loose")
     ele_veto = ak.to_numpy(~ak.any(loose_ele, axis=1))
-    common = mu_trig.astype(bool) & filter_mask.astype(bool) & lead_jet_mask & ele_veto
+    lumi_mask = golden_mask(events, golden)  # certified lumi (data); all-True for MC
+    common = (lumi_mask & mu_trig.astype(bool) & filter_mask.astype(bool)
+              & lead_jet_mask & ele_veto)
 
     wmu = common & (n_tight == 1) & (n_loose == 1)
     zmu = common & (n_tight == 1) & (n_loose == 2)
@@ -566,11 +615,12 @@ class BinCounts:
 
 
 def _read_one_file(root_path: str, channels: List[str], cfg: Dict[str, Any],
-                   is_mc: bool, max_events: Optional[int]) -> Dict[str, Any]:
+                   is_mc: bool, max_events: Optional[int],
+                   golden: Optional[Dict[int, List[List[int]]]] = None) -> Dict[str, Any]:
     """Open + process a single file (one attempt). Raises on any XRootD/read error."""
     with uproot.open(root_path) as tfile:
         events = load_events(tfile, max_events)
-        rows = build_event_rows(events, cfg, channels)
+        rows = build_event_rows(events, cfg, channels, golden=golden)
         # File-total sum of sign(genWeight) + raw event count over ALL events. Data has
         # no genWeight -> both equal the raw NanoAOD event count (all-ones data weight).
         if is_mc:
@@ -591,6 +641,7 @@ def compute_event_rows(
     is_mc: bool,
     max_events: Optional[int],
     n_retries: int = 3,
+    golden: Optional[Dict[int, List[List[int]]]] = None,
 ) -> Optional[Dict[str, Any]]:
     """
     Load one ROOT file, build the one-row-per-selected-event skim (SKIM_BRANCHES),
@@ -608,7 +659,7 @@ def compute_event_rows(
     last_exc: Optional[Exception] = None
     for attempt in range(1, n_retries + 1):
         try:
-            return _read_one_file(root_path, channels, cfg, is_mc, max_events)
+            return _read_one_file(root_path, channels, cfg, is_mc, max_events, golden)
         except Exception as exc:  # noqa: BLE001 - retry transient XRootD errors
             last_exc = exc
             if attempt < n_retries:
@@ -656,6 +707,7 @@ def accumulate_file(
     xsecs: Dict[str, float],
     lumi: float,
     max_events: Optional[int],
+    golden: Optional[Dict[int, List[List[int]]]] = None,
 ) -> None:
     """
     Single-pass (one-shot 'run' mode): load a NanoAOD file, normalise, fill counts.
@@ -664,7 +716,8 @@ def accumulate_file(
     SUMW (single-file normalisation). For the multi-file two-step path use skim +
     analyze, which sums SUMW across a sample's files.
     """
-    rows = compute_event_rows(root_path, channels, cfg, is_mc, max_events)
+    rows = compute_event_rows(root_path, channels, cfg, is_mc, max_events,
+                              golden=golden)
     if rows is None:
         return
     if is_mc:
@@ -736,16 +789,21 @@ def read_skim(path: str) -> Optional[Dict[str, Any]]:
     """
     try:
         with uproot.open(path) as f:
-            if SKIM_TREE not in f:
-                print(f"WARNING: no '{SKIM_TREE}' tree in {path}")
+            # Integrity guard against TRUNCATED skims (a condor job that died mid-write
+            # leaves a partial ROOT: the tree metadata reads, arrays() returns garbage
+            # high-recoil rows, and the plateau "dips"). A clean skim always has the
+            # tree + BOTH 1-bin histos (they are written AFTER the tree), so a missing
+            # histogram is a reliable truncation signal. Force a full key list too,
+            # which raises on a corrupt directory record.
+            keys = set(k.split(";")[0] for k in f.keys())
+            missing = [n for n in (SKIM_TREE, SUMW_HIST, COUNT_HIST) if n not in keys]
+            if missing:
+                print(f"WARNING: skipping truncated/incomplete skim {path} "
+                      f"(missing {missing})")
                 return None
             arr = f[SKIM_TREE].arrays(library="np")
-            sumw = 0.0
-            if SUMW_HIST in f:
-                sumw = float(np.sum(f[SUMW_HIST].values()))
-            else:
-                print(f"WARNING: no '{SUMW_HIST}' histogram in {path}; sumw=0")
-            count = float(np.sum(f[COUNT_HIST].values())) if COUNT_HIST in f else 0.0
+            sumw = float(np.sum(f[SUMW_HIST].values()))
+            count = float(np.sum(f[COUNT_HIST].values()))
     except Exception as exc:  # noqa: BLE001
         print(f"WARNING: skipping unreadable skim {path}: {exc}")
         return None
@@ -863,6 +921,43 @@ def plot_efficiency(
     ax.axhline(1.0, color="grey", ls="--", lw=1)
     ax.legend(loc="lower right", fontsize=16)
     hep.cms.label(text=label, data=is_data, lumi=lumi, com=com, ax=ax, fontsize=18)
+    _save(fig, outpath)
+
+
+def plot_efficiency_all(
+    edges: np.ndarray,
+    data_eff: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    mc_eff: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    outpath: str,
+    lumi: Optional[float],
+    com: float,
+    label: str,
+) -> None:
+    """All four efficiency curves on one axes, each a DISTINCT colour+marker:
+    data W/Z and MC W/Z."""
+    ctr, half = _bin_centres(edges)
+    fig, ax = plt.subplots(figsize=(9, 8))
+    ch_leg = {"wmn": r"$W\to\mu\nu$", "zmm": r"$Z\to\mu\mu$"}
+    # One (colour, marker) per curve = per (source, channel).
+    curve_style = {
+        ("data", "wmn"): ("#3f90da", "o"),   # blue circle
+        ("data", "zmm"): ("#bd1f01", "s"),   # red square
+        ("mc",   "wmn"): ("#e76300", "^"),   # orange triangle
+        ("mc",   "zmm"): ("#832db6", "D"),   # purple diamond
+    }
+    for src, effs in (("data", data_eff), ("mc", mc_eff)):
+        for ch, (eff, elo, ehi) in effs.items():
+            col, mk = curve_style.get((src, ch), ("C0", "o"))
+            leg = f"{ch_leg.get(ch, ch)} ({'data' if src == 'data' else 'MC'})"
+            ax.errorbar(ctr, eff, yerr=[elo, ehi], xerr=half, fmt=mk, color=col,
+                        capsize=2, markersize=6, label=leg)
+    ax.set_xlabel(r"Hadronic recoil $U$ [GeV]", fontsize=18)
+    ax.set_ylabel("Trigger efficiency", fontsize=18)
+    ax.set_ylim(0.0, 1.15)
+    ax.set_xlim(edges[0], edges[-1])
+    ax.axhline(1.0, color="grey", ls="--", lw=1)
+    ax.legend(loc="lower right", fontsize=14, ncol=2)
+    hep.cms.label(text=label, data=True, lumi=lumi, com=com, ax=ax, fontsize=18)
     _save(fig, outpath)
 
 
@@ -997,6 +1092,12 @@ def make_plots_and_json(
         os.path.join(outdir, "HLT_PFMETNoMu_120To140_IDTight_MC_eff.png"),
         lumi, com, label, is_data=False,
     )
+    # All four curves (data + MC, both channels) on one axes.
+    plot_efficiency_all(
+        edges, data_eff, mc_eff,
+        os.path.join(outdir, "HLT_PFMETNoMu_120To140_IDTight_all_eff.png"),
+        lumi, com, label,
+    )
 
     sf_per_channel: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
     sf_values: Dict[str, np.ndarray] = {}
@@ -1047,6 +1148,12 @@ def cmd_skim(args: argparse.Namespace) -> None:
     """
     cfg = load_config(args.config)
     channels = _resolve_channels(args.channel)
+    # Golden JSON (certified lumi) applied to DATA only, at skim time. Path from CLI
+    # override or configs/<year>.yaml data.golden_json; None disables the mask.
+    golden_path = args.golden_json or cfg.get("data", {}).get("golden_json")
+    golden = load_golden_json(golden_path)
+    print(f"Golden JSON: {golden_path or 'DISABLED'} "
+          f"({len(golden)} runs)" if golden else f"Golden JSON: DISABLED")
 
     data_inputs = resolve_inputs(args.data_files) if args.data_files else []
     mc_inputs = resolve_inputs(args.mc_files) if args.mc_files else []
@@ -1059,7 +1166,8 @@ def cmd_skim(args: argparse.Namespace) -> None:
     data_rows_by_stem: Dict[str, List[Dict[str, Any]]] = {}
     for i, (root_path, stem) in enumerate(data_inputs):
         print(f"[data {i + 1}/{len(data_inputs)}] {root_path}")
-        rows = compute_event_rows(root_path, channels, cfg, False, args.max_events)
+        rows = compute_event_rows(root_path, channels, cfg, False, args.max_events,
+                                  golden=golden)
         if rows is not None:
             data_rows_by_stem.setdefault(stem, []).append(rows)
     for stem, rows_list in data_rows_by_stem.items():
@@ -1132,6 +1240,8 @@ def cmd_run(args: argparse.Namespace) -> None:
     n_bins = len(edges) - 1
     channels = _resolve_channels(args.channel)
     xsecs = load_xsections(args.xsection_json)
+    golden_path = args.golden_json or cfg.get("data", {}).get("golden_json")
+    golden = load_golden_json(golden_path)
 
     data_inputs = resolve_inputs(args.data_files)
     mc_inputs = resolve_inputs(args.mc_files)
@@ -1147,7 +1257,7 @@ def cmd_run(args: argparse.Namespace) -> None:
         print(f"[data {i + 1}/{len(data_inputs)}] {root_path}")
         accumulate_file(root_path, stem, channels, cfg, edges, data_counts,
                         is_mc=False, xsecs=xsecs, lumi=lumi,
-                        max_events=args.max_events)
+                        max_events=args.max_events, golden=golden)
     for i, (root_path, stem) in enumerate(mc_inputs):
         target = mc_channels(channels)
         print(f"[mc {i + 1}/{len(mc_inputs)}] ({'+'.join(target)}) {root_path}")
@@ -1166,6 +1276,9 @@ def _add_common(p: argparse.ArgumentParser) -> None:
                    help="Luminosity fb^-1 (default: cfg 'lumi')")
     p.add_argument("--xsection-json",
                    default="data/cross-section/xsection_background_run3.json")
+    p.add_argument("--golden-json", default=None,
+                   help="Golden JSON of certified lumisections (data only). "
+                        "Default: configs/<year>.yaml data.golden_json.")
     p.add_argument("--max-events", type=int, default=None,
                    help="entry_stop per file (fast test slices)")
     p.add_argument("--max-files", type=int, default=None,
