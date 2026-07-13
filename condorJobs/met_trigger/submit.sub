@@ -1,7 +1,7 @@
 # ---------------------------------------------------------------------------
 # Condor submit: MET-trigger skim, ONE cluster per samplelist .txt, ONE job per
-# BATCH-sized slice of ROOT files. ProcId selects the slice; each job skims up to
-# BATCH files to <OUTDIR>/<txtstem>/<txtstem>_<rootid>.root.
+# BATCH-sized slice of ROOT files. ProcId selects the slice; each job merges up to
+# BATCH files into <OUTDIR>/<txtstem>/<txtstem>_<ClusterId>_<ProcId>.root.
 #
 # This file is submitted once per .txt by condorJobs/met_trigger/submit_all.sh,
 # which passes KIND / TXTFILE / BATCH / NJOBS so each .txt becomes its own
@@ -10,28 +10,28 @@
 # Vars passed by submit_all.sh via -append (do not hardcode here):
 #   KIND, TXTFILE, BATCH, NJOBS
 #
-# Static vars below use $(USER_INITIAL)/$ENV(USER) so they resolve to YOUR paths
-# with no editing — only change them if your checkout / output / proxy live
-# somewhere other than the standard CERN AFS+EOS home layout:
+# Static vars below only need changing if your checkout / output live somewhere
+# other than the standard CERN AFS+EOS home layout:
 #   REPO_DIR   : this DarkBottomLine checkout (default: AFS home/DarkBottomLine)
 #   CONFIG     : year YAML (any era), e.g. configs/2024.yaml
 #   OUTDIR     : where skim ROOTs land (job-visible: AFS/EOS)
-#   Proxy_path : AFS path to your x509 proxy (create it first, see README);
-#                must be a FULL resolved AFS path (NOT $HOME / ~ / /eos).
 # ---------------------------------------------------------------------------
 
 REPO_DIR = /CHANGE/ME/DarkBottomLine
 CONFIG   = configs/2024.yaml
 OUTDIR   = /CHANGE/ME/met_trigger_skims/2024
 
-# x509 proxy: shipped into the job sandbox and used for XRootD reads.
-# The AFS path is built from your username: /afs/cern.ch/user/<initial>/<user>/private/.
-Proxy_filename = x509up_u$(id -u)
+# x509 proxy: shipped into the job sandbox and used for XRootD reads. The AFS
+# directory auto-resolves from your username (USER_INITIAL injected by
+# submit_all.sh, $ENV(USER) is your username); set Proxy_filename to your default
+# voms proxy name (x509up_u<uid>). Create it first (see README).
+Proxy_filename = x509up_u98885
 Proxy_path     = /afs/cern.ch/user/$(USER_INITIAL)/$ENV(USER)/private/$(Proxy_filename)
 
+universe = vanilla
 executable            = condorJobs/met_trigger/run_skim.sh
-# Args: proxy filename, repo, config, outdir, kind, txtfile, ProcId, batch size.
-arguments             = $(Proxy_filename) $(REPO_DIR) $(CONFIG) $(OUTDIR) $(KIND) $(TXTFILE) $(ProcId) $(BATCH)
+# Args: proxy filename, repo, config, outdir, kind, txtfile, ProcId, batch, ClusterId.
+arguments             = $(Proxy_filename) $(REPO_DIR) $(CONFIG) $(OUTDIR) $(KIND) $(TXTFILE) $(ProcId) $(BATCH) $(ClusterId)
 
 should_transfer_files = YES
 when_to_transfer_output = ON_EXIT

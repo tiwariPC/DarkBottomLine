@@ -1,12 +1,13 @@
 #!/bin/sh
 # ---------------------------------------------------------------------------
 # Condor executable: skim a BATCH of ROOT files (a contiguous slice of a
-# samplelist .txt) into per-file skim ROOTs: <OUTDIR>/<txtstem>/<txtstem>_<rootid>.root
+# samplelist .txt), merged into ONE output:
+#   <OUTDIR>/<txtstem>/<txtstem>_<ClusterId>_<ProcId>.root
 #
 # Job model: one cluster per .txt, one job per BATCH-sized slice. ProcId selects
 # the slice = lines [ProcId*BATCH+1 .. ProcId*BATCH+BATCH] of TXTFILE. The skim
-# loops those files and writes one output ROOT per input file (rootid keeps each
-# unique), so batching only changes how many files a single job processes.
+# merges that whole slice into one output ROOT; ClusterId+ProcId keep every job's
+# output unique (ClusterId across resubmitted clusters, ProcId across jobs in one).
 #
 # Args (from submit.sub):
 #   $1  PROXY      x509 proxy filename in the job sandbox (shipped via
@@ -18,8 +19,9 @@
 #   $6  TXTFILE    the samplelist .txt (on shared FS; job reads a slice of it)
 #   $7  PROCID     0-based job index → selects the slice of TXTFILE
 #   $8  BATCH      number of ROOT files per job (slice size)
+#   $9  CLUSTERID  condor ClusterId (unique per submission, shared by all ProcIds)
 #
-# Output: <OUTDIR>/<txtstem>/<txtstem>_<rootid>.root  (one per input ROOT)
+# Output: <OUTDIR>/<txtstem>/<txtstem>_<ClusterId>_<ProcId>.root  (one per job)
 # ---------------------------------------------------------------------------
 ulimit -s unlimited
 set -e
@@ -32,22 +34,24 @@ KIND="$5"
 TXTFILE="$6"
 PROCID="$7"
 BATCH="$8"
+CLUSTERID="$9"
 
 # Grid proxy shipped into the sandbox: point XRootD at it (relative to CWD, the
 # sandbox, before we cd into the repo).
 export X509_USER_PROXY="$(pwd)/${PROXY}"
 
 echo "=== met_trigger skim job ==="
-echo "host    : $(hostname)"
-echo "proxy   : ${X509_USER_PROXY}"
-echo "repo    : ${REPO_DIR}"
-echo "config  : ${CONFIG}"
-echo "outdir  : ${OUTDIR}"
-echo "kind    : ${KIND}"
-echo "txtfile : ${TXTFILE}"
-echo "procid  : ${PROCID}"
-echo "batch   : ${BATCH}"
-echo "start   : $(date)"
+echo "host      : $(hostname)"
+echo "proxy     : ${X509_USER_PROXY}"
+echo "repo      : ${REPO_DIR}"
+echo "config    : ${CONFIG}"
+echo "outdir    : ${OUTDIR}"
+echo "kind      : ${KIND}"
+echo "txtfile   : ${TXTFILE}"
+echo "procid    : ${PROCID}"
+echo "batch     : ${BATCH}"
+echo "clusterid : ${CLUSTERID}"
+echo "start     : $(date)"
 
 cd "${REPO_DIR}"
 
@@ -109,17 +113,21 @@ TXT_STEM=$(basename "${TXTFILE}" .txt)
 
 # Write the slice samplelist to a PRIVATE scratch dir — never the repo root.
 # pwd is REPO_DIR (we cd'd there), so writing here would pollute the shared checkout
-# and clash with the real data/samplelist files. The temp file must be named
-# <TXT_STEM>.txt so the skim derives the <txtstem>_<rootid>.root output names from
-# it — isolate it in its own scratch subdirectory (per ProcId) instead of renaming.
+# and clash with the real data/samplelist files. The temp file is named
+# <TXT_STEM>_<ClusterId>_<ProcId>.txt: the skim step merges ALL files it's given
+# into ONE output named after this stem, so giving each job a distinct stem is what
+# keeps concurrent (and resubmitted) jobs from writing the same output.
 SCRATCH="${_CONDOR_SCRATCH_DIR:-$(mktemp -d)}"
-SLICE_DIR="${SCRATCH}/slice_${TXT_STEM}_${PROCID}"
+SLICE_DIR="${SCRATCH}/slice_${TXT_STEM}_${CLUSTERID}_${PROCID}"
 mkdir -p "${SLICE_DIR}"
-SLICE_TXT="${SLICE_DIR}/${TXT_STEM}.txt"
+SLICE_STEM="${TXT_STEM}_${CLUSTERID}_${PROCID}"
+SLICE_TXT="${SLICE_DIR}/${SLICE_STEM}.txt"
 printf '%s\n' "${SLICE}" > "${SLICE_TXT}"
 
-# Skim into a per-samplelist subdir: <OUTDIR>/<txtstem>/. The skim loops every ROOT
-# in the slice txt and writes one <txtstem>_<rootid>.root per file (rootid unique).
+# Skim into a per-samplelist subdir: <OUTDIR>/<txtstem>/. Each job merges its BATCH
+# slice into one <txtstem>_<ClusterId>_<ProcId>.root; a later `hadd` combines a
+# sample's per-job outputs (see condorJobs/met_trigger/README.md) into the final
+# one-file-per-sample skim.
 DEST_DIR="${OUTDIR}/${TXT_STEM}"
 mkdir -p "${DEST_DIR}"
 python3 scripts/met_trigger_efficiency.py skim \

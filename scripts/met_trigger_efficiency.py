@@ -18,15 +18,15 @@ Outputs (fixed names):
 
 Two-step mode (recommended for hundreds of remote files):
 
-    # Step 1 - skim: preselect NanoAOD, write one small ROOT per input file as
-    #   <outdir>/<txtfile stem>_<unique last string of the input ROOT filename>.root
+    # Step 1 - skim: preselect NanoAOD, any number of input files per stem merge
+    #   into one skim ROOT: <outdir>/<stem>.root, one per samplelist/file stem
+    #   (data and MC alike) — the stem is also the xsec lookup key used in analyze
+    #   for MC.
     python scripts/met_trigger_efficiency.py skim --config configs/2024.yaml \
         --data-files data/samplelist/2024/Muon*.txt \
         --mc-files data/samplelist/2024/DYto2L-2Jets_*.txt \
                    data/samplelist/2024/WtoLNu-2Jets_*.txt \
         --outdir outputs/skims/2024
-
-    # (optional) hadd skims per samplelist yourself, then...
 
     # Step 2 - analyze: read the skims, make plots + correctionlib JSON (fast, local)
     python scripts/met_trigger_efficiency.py analyze --config configs/2024.yaml \
@@ -65,31 +65,149 @@ import yaml
 
 plt.style.use(hep.style.CMS)
 
-# Make the repo root importable when this file is run by path (python3 scripts/x.py),
-# where sys.path[0] is scripts/ rather than the repo root, so `darkbottomline` (a
-# repo-root package) would otherwise not be found.
-import sys as _sys
-
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if _REPO_ROOT not in _sys.path:
-    _sys.path.insert(0, _REPO_ROOT)
-
-from darkbottomline.objects import (
-    build_muon_collection,
-    calculate_recoil,
-    select_electrons,
-    select_muons,
-)
-from darkbottomline.selections import pass_met_filters, pass_triggers
-
-# We load NanoAOD via uproot directly rather than coffea NanoEvents: the framework's
-# object builders / selection masks read flat branches (events["Muon_pt"] etc.), which
-# work identically on a plain uproot record array, and this avoids a hard coffea<->uproot
-# schema version coupling. Only the flat branches we actually use are read per file.
+# This script is SELF-CONTAINED: all object building, selection, trigger and recoil
+# logic is defined below (no darkbottomline import). NanoAOD is read via uproot as a
+# plain awkward record array. Only the flat branches we actually use are read per file.
 BRANCH_PREFIXES = (
     "Muon_", "Electron_", "Jet_", "PuppiMET_", "PFMET_", "MET_",
 )
 SCALAR_BRANCHES = ("event", "run", "luminosityBlock", "genWeight")
+
+
+# ---------------------------------------------------------------------------
+# Object building + selection (inlined, previously from darkbottomline)
+# ---------------------------------------------------------------------------
+
+def build_muon_collection(events: ak.Array) -> ak.Array:
+    """Zip the muon collection from flat branches (kinematics + ID + iso)."""
+    fields = {
+        "pt": events["Muon_pt"],
+        "eta": events["Muon_eta"],
+        "phi": events["Muon_phi"],
+        "looseId": events["Muon_looseId"],
+        "tightId": events["Muon_tightId"],
+        "pfIsoId": events["Muon_pfIsoId"],
+    }
+    if "Muon_charge" in events.fields:
+        fields["charge"] = events["Muon_charge"]
+    if "Muon_mass" in events.fields:
+        fields["mass"] = events["Muon_mass"]
+    return ak.zip(fields)
+
+
+def select_muons(events: ak.Array, config: Dict[str, Any], wp: str = "loose") -> ak.Array:
+    """Per-muon boolean mask. wp='loose' uses pt_min_loose + looseId, 'tight' uses
+    pt_min + tightId. Isolation: pfIsoId >= iso_wp_{loose,tight}."""
+    pt_min = config["pt_min_loose"] if wp == "loose" else config["pt_min"]
+    pt_mask = events["Muon_pt"] > pt_min
+    eta_mask = abs(events["Muon_eta"]) < config["eta_max"]
+    iso_wp = config["iso_wp_loose"] if wp == "loose" else config["iso_wp_tight"]
+    iso_mask = events["Muon_pfIsoId"] >= iso_wp
+    id_mask = (events["Muon_looseId"] == 1) if wp == "loose" else (events["Muon_tightId"] == 1)
+    return pt_mask & eta_mask & id_mask & iso_mask
+
+
+def select_electrons(events: ak.Array, config: Dict[str, Any], wp: str = "loose") -> ak.Array:
+    """Per-electron boolean mask (used for the loose-electron veto). cutBased ID +
+    mvaIso WP, with the ECAL barrel-endcap gap (1.4442<|eta|<1.566) excluded."""
+    ele_eta = events["Electron_eta"]
+    pt_min = config["pt_min_loose"] if wp == "loose" else config["pt_min"]
+    pt_mask = events["Electron_pt"] > pt_min
+    eta_mask = abs(ele_eta) < config["eta_max"]
+    in_gap = (abs(ele_eta) > 1.4442) & (abs(ele_eta) < 1.566)
+    gap_veto_mask = ~in_gap
+    if wp == "loose":
+        id_wp = config["id_wp_loose"]
+        iso_mask = events["Electron_mvaIso_WP90"] == 1
+    else:
+        id_wp = config["id_wp_tight"]
+        iso_mask = events["Electron_mvaIso_WP80"] == 1
+    id_mask = events["Electron_cutBased"] >= id_wp
+    return pt_mask & eta_mask & gap_veto_mask & id_mask & iso_mask
+
+
+# ---------------------------------------------------------------------------
+# Triggers + MET filters (inlined; STRICT on the analysis MET/reference paths)
+# ---------------------------------------------------------------------------
+
+def pass_triggers(events: ak.Array, trigger_paths: List[str],
+                  require_present: bool = False) -> ak.Array:
+    """
+    OR of the given HLT paths (per-event bool). Empty list -> all True.
+
+    require_present=True: EVERY listed path must exist in the file, else raise. This
+    guards the MET / reference triggers: if a file is missing those branches, the old
+    silent behaviour returned all-False, so its events entered the denominator but
+    never the numerator -> the efficiency was dragged DOWN (worst in the sparse
+    high-recoil tail). We now fail loudly instead of biasing the turn-on.
+    """
+    if not trigger_paths:
+        return ak.ones_like(events["event"], dtype=bool)
+    present = [t for t in trigger_paths if t in events.fields]
+    if require_present:
+        missing = [t for t in trigger_paths if t not in events.fields]
+        if missing:
+            raise KeyError(
+                f"required trigger branch(es) absent from file: {missing} "
+                f"(present HLT-like fields would silently bias the efficiency)"
+            )
+    mask = ak.zeros_like(events["event"], dtype=bool)
+    for t in present:
+        mask = mask | events[t]
+    return mask
+
+
+def pass_met_filters(events: ak.Array, filter_names: List[str]) -> ak.Array:
+    """AND of the given MET noise filters (per-event bool). Empty list -> all True.
+    Absent filters are skipped (a missing recommended filter is not a hard error)."""
+    if not filter_names:
+        return ak.ones_like(events["event"], dtype=bool)
+    mask = ak.ones_like(events["event"], dtype=bool)
+    for f in filter_names:
+        if f in events.fields:
+            mask = mask & events[f]
+    return mask
+
+
+def _met_pt_phi(events: ak.Array) -> Tuple[ak.Array, ak.Array]:
+    """MET (pt, phi) with the PuppiMET -> PFMET -> MET fallback. Loud if none present."""
+    def _get(*cands: str) -> ak.Array:
+        for v in cands:
+            if v in events.fields:
+                return events[v]
+        raise KeyError(f"No MET branch found among {cands}")
+    return (_get("PuppiMET_pt", "PFMET_pt", "MET_pt"),
+            _get("PuppiMET_phi", "PFMET_phi", "MET_phi"))
+
+
+def calculate_recoil(events: ak.Array, muons: ak.Array
+                     ) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Hadronic recoil (U, phi) with U = | MET_vec + sum(mu pT_vec) | (muons added back,
+    since the HLT is PFMETNoMu). MET is PuppiMET (fallback PFMET/MET), via px/py.
+    """
+    met_pt, met_phi = _met_pt_phi(events)
+    lep_px = ak.sum(muons.pt * np.cos(muons.phi), axis=1)
+    lep_py = ak.sum(muons.pt * np.sin(muons.phi), axis=1)
+    ux = met_pt * np.cos(met_phi) + lep_px
+    uy = met_pt * np.sin(met_phi) + lep_py
+    return (ak.to_numpy(np.sqrt(ux ** 2 + uy ** 2)),
+            ak.to_numpy(np.arctan2(uy, ux)))
+
+# Skim schema: ONE row per selected event. wmu/zmu are orthogonal booleans (an event
+# is a W->munu OR a Z->mumu candidate, never both). Object scalars are leading-object
+# kinematics (SENTINEL when absent, e.g. lep2 in a W event). genweight is kept for MC
+# normalisation in analyze. Order preserved for readability.
+SENTINEL = -999.0
+SKIM_BRANCHES: Dict[str, Any] = {
+    "recoil": np.float64, "recoilPhi": np.float64,
+    "lep1Pt": np.float64, "lep1Eta": np.float64, "lep1Phi": np.float64,
+    "lep2Pt": np.float64, "lep2Eta": np.float64, "lep2Phi": np.float64,
+    "Jet1Pt": np.float64, "Jet1Eta": np.float64, "Jet1Phi": np.float64,
+    "muTrigPass": np.int32, "metTrigPass": np.int32,
+    "wmu": np.int32, "zmu": np.int32,
+    "genweight": np.float64,
+}
 
 CHANNELS = ("wmn", "zmm")
 DEFAULT_RECOIL_BINS = [
@@ -134,12 +252,32 @@ def _expand_txt(path: str) -> List[str]:
     return out
 
 
+def _dataset_stem(root_path: str) -> str:
+    """
+    Derive a sample stem from a bare ROOT path (CLI-passed, not via .txt).
+
+    CMS (xrootd or local) NanoAOD paths look like
+    .../store/{data,mc}/<campaign>/<DATASET_NAME>/NANOAOD[SIM]/<version>/<numbered
+    dir>/<hash>.root — DATASET_NAME is the component right before NANOAOD[SIM], the
+    same token samplelist .txt stems are named after (so xsec lookup matches either
+    way). Falls back to the file basename if that layout isn't found, so plain local
+    files still get a usable (if per-file) stem.
+    """
+    parts = root_path.rstrip("/").split("/")
+    for i, part in enumerate(parts):
+        if part in ("NANOAOD", "NANOAODSIM") and i > 0:
+            return parts[i - 1]
+    return os.path.splitext(os.path.basename(root_path))[0]
+
+
 def resolve_inputs(patterns: List[str]) -> List[Tuple[str, str]]:
     """
     Expand CLI globs / .txt samplelists into a flat list of (root_path, sample_stem).
 
     sample_stem is the samplelist basename (used for the MC xsec lookup) when the
-    input is a .txt, else the ROOT file basename.
+    input is a .txt; for bare ROOT paths it's the CMS dataset name parsed out of the
+    path (see _dataset_stem) so multiple files of the same sample share a stem and
+    merge into one skim, instead of each bare file getting its own stem.
     """
     resolved: List[Tuple[str, str]] = []
     for pat in patterns:
@@ -150,8 +288,7 @@ def resolve_inputs(patterns: List[str]) -> List[Tuple[str, str]]:
                 for root_path in _expand_txt(m):
                     resolved.append((root_path, stem))
             else:
-                stem = os.path.splitext(os.path.basename(m))[0]
-                resolved.append((m, stem))
+                resolved.append((m, _dataset_stem(m)))
     return resolved
 
 
@@ -304,71 +441,103 @@ def _leading_jet_pt(events: ak.Array, jet_cfg: Dict[str, Any]) -> ak.Array:
     return ak.fill_none(ak.max(jet_pt, axis=1), 0.0)
 
 
-def preselection_mask(
+def _nth(values: ak.Array, n: int) -> np.ndarray:
+    """The n-th (0-based) entry per event of a jagged array; SENTINEL when absent."""
+    padded = ak.pad_none(values, n + 1, axis=1)
+    return ak.to_numpy(ak.fill_none(padded[:, n], SENTINEL))
+
+
+def _leading_jet_obj(events: ak.Array, jet_cfg: Dict[str, Any]
+                     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Per-event leading (max-pt) AK4 jet (pt, eta, phi) among |eta|<eta_max jets;
+    SENTINEL when none pass."""
+    n = len(events["event"])
+    if "Jet_pt" not in events.fields or "Jet_eta" not in events.fields:
+        s = np.full(n, SENTINEL)
+        return s, s, s
+    eta_ok = abs(events["Jet_eta"]) < jet_cfg["eta_max"]
+    jpt = events["Jet_pt"][eta_ok]
+    jeta = events["Jet_eta"][eta_ok]
+    jphi = events["Jet_phi"][eta_ok] if "Jet_phi" in events.fields else jpt * 0.0
+    order = ak.argsort(jpt, axis=1, ascending=False)
+    jpt, jeta, jphi = jpt[order], jeta[order], jphi[order]
+    return _nth(jpt, 0), _nth(jeta, 0), _nth(jphi, 0)
+
+
+def build_event_rows(
     events: ak.Array,
     cfg: Dict[str, Any],
-    channel: str,
-) -> Tuple[ak.Array, ak.Array]:
+    channels: List[str],
+) -> Dict[str, np.ndarray]:
     """
-    Build the preselection mask and the tight-muon collection for the recoil.
+    Evaluate every event for the W->munu and Z->mumu preselections and return ONE
+    row per selected event (an event selected in neither channel is dropped). wmu/zmu
+    are orthogonal booleans set by the muon multiplicity, so an event is at most one of
+    them. Kinematic branches follow the MetTrigSkims schema (SKIM_BRANCHES).
 
-    Preselection (both channels): reference trigger, tight-muon count, leading jet
-    pt > 50, loose-electron veto. Z->mu mu additionally requires a second loose muon.
-    Returns (event_mask, tight_muons_zip) where the zip is masked to selected muons.
+    The two channels are selected via disjoint muon-count cuts:
+      wmu: exactly 1 tight muon and no second loose muon (n_tight==1, n_loose==1)
+      zmu: 1 tight + exactly one extra loose muon           (n_tight==1, n_loose==2)
+    Both also require: reference IsoMu trigger, MET filters, leading jet pt>50, and a
+    loose-electron veto.
     """
     muon_cfg = _require(cfg, "objects", "muons")
     ele_cfg = _require(cfg, "objects", "electrons")
     jet_cfg = _require(cfg, "objects", "jets")
     ref_triggers = _require(cfg, "triggers", "SingleMuon")
+    met_triggers = _require(cfg, "triggers", "MET")
     noise_filters = _require(cfg, "noise_filters")
 
-    # Reference (orthogonal single-muon) trigger + MET noise filters.
-    ref_mask = pass_triggers(events, ref_triggers)
-    filter_mask = pass_met_filters(events, noise_filters)
+    # Triggers (both REQUIRED present -> loud error if a file lacks the branches, so a
+    # missing HLT never silently biases the efficiency) + MET filters.
+    mu_trig = ak.to_numpy(pass_triggers(events, ref_triggers, require_present=True))
+    met_trig = ak.to_numpy(pass_triggers(events, met_triggers, require_present=True))
+    filter_mask = ak.to_numpy(pass_met_filters(events, noise_filters))
 
-    # Muon collections and per-object selection masks.
+    # Muons, ordered by pt so lep1/lep2 are leading/subleading.
     muons = build_muon_collection(events)
-    tight_muon_mask = select_muons(events, muon_cfg, wp="tight")
-    loose_muon_mask = select_muons(events, muon_cfg, wp="loose")
-    tight_muons = muons[tight_muon_mask]
-    n_tight = ak.sum(tight_muon_mask, axis=1)
-    n_loose = ak.sum(loose_muon_mask, axis=1)
+    order = ak.argsort(muons.pt, axis=1, ascending=False)
+    muons = muons[order]
+    tight_mask = select_muons(events, muon_cfg, wp="tight")[order]
+    loose_mask = select_muons(events, muon_cfg, wp="loose")[order]
+    n_tight = ak.to_numpy(ak.sum(tight_mask, axis=1))
+    n_loose = ak.to_numpy(ak.sum(loose_mask, axis=1))
+    loose_muons = muons[loose_mask]  # candidates that define lep1/lep2
 
-    if channel == "wmn":
-        muon_count_mask = n_tight == 1
-    elif channel == "zmm":
-        # >=1 tight muon plus a second muon passing Loose ID (>=2 loose total).
-        muon_count_mask = (n_tight >= 1) & (n_loose >= 2)
+    # Common event-level cuts.
+    lead_jet_mask = ak.to_numpy(_leading_jet_pt(events, jet_cfg) > 50.0)
+    loose_ele = select_electrons(events, ele_cfg, wp="loose")
+    ele_veto = ak.to_numpy(~ak.any(loose_ele, axis=1))
+    common = mu_trig.astype(bool) & filter_mask.astype(bool) & lead_jet_mask & ele_veto
+
+    wmu = common & (n_tight == 1) & (n_loose == 1)
+    zmu = common & (n_tight == 1) & (n_loose == 2)
+    sel = wmu | zmu  # one row per selected event; wmu/zmu are disjoint by n_loose
+    if not sel.any():
+        return {k: np.array([], dtype=dt) for k, dt in SKIM_BRANCHES.items()}
+
+    # Recoil uses the loose muons added back (both channels: all selected muons).
+    recoil, recoil_phi = calculate_recoil(events, loose_muons)
+
+    lep1_pt, lep1_eta, lep1_phi = _nth(loose_muons.pt, 0), _nth(loose_muons.eta, 0), _nth(loose_muons.phi, 0)
+    lep2_pt, lep2_eta, lep2_phi = _nth(loose_muons.pt, 1), _nth(loose_muons.eta, 1), _nth(loose_muons.phi, 1)
+    j_pt, j_eta, j_phi = _leading_jet_obj(events, jet_cfg)
+
+    if "genWeight" in events.fields:
+        genweight = np.sign(ak.to_numpy(events["genWeight"])).astype(np.float64)
     else:
-        raise ValueError(f"Unknown channel: {channel}")
+        genweight = np.ones(len(events["event"]), dtype=np.float64)
 
-    # Leading AK4 jet (|eta| < eta_max) with pt > 50 GeV.
-    lead_jet_mask = _leading_jet_pt(events, jet_cfg) > 50.0
-
-    # Loose-electron veto.
-    loose_ele_mask = select_electrons(events, ele_cfg, wp="loose")
-    ele_veto_mask = ~ak.any(loose_ele_mask, axis=1)
-
-    event_mask = (
-        ref_mask & filter_mask & muon_count_mask & lead_jet_mask & ele_veto_mask
-    )
-    return event_mask, tight_muons
-
-
-def compute_recoil(events: ak.Array, tight_muons: ak.Array) -> np.ndarray:
-    """Hadronic recoil U = |PuppiMET_vec + sum(mu pT_vec)| for the selected muons."""
-    # calculate_recoil sums pt/phi over BOTH the "muons" and "electrons" collections.
-    # We want a muon-only add-back (electrons are vetoed in preselection anyway), so
-    # we pass a genuinely empty electron collection. We derive it by masking the muon
-    # zip to nothing (tight_muons[all-False]) rather than ak.Array([]): this preserves
-    # the same record layout (pt/phi fields, correct per-event jaggedness), so
-    # calculate_recoil's ak.sum(...pt*cos(phi), axis=1) sees empty sublists (-> 0),
-    # not a fieldless array that would raise on `.pt`.
-    empty_electrons = tight_muons[tight_muons.pt < -1.0]
-    recoil_pt, _ = calculate_recoil(
-        events, {"muons": tight_muons, "electrons": empty_electrons}
-    )
-    return ak.to_numpy(recoil_pt)
+    full = {
+        "recoil": recoil, "recoilPhi": recoil_phi,
+        "lep1Pt": lep1_pt, "lep1Eta": lep1_eta, "lep1Phi": lep1_phi,
+        "lep2Pt": lep2_pt, "lep2Eta": lep2_eta, "lep2Phi": lep2_phi,
+        "Jet1Pt": j_pt, "Jet1Eta": j_eta, "Jet1Phi": j_phi,
+        "muTrigPass": mu_trig.astype(np.int32), "metTrigPass": met_trig.astype(np.int32),
+        "wmu": wmu.astype(np.int32), "zmu": zmu.astype(np.int32),
+        "genweight": genweight,
+    }
+    return {k: np.asarray(v)[sel].astype(SKIM_BRANCHES[k]) for k, v in full.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -396,98 +565,76 @@ class BinCounts:
         np.add.at(self.num, idx, w * p)
 
 
+def _read_one_file(root_path: str, channels: List[str], cfg: Dict[str, Any],
+                   is_mc: bool, max_events: Optional[int]) -> Dict[str, Any]:
+    """Open + process a single file (one attempt). Raises on any XRootD/read error."""
+    with uproot.open(root_path) as tfile:
+        events = load_events(tfile, max_events)
+        rows = build_event_rows(events, cfg, channels)
+        # File-total sum of sign(genWeight) + raw event count over ALL events. Data has
+        # no genWeight -> both equal the raw NanoAOD event count (all-ones data weight).
+        if is_mc:
+            file_sumw, file_count = read_gensumw(tfile)
+        else:
+            file_count = float(tfile["Events"].num_entries)
+            file_sumw = file_count
+    rows = dict(rows)
+    rows["file_sumw"] = file_sumw
+    rows["file_count"] = file_count
+    return rows
+
+
 def compute_event_rows(
     root_path: str,
     channels: List[str],
     cfg: Dict[str, Any],
     is_mc: bool,
     max_events: Optional[int],
+    n_retries: int = 3,
 ) -> Optional[Dict[str, Any]]:
     """
-    Load one ROOT file, apply preselection per channel, and return the per-event
-    skim rows plus the file's total generator weight.
+    Load one ROOT file, build the one-row-per-selected-event skim (SKIM_BRANCHES),
+    and attach the file's total generator weight (file_sumw) + event count.
 
-    Deliberately NO cross-section / luminosity / sumw normalisation here: the skim
-    stores only the per-event sign(genWeight) (1.0 for data) and the file's total
-    sum of sign(genWeight) (as a scalar). Step 2 (analyze) applies xsec*lumi/SUMW
-    once, with SUMW = sum of file_sumw over ALL files of the sample. That makes the
-    weight of an event independent of which file it landed in, so skims of one sample
-    can be hadd-merged and analysed correctly.
+    XRootD reads are flaky, so each file is attempted up to n_retries times (with a
+    short backoff) before being skipped — a transient "Invalid operation" / timeout on
+    one attempt usually succeeds on the next. Returns the row dict, or None only after
+    all attempts fail.
 
-    Returns dict {recoil, met_pass, genweight, channel, file_sumw} or None on failure.
+    NO xsec/lumi/sumw normalisation here — the skim stores raw sign(genWeight) and the
+    file-total sum-of-sign(genWeight); analyze applies xsec*lumi/SUMW once.
     """
-    try:
-        tfile = uproot.open(root_path)
-    except Exception as exc:  # noqa: BLE001 - skip bad XRootD files, keep going
-        print(f"WARNING: skipping unopenable file {root_path}: {exc}")
-        return None
-
-    # Context-manage the open file so the descriptor is always released, even if
-    # load_events or the per-channel processing raises (important at 1000s of files).
-    with tfile:
+    import time
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, n_retries + 1):
         try:
-            events = load_events(tfile, max_events)
-        except Exception as exc:  # noqa: BLE001
-            print(f"WARNING: skipping unreadable file {root_path}: {exc}")
-            return None
-
-        met_triggers = _require(cfg, "triggers", "MET")
-        met_pass = ak.to_numpy(pass_triggers(events, met_triggers))
-
-        # Per-event weight = SIGN of genWeight (+/-1), 1.0 for data / no branch. We use
-        # the sign only: the genWeight magnitude cancels in the efficiency ratio, and
-        # the sumw denominator below is likewise sum of sign(genWeight).
-        if is_mc and "genWeight" in events.fields:
-            genweight = np.sign(ak.to_numpy(events["genWeight"])).astype(np.float64)
-        else:
-            genweight = np.ones(len(events), dtype=np.float64)
-
-        # File-total sum of sign(genWeight) + raw event count over ALL events in the
-        # file. 0 for data (unused there).
-        file_sumw, file_count = read_gensumw(tfile) if is_mc else (0.0, 0.0)
-
-        rec_all: List[np.ndarray] = []
-        pass_all: List[np.ndarray] = []
-        w_all: List[np.ndarray] = []
-        ch_all: List[np.ndarray] = []
-        for ci, channel in enumerate(channels):
-            mask, tight_muons = preselection_mask(events, cfg, channel)
-            mask_np = ak.to_numpy(mask)
-            if not mask_np.any():
-                continue
-            rec_all.append(compute_recoil(events, tight_muons)[mask_np])
-            pass_all.append(met_pass[mask_np].astype(np.float64))
-            w_all.append(genweight[mask_np])
-            ch_all.append(np.full(int(mask_np.sum()), ci, dtype=np.int32))
-
-    if not rec_all:
-        return {"recoil": np.array([]), "met_pass": np.array([]),
-                "genweight": np.array([]), "channel": np.array([], dtype=np.int32),
-                "file_sumw": file_sumw, "file_count": file_count}
-    return {
-        "recoil": np.concatenate(rec_all),
-        "met_pass": np.concatenate(pass_all),
-        "genweight": np.concatenate(w_all),
-        "channel": np.concatenate(ch_all),
-        "file_sumw": file_sumw,
-        "file_count": file_count,
-    }
+            return _read_one_file(root_path, channels, cfg, is_mc, max_events)
+        except Exception as exc:  # noqa: BLE001 - retry transient XRootD errors
+            last_exc = exc
+            if attempt < n_retries:
+                print(f"WARNING: read attempt {attempt}/{n_retries} failed for "
+                      f"{root_path}: {exc} — retrying")
+                time.sleep(5 * attempt)  # linear backoff: 5s, 10s, ...
+    print(f"WARNING: skipping file after {n_retries} attempts {root_path}: {last_exc}")
+    return None
 
 
 def accumulate_rows(rows: Dict[str, Any], weight: np.ndarray, channels: List[str],
                     edges: np.ndarray, counts: Dict[str, BinCounts]) -> None:
     """
-    Fill per-channel BinCounts from a skim-row dict, using a caller-supplied final
-    per-event weight array (already = genweight * xsec * lumi / SUMW for MC, or all
-    ones for data). channel index i maps to channels[i].
+    Fill per-channel BinCounts from the one-row-per-event skim. A row belongs to 'wmn'
+    when wmu==1 and 'zmm' when zmu==1 (orthogonal). numerator = metTrigPass. The
+    caller supplies the final per-event weight (genweight*xsec*lumi/SUMW for MC, ones
+    for data).
     """
-    ch = rows["channel"]
-    for ci, channel in enumerate(channels):
-        sel = ch == ci
+    flag = {"wmn": rows["wmu"], "zmm": rows["zmu"]}
+    for channel in channels:
+        sel = flag[channel].astype(bool)
         if not sel.any():
             continue
         counts[channel].fill(
-            rows["recoil"][sel], rows["met_pass"][sel], weight[sel], edges
+            rows["recoil"][sel], rows["metTrigPass"][sel].astype(np.float64),
+            weight[sel], edges,
         )
 
 
@@ -540,34 +687,36 @@ SUMW_HIST = "genTotalSumw"
 COUNT_HIST = "genTotalCount"
 
 
-def skim_output_name(outdir: str, txt_stem: str, root_path: str) -> str:
-    """
-    <outdir>/<txtfile stem>_<unique last string of the input ROOT filename>.root
+def merged_skim_output_name(outdir: str, stem: str) -> str:
+    """<outdir>/<stem>.root — one merged skim per sample stem (or 'data')."""
+    return os.path.join(outdir, f"{stem}.root")
 
-    The 'unique last string' is the input ROOT basename without extension (the file
-    hash/id that makes each entry in a samplelist unique).
-    """
-    root_id = os.path.splitext(os.path.basename(root_path))[0]
-    return os.path.join(outdir, f"{txt_stem}_{root_id}.root")
+
+def _merge_rows(rows_list: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Concatenate per-file row dicts: SKIM_BRANCHES arrays concat, file_sumw/count sum."""
+    out: Dict[str, Any] = {
+        k: np.concatenate([r[k] for r in rows_list]) for k in SKIM_BRANCHES
+    }
+    out["file_sumw"] = sum(r["file_sumw"] for r in rows_list)
+    out["file_count"] = sum(r["file_count"] for r in rows_list)
+    return out
 
 
 def write_skim(rows: Dict[str, Any], out_path: str) -> None:
     """
-    Write the per-event skim (recoil, met_pass, genweight, channel) plus the file's
-    total generator weight as a 1-bin TH1 (genTotalSumw). Storing the sumw as a
-    histogram means `hadd` sums it automatically across a sample's files, so a merged
-    skim carries the correct sample-total SUMW for step 2.
+    Write the one-row-per-event skim (SKIM_BRANCHES) as a classic TTree, plus 1-bin
+    TH1s genTotalSumw / genTotalCount (both hadd-sum, giving the sample-total SUMW when
+    a sample's per-file skims are merged).
     """
     os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    payload = {k: rows[k].astype(dt) for k, dt in SKIM_BRANCHES.items()}
     with uproot.recreate(out_path) as f:
-        f[SKIM_TREE] = {
-            "recoil": rows["recoil"].astype(np.float64),
-            "met_pass": rows["met_pass"].astype(np.float64),
-            "genweight": rows["genweight"].astype(np.float64),
-            "channel": rows["channel"].astype(np.int32),
-        }
-        # 1-bin TH1s: signed genEventSumw (used for norm) and raw genEventCount
-        # (reference only — shows the effect of negative NLO weights). Both hadd-sum.
+        # Force a classic TTree, NOT an RNTuple: uproot 5.x's `f[name] = dict` now
+        # defaults to RNTuple, which older ROOT viewers and `hadd` cannot read (the
+        # tree looks empty and merges fail). mktree + extend writes a TTree.
+        f.mktree(SKIM_TREE, {k: v.dtype for k, v in payload.items()})
+        if len(payload["recoil"]) > 0:
+            f[SKIM_TREE].extend(payload)
         f[SUMW_HIST] = (
             np.array([float(rows["file_sumw"])], dtype=np.float64),
             np.array([0.0, 1.0], dtype=np.float64),
@@ -581,9 +730,9 @@ def write_skim(rows: Dict[str, Any], out_path: str) -> None:
 
 def read_skim(path: str) -> Optional[Dict[str, Any]]:
     """
-    Read a skim ROOT into {recoil, met_pass, genweight, channel, sumw}. `sumw` is the
-    integral of the genTotalSumw histogram (sample-total when the skim is a hadd of a
-    sample's files). None on unreadable/missing tree.
+    Read a skim ROOT into the SKIM_BRANCHES arrays plus `sumw` (integral of the
+    genTotalSumw histogram = sample-total when the skim is a hadd of a sample's files)
+    and `count`. None on unreadable/missing tree.
     """
     try:
         with uproot.open(path) as f:
@@ -600,14 +749,10 @@ def read_skim(path: str) -> Optional[Dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001
         print(f"WARNING: skipping unreadable skim {path}: {exc}")
         return None
-    return {
-        "recoil": arr["recoil"],
-        "met_pass": arr["met_pass"],
-        "genweight": arr["genweight"],
-        "channel": arr["channel"].astype(np.int32),
-        "sumw": sumw,
-        "count": count,
-    }
+    out = {k: arr[k] for k in SKIM_BRANCHES if k in arr}
+    out["sumw"] = sumw
+    out["count"] = count
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -894,7 +1039,9 @@ def _resolve_channels(channel: str) -> List[str]:
 
 def cmd_skim(args: argparse.Namespace) -> None:
     """
-    Step 1: preselect NanoAOD, write one skim ROOT per input file. The skim stores
+    Step 1: preselect NanoAOD, write one merged skim ROOT per stem: data and MC
+    inputs are each grouped by their samplelist/file stem (the same stem is the
+    xsec lookup key analyze uses for MC) -> <outdir>/<stem>.root. The skim stores
     raw per-event genWeight + the file's total genEventSumw only (NO xsec/lumi/sumw
     normalisation — that is applied in analyze, after summing SUMW over the sample).
     """
@@ -909,18 +1056,24 @@ def cmd_skim(args: argparse.Namespace) -> None:
 
     print(f"Skim: {len(data_inputs)} data + {len(mc_inputs)} MC files -> {args.outdir}")
 
+    data_rows_by_stem: Dict[str, List[Dict[str, Any]]] = {}
     for i, (root_path, stem) in enumerate(data_inputs):
         print(f"[data {i + 1}/{len(data_inputs)}] {root_path}")
         rows = compute_event_rows(root_path, channels, cfg, False, args.max_events)
         if rows is not None:
-            write_skim(rows, skim_output_name(args.outdir, stem, root_path))
+            data_rows_by_stem.setdefault(stem, []).append(rows)
+    for stem, rows_list in data_rows_by_stem.items():
+        write_skim(_merge_rows(rows_list), merged_skim_output_name(args.outdir, stem))
 
+    mc_rows_by_stem: Dict[str, List[Dict[str, Any]]] = {}
     for i, (root_path, stem) in enumerate(mc_inputs):
         target = mc_channels(channels)
         print(f"[mc {i + 1}/{len(mc_inputs)}] ({'+'.join(target)}) {root_path}")
         rows = compute_event_rows(root_path, target, cfg, True, args.max_events)
         if rows is not None:
-            write_skim(rows, skim_output_name(args.outdir, stem, root_path))
+            mc_rows_by_stem.setdefault(stem, []).append(rows)
+    for stem, rows_list in mc_rows_by_stem.items():
+        write_skim(_merge_rows(rows_list), merged_skim_output_name(args.outdir, stem))
 
 
 def cmd_analyze(args: argparse.Namespace) -> None:
