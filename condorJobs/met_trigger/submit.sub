@@ -45,8 +45,8 @@ log                   = $(LOGDIR)/skim_$(ClusterId).log
 
 # Resources — up to BATCH files per job, skimmed sequentially (one at a time in
 # memory). ~50 files x ~30s ~= 25 min/job; workday (8h) has ample headroom.
-request_memory = 4000
-request_cpus = 1
+request_memory = 8000
+request_cpus = 4
 +JobFlavour           = "workday"
 
 # Hold on failure; retry every 10 min up to 3 starts.

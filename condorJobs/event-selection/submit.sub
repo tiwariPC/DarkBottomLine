@@ -9,10 +9,6 @@ output  = logs/output/dbl.$(ClusterId).$(ProcId).out
 error   = logs/error/dbl.$(ClusterId).$(ProcId).err
 log     = logs/dbl.$(ClusterId).log
 
-# should_transfer_files = YES
-# transfer_input_files = samplefiles/bkg_ttbar.txt
-# transfer_output_files = outputs
-
 # Send the job to Held state on failure.
 on_exit_hold = (ExitBySignal == True) || (ExitCode != 0)
 
@@ -33,11 +29,12 @@ request_cpus = 8
 
 environment = "DBL_REPO_DIR=/path/to/repository \
 DBL_CONFIG=\$(DBL_REPO_DIR)/configs/2022.yaml \
-DBL_REGIONS_CONFIG=\$(DBL_REPO_DIR)/configs/regions.yaml \
-DBL_BKG_FILE=bkg_ttbar.txt \
-DBL_EXECUTOR=dask \
+DBL_BKG_FILE=Zto2Nu-2Jets_PTNuNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8.txt \
+DBL_YEAR=2022 \
+DBL_EXECUTOR=futures \
 DBL_CHUNK_SIZE=50000 \
 DBL_WORKERS=4 \
-DBL_MAX_EVENTS=10000"
+DBL_DATA=false \
+DBL_MAX_EVENTS="
 
 queue 1
