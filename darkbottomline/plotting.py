@@ -2609,6 +2609,7 @@ class PlotManager:
                     "weight_muonUP", "weight_muonDOWN",
                     "weight_electronUP", "weight_electronDOWN",
                     "weight_electronHLTUP", "weight_electronHLTDOWN",
+                    "weight_metHLTUP", "weight_metHLTDOWN",
                     "weight_JECUP", "weight_JECDOWN",
                     "weight_pdfUP", "weight_pdfDOWN",
                     "weight_scaleUP", "weight_scaleDOWN",

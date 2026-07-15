@@ -201,6 +201,7 @@ def calculate_recoil(events: ak.Array, muons: ak.Array
 SENTINEL = -999.0
 SKIM_BRANCHES: Dict[str, Any] = {
     "recoil": np.float64, "recoilPhi": np.float64,
+    "metPt": np.float64,
     "lep1Pt": np.float64, "lep1Eta": np.float64, "lep1Phi": np.float64,
     "lep2Pt": np.float64, "lep2Eta": np.float64, "lep2Phi": np.float64,
     "Jet1Pt": np.float64, "Jet1Eta": np.float64, "Jet1Phi": np.float64,
@@ -211,8 +212,12 @@ SKIM_BRANCHES: Dict[str, Any] = {
 
 CHANNELS = ("wmn", "zmm")
 DEFAULT_RECOIL_BINS = [
-    0, 20, 40, 60, 80, 100, 110, 120, 130, 140,
-    150, 160, 180, 200, 250, 300, 400, 600, 800, 1000, 1200, 1300, 1400, 1500
+    0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95,
+    100, 105, 110, 115, 120, 125, 130, 135, 140, 145, 150,
+    160, 170, 180, 190, 200,
+    220, 240, 260, 280, 300,
+    350, 400, 450, 500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000,
+    1100, 1200
 ]
 
 
@@ -474,16 +479,49 @@ def load_events(tfile: "uproot.ReadOnlyDirectory",
 # Event-level preselection + recoil
 # ---------------------------------------------------------------------------
 
-def _leading_jet_pt(events: ak.Array, jet_cfg: Dict[str, Any]) -> ak.Array:
+def _clean_jet_mask(jet_eta: ak.Array, jet_phi: ak.Array, muons: ak.Array,
+                    dr_min: float) -> ak.Array:
     """
-    Max pt among AK4 jets passing |eta| < eta_max (0 when none). Matches the
-    framework's select_jets, which cuts on pt/eta only — no jet-ID bit, as the
-    puId branch is absent in NanoAOD v12+ (see objects.py::select_jets).
+    Per-jet bool: True if the jet is >= dr_min from every muon in `muons` (jets in
+    events with zero muons pass automatically). Guards against a muon's HCAL/ECAL
+    deposit being reconstructed as a fake AK4 jet and faking the leading-jet cut.
     """
+    jeta, meta = ak.unzip(ak.cartesian([jet_eta, muons.eta], nested=True))
+    jphi, mphi = ak.unzip(ak.cartesian([jet_phi, muons.phi], nested=True))
+    dphi = np.arctan2(np.sin(jphi - mphi), np.cos(jphi - mphi))
+    dr = np.sqrt((jeta - meta) ** 2 + dphi ** 2)
+    min_dr = ak.fill_none(ak.min(dr, axis=-1), np.inf)
+    return min_dr > dr_min
+
+
+def _jet_selection_mask(events: ak.Array, jet_cfg: Dict[str, Any],
+                        muons: ak.Array) -> ak.Array:
+    """
+    Per-jet bool: |eta| < eta_max, hadron-EF jet ID (neHEF < neHEF_max, chHEF >
+    chHEF_min), and muon-jet ΔR cleaning (dr_min). Mirrors the old ntuple's
+    THINjetNHadEF<0.8 / THINjetCHadEF>0.1 / DeltaR<0.5 selection; keys are optional
+    (default to those old values) so an unmodified config still works. No jet-ID bit
+    beyond that, as the puId branch is absent in NanoAOD v12+ (see
+    objects.py::select_jets).
+    """
+    eta_ok = abs(events["Jet_eta"]) < jet_cfg["eta_max"]
+    id_ok = ak.ones_like(events["Jet_eta"], dtype=bool)
+    if "Jet_neHEF" in events.fields:
+        id_ok = id_ok & (events["Jet_neHEF"] < jet_cfg.get("neHEF_max", 0.8))
+    if "Jet_chHEF" in events.fields:
+        id_ok = id_ok & (events["Jet_chHEF"] > jet_cfg.get("chHEF_min", 0.1))
+    clean_ok = _clean_jet_mask(events["Jet_eta"], events["Jet_phi"], muons,
+                              jet_cfg.get("muon_dr_min", 0.5))
+    return eta_ok & id_ok & clean_ok
+
+
+def _leading_jet_pt(events: ak.Array, jet_cfg: Dict[str, Any],
+                    muons: ak.Array) -> ak.Array:
+    """Max pt among jets passing `_jet_selection_mask` (0 when none)."""
     if "Jet_pt" not in events.fields or "Jet_eta" not in events.fields:
         return ak.zeros_like(events["event"], dtype=np.float64)
-    eta_ok = abs(events["Jet_eta"]) < jet_cfg["eta_max"]
-    jet_pt = ak.where(eta_ok, events["Jet_pt"], 0.0)
+    pass_mask = _jet_selection_mask(events, jet_cfg, muons)
+    jet_pt = ak.where(pass_mask, events["Jet_pt"], 0.0)
     return ak.fill_none(ak.max(jet_pt, axis=1), 0.0)
 
 
@@ -493,18 +531,18 @@ def _nth(values: ak.Array, n: int) -> np.ndarray:
     return ak.to_numpy(ak.fill_none(padded[:, n], SENTINEL))
 
 
-def _leading_jet_obj(events: ak.Array, jet_cfg: Dict[str, Any]
+def _leading_jet_obj(events: ak.Array, jet_cfg: Dict[str, Any], muons: ak.Array
                      ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Per-event leading (max-pt) AK4 jet (pt, eta, phi) among |eta|<eta_max jets;
+    """Per-event leading (max-pt) jet (pt, eta, phi) passing `_jet_selection_mask`;
     SENTINEL when none pass."""
     n = len(events["event"])
     if "Jet_pt" not in events.fields or "Jet_eta" not in events.fields:
         s = np.full(n, SENTINEL)
         return s, s, s
-    eta_ok = abs(events["Jet_eta"]) < jet_cfg["eta_max"]
-    jpt = events["Jet_pt"][eta_ok]
-    jeta = events["Jet_eta"][eta_ok]
-    jphi = events["Jet_phi"][eta_ok] if "Jet_phi" in events.fields else jpt * 0.0
+    pass_mask = _jet_selection_mask(events, jet_cfg, muons)
+    jpt = events["Jet_pt"][pass_mask]
+    jeta = events["Jet_eta"][pass_mask]
+    jphi = events["Jet_phi"][pass_mask] if "Jet_phi" in events.fields else jpt * 0.0
     order = ak.argsort(jpt, axis=1, ascending=False)
     jpt, jeta, jphi = jpt[order], jeta[order], jphi[order]
     return _nth(jpt, 0), _nth(jeta, 0), _nth(jphi, 0)
@@ -522,9 +560,11 @@ def build_event_rows(
     are orthogonal booleans set by the muon multiplicity, so an event is at most one of
     them. Kinematic branches follow the MetTrigSkims schema (SKIM_BRANCHES).
 
-    The two channels are selected via disjoint muon-count cuts:
-      wmu: exactly 1 tight muon and no second loose muon (n_tight==1, n_loose==1)
-      zmu: 1 tight + exactly one extra loose muon           (n_tight==1, n_loose==2)
+    The two channels require the leading (pt-highest) loose muon to be tight (the
+    tag); the subleading muon (the probe, when present) only needs to be loose,
+    tight or not:
+      wmu: leading muon tight, no second loose muon (lead_is_tight, n_loose==1)
+      zmu: leading muon tight, exactly one extra loose muon (lead_is_tight, n_loose==2)
     Both also require: certified lumi (golden JSON, data only), reference IsoMu
     trigger, MET filters, leading jet pt>50, and a loose-electron veto.
     """
@@ -547,30 +587,34 @@ def build_event_rows(
     muons = muons[order]
     tight_mask = select_muons(events, muon_cfg, wp="tight")[order]
     loose_mask = select_muons(events, muon_cfg, wp="loose")[order]
-    n_tight = ak.to_numpy(ak.sum(tight_mask, axis=1))
     n_loose = ak.to_numpy(ak.sum(loose_mask, axis=1))
     loose_muons = muons[loose_mask]  # candidates that define lep1/lep2
+    # Tightness of the leading (pt-highest) loose muon: the tag leg must be tight,
+    # regardless of the subleading (probe) leg's tightness.
+    lead_is_tight = ak.to_numpy(ak.fill_none(ak.firsts(tight_mask[loose_mask]), False))
 
     # Common event-level cuts.
-    lead_jet_mask = ak.to_numpy(_leading_jet_pt(events, jet_cfg) > 50.0)
+    lead_jet_mask = ak.to_numpy(_leading_jet_pt(events, jet_cfg, loose_muons) > 50.0)
     loose_ele = select_electrons(events, ele_cfg, wp="loose")
     ele_veto = ak.to_numpy(~ak.any(loose_ele, axis=1))
     lumi_mask = golden_mask(events, golden)  # certified lumi (data); all-True for MC
     common = (lumi_mask & mu_trig.astype(bool) & filter_mask.astype(bool)
               & lead_jet_mask & ele_veto)
 
-    wmu = common & (n_tight == 1) & (n_loose == 1)
-    zmu = common & (n_tight == 1) & (n_loose == 2)
+    wmu = common & lead_is_tight & (n_loose == 1)
+    zmu = common & lead_is_tight & (n_loose == 2)
     sel = wmu | zmu  # one row per selected event; wmu/zmu are disjoint by n_loose
     if not sel.any():
         return {k: np.array([], dtype=dt) for k, dt in SKIM_BRANCHES.items()}
 
     # Recoil uses the loose muons added back (both channels: all selected muons).
     recoil, recoil_phi = calculate_recoil(events, loose_muons)
+    met_pt, _ = _met_pt_phi(events)
+    met_pt = ak.to_numpy(met_pt)
 
     lep1_pt, lep1_eta, lep1_phi = _nth(loose_muons.pt, 0), _nth(loose_muons.eta, 0), _nth(loose_muons.phi, 0)
     lep2_pt, lep2_eta, lep2_phi = _nth(loose_muons.pt, 1), _nth(loose_muons.eta, 1), _nth(loose_muons.phi, 1)
-    j_pt, j_eta, j_phi = _leading_jet_obj(events, jet_cfg)
+    j_pt, j_eta, j_phi = _leading_jet_obj(events, jet_cfg, loose_muons)
 
     if "genWeight" in events.fields:
         genweight = np.sign(ak.to_numpy(events["genWeight"])).astype(np.float64)
@@ -579,6 +623,7 @@ def build_event_rows(
 
     full = {
         "recoil": recoil, "recoilPhi": recoil_phi,
+        "metPt": met_pt,
         "lep1Pt": lep1_pt, "lep1Eta": lep1_eta, "lep1Phi": lep1_phi,
         "lep2Pt": lep2_pt, "lep2Eta": lep2_eta, "lep2Phi": lep2_phi,
         "Jet1Pt": j_pt, "Jet1Eta": j_eta, "Jet1Phi": j_phi,
@@ -973,31 +1018,87 @@ def plot_efficiency_all(
 
 def plot_scale_factor(
     edges: np.ndarray,
-    per_channel: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    sf_nom: np.ndarray,
+    stat_lo: np.ndarray,
+    stat_hi: np.ndarray,
+    syst: np.ndarray,
     outpath: str,
     lumi: Optional[float],
     com: float,
     label: str,
 ) -> None:
-    """Data/MC scale factor vs recoil, one curve per channel."""
+    """
+    Data/MC scale factor vs recoil: single W->munu series.
+    Inner error bar = stat only; outer error bar = stat (+) syst in quadrature,
+    where syst = |SF_wmn - SF_zmm| per bin (channel-difference systematic).
+    """
     ctr, half = _bin_centres(edges)
+    total_lo = np.sqrt(stat_lo ** 2 + syst ** 2)
+    total_hi = np.sqrt(stat_hi ** 2 + syst ** 2)
     fig, ax = plt.subplots(figsize=(9, 8))
-    styles = {"wmn": ("o", r"$W\to\mu\nu$"), "zmm": ("s", r"$Z\to\mu\mu$")}
-    for ch, (sf, slo, shi) in per_channel.items():
-        marker, leg = styles.get(ch, ("o", ch))
-        ax.errorbar(
-            ctr, sf, yerr=[slo, shi], xerr=half,
-            fmt=marker, capsize=2, markersize=6, label=leg,
-        )
+    ax.errorbar(
+        ctr, sf_nom, yerr=[total_lo, total_hi], xerr=half,
+        fmt="none", ecolor="lightgray", elinewidth=6, capsize=0,
+        label="stat + syst",
+        zorder=1,
+    )
+    ax.errorbar(
+        ctr, sf_nom, yerr=[stat_lo, stat_hi],
+        fmt="o", color="black", capsize=2, markersize=6,
+        label=r"$W\to\mu\nu$ (stat)", zorder=2,
+    )
     ax.set_xlabel(r"Hadronic recoil $U$ [GeV]", fontsize=18)
     ax.set_ylabel("Data / MC scale factor", fontsize=18)
     # Wide enough for the turn-on region where data/MC can disagree by >20%.
-    ax.set_ylim(0.5, 1.5)
-    ax.set_xlim(edges[0], edges[-1])
+    ax.set_ylim(0.8, 1.2)
+    ax.set_xlim(250.0, edges[-1])
     ax.axhline(1.0, color="grey", ls="--", lw=1)
     ax.legend(loc="lower right", fontsize=16)
     _cms_label(label, True, lumi, com, ax)
     _save(fig, outpath)
+
+
+def write_eff_sf_root(
+    edges: np.ndarray,
+    data_eff: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    mc_eff: Dict[str, Tuple[np.ndarray, np.ndarray, np.ndarray]],
+    sf_nom: np.ndarray,
+    sf_stat_lo: np.ndarray,
+    sf_stat_hi: np.ndarray,
+    outpath: str,
+) -> None:
+    """
+    Write the 5 curves behind the _all_eff and _sf plots (data-wmn, data-zmm,
+    mc-wmn, mc-zmm efficiency + the nominal W->munu data/MC SF) into one ROOT
+    TTree, one row per recoil bin.
+
+    uproot 5.x cannot serialize TGraphAsymmErrors (only plain TGraph, no
+    errors), so the asymmetric Clopper-Pearson errors are instead stored as
+    plain val/err_lo/err_hi branches, one row per bin - equivalent information,
+    trivially convertible to TGraphAsymmErrors on the ROOT/PyROOT side.
+    """
+    ctr, _ = _bin_centres(edges)
+    d_wmn = data_eff.get("wmn", (np.zeros_like(ctr),) * 3)
+    d_zmm = data_eff.get("zmm", (np.zeros_like(ctr),) * 3)
+    m_wmn = mc_eff.get("wmn", (np.zeros_like(ctr),) * 3)
+    m_zmm = mc_eff.get("zmm", (np.zeros_like(ctr),) * 3)
+    payload = {
+        "recoil_lo": edges[:-1], "recoil_hi": edges[1:], "recoil_ctr": ctr,
+        "data_wmn_eff": d_wmn[0], "data_wmn_errlo": d_wmn[1], "data_wmn_errhi": d_wmn[2],
+        "data_zmm_eff": d_zmm[0], "data_zmm_errlo": d_zmm[1], "data_zmm_errhi": d_zmm[2],
+        "mc_wmn_eff": m_wmn[0], "mc_wmn_errlo": m_wmn[1], "mc_wmn_errhi": m_wmn[2],
+        "mc_zmm_eff": m_zmm[0], "mc_zmm_errlo": m_zmm[1], "mc_zmm_errhi": m_zmm[2],
+        "sf": sf_nom, "sf_errlo": sf_stat_lo, "sf_errhi": sf_stat_hi,
+    }
+    payload = {k: np.asarray(v, dtype=np.float64) for k, v in payload.items()}
+    os.makedirs(os.path.dirname(outpath) or ".", exist_ok=True)
+    with uproot.recreate(outpath) as f:
+        # mktree + extend forces a classic TTree (see write_skim): uproot 5.x's
+        # `f[name] = dict` now defaults to RNTuple, which ROOT/PyROOT readers
+        # downstream of this file may not yet support.
+        f.mktree("eff_sf", {k: v.dtype for k, v in payload.items()})
+        f["eff_sf"].extend(payload)
+    print(f"Saved: {outpath}")
 
 
 # ---------------------------------------------------------------------------
@@ -1118,26 +1219,33 @@ def make_plots_and_json(
         sf_per_channel[ch] = (sf, slo, shi)
         sf_values[ch] = sf
 
-    plot_scale_factor(
-        edges, sf_per_channel,
-        os.path.join(outdir, "HLT_PFMETNoMu_120To140_IDTight_sf.png"),
-        lumi, com, label,
-    )
-
-    # correctionlib: nominal SF + systematic from the W->munu vs Z->mumu difference.
+    # Nominal SF + systematic from the W->munu vs Z->mumu channel difference.
     nominal_ch = "wmn" if "wmn" in channels else channels[0]
-    sf_nom = sf_values[nominal_ch]
-    stat_err = sf_per_channel[nominal_ch][1]
+    sf_nom, stat_lo, stat_hi = sf_per_channel[nominal_ch]
     if "wmn" in sf_values and "zmm" in sf_values:
         # Channel difference as the systematic — but only where BOTH channels have a
         # valid (non-zero) SF. In sparse high-U bins one channel can be empty (SF=0),
         # which would fake a huge |wmn-zmm|; there, fall back to the statistical error.
         both_valid = (sf_values["wmn"] > 0) & (sf_values["zmm"] > 0)
         syst = np.where(
-            both_valid, np.abs(sf_values["wmn"] - sf_values["zmm"]), stat_err
+            both_valid, np.abs(sf_values["wmn"] - sf_values["zmm"]), stat_lo
         )
     else:
-        syst = stat_err
+        syst = stat_lo
+
+    plot_scale_factor(
+        edges, sf_nom, stat_lo, stat_hi, syst,
+        os.path.join(outdir, "HLT_PFMETNoMu_120To140_IDTight_sf.png"),
+        lumi, com, label,
+    )
+
+    # The 5 curves behind _all_eff.png + _sf.png (data-wmn/zmm eff, mc-wmn/zmm eff,
+    # nominal SF), as one ROOT TTree alongside the PNG/PDF plots.
+    write_eff_sf_root(
+        edges, data_eff, mc_eff, sf_nom, stat_lo, stat_hi,
+        os.path.join(outdir, "HLT_PFMETNoMu_120To140_IDTight_eff_sf.root"),
+    )
+
     write_correction(
         build_correction_set(edges, sf_nom, sf_nom + syst, sf_nom - syst),
         json_out,
