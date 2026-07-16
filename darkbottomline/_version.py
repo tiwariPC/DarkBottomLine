@@ -1,3 +1,3 @@
 """Package version information for DarkBottomLine."""
 
-__version__ = "20260715+7dcdd58"
+__version__ = "20260716+850d622"
