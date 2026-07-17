@@ -63,11 +63,11 @@ def _dijet(px1, py1, pz1, e1, px2, py2, pz2, e2):
 
 def _met_variables(events: ak.Array) -> Dict[str, np.ndarray]:
     """MET kinematics. PuppiMET preferred; falls back to PFMET then MET."""
-    def _get(*candidates):
+    def _get(*candidates, default=SENTINEL):
         for v in candidates:
             if v in events.fields:
                 return ak.to_numpy(events[v])
-        return np.zeros(len(events), dtype=np.float32)
+        return np.full(len(events), default, dtype=np.float32)
 
     return {
         'MET_pt':           _get('PuppiMET_pt',  'PFMET_pt',  'MET_pt'),
