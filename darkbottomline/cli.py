@@ -79,6 +79,16 @@ def _get_input_files(input_list: List[str]) -> List[str]:
     return input_list
 
 
+def _is_signal_sample(input_list: List[str]) -> bool:
+    """
+    Detect fastsim signal samples (BBDM-2HDMa) by filename, so trigger
+    requirements can be bypassed (fastsim has no HLT branches).
+    Matches the "2hdma" substring convention used by dnn/phys_weight.py
+    and configs/plotting.yaml's Signal_2HDMa pattern.
+    """
+    return any("2hdma" in entry.lower() for entry in input_list)
+
+
 def run_analysis(args):
     """Run basic analysis."""
     logging.info("Running basic analysis...")
@@ -87,6 +97,7 @@ def run_analysis(args):
     config = load_config(args.config)
     if args.data:
         config.setdefault("data", {})["is_data"] = True
+    config.setdefault("data", {})["is_signal"] = _is_signal_sample(args.input)
 
     # Initialize processor
     processor = DarkBottomLineProcessor(config)
@@ -253,14 +264,11 @@ def _build_dnn_feature_matrix_from_events(
     all_vars = compute_event_variables(events, objects, config)
 
     # DNN feature name → compute_event_variables output name
-    btag_algo = config["btagging"]["algorithm"]
     _NAME_MAP: dict = {
         "MET":          "MET_pt",
         "METPhi":       "MET_phi",
         "pfMetCorrSig": "MET_significance",
         "rJet1PtMET":   "ratioJet1PtMET",
-        "Jet1deepCSV":  f"Jet1{btag_algo}",
-        "Jet2deepCSV":  f"Jet2{btag_algo}",
     }
 
     X_dict: dict = {}
@@ -702,6 +710,7 @@ def run_analyzer(args):
     config = load_config(args.config)
     if args.data:
         config.setdefault("data", {})["is_data"] = True
+    config.setdefault("data", {})["is_signal"] = _is_signal_sample(args.input)
 
     try:
         import uproot

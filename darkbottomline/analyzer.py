@@ -517,14 +517,11 @@ class DarkBottomLineAnalyzer:
 
                 # Resolve DNN feature names to EVENTSELECTION branch names
                 # (same mapping as _build_dnn_feature_matrix_from_events in cli.py)
-                btag_algo = self.base_processor.config["btagging"]["algorithm"]
                 _NAME_MAP = {
                     "MET":          "MET_pt",
                     "METPhi":       "MET_phi",
                     "pfMetCorrSig": "MET_significance",
                     "rJet1PtMET":   "ratioJet1PtMET",
-                    "Jet1deepCSV":  f"Jet1{btag_algo}",
-                    "Jet2deepCSV":  f"Jet2{btag_algo}",
                 }
 
                 X_parts = {}

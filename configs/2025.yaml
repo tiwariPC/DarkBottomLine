@@ -1,5 +1,5 @@
 year: 2025
-lumi: 109.96   # To be updated with actual 2024 luminosity
+lumi: 109.96
 
 # Correction file paths (user must provide actual files)
 corrections:
@@ -122,3 +122,4 @@ event_selection:
 # Cleaning parameters
 cleaning:
    dr_jet: 0.4
+   dr_photon_lep: 0.4   # photon veto: dR cleaning vs loose electrons+muons (Run 2 parity)

@@ -126,6 +126,8 @@ def _multiplicity_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
         'n_bjets':        _num('bjets'),
         'n_muons':        _num('muons'),
         'n_electrons':    _num('electrons'),
+        'n_tight_muons':     _num('tight_muons'),
+        'n_tight_electrons': _num('tight_electrons'),
         'n_taus':         _num('taus'),
         'b_flavor_count': b_flavor_count,
     }
@@ -163,11 +165,31 @@ def _multiplicity_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
             out['Zpt'] = ak.to_numpy(ak.fill_none(ak.values_astype(zpt, np.float32), np.float32(SENTINEL)))
         except Exception:
             pass
+    # W transverse mass: muon-channel MT if a tight muon present, else electron-channel MT.
+    # Orthogonal per-event pick (not config/trigger-driven) — mirrors the mll combine above.
+    mt_mu = objects.get('mt_mu')
+    mt_el = objects.get('mt_el')
+    if mt_mu is not None and mt_el is not None:
+        try:
+            n_tight_mu = out['n_tight_muons']
+            n_tight_el = out['n_tight_electrons']
+            mt = ak.where(
+                n_tight_mu >= 1, mt_mu,
+                ak.where(n_tight_el >= 1, mt_el, np.float32(SENTINEL))
+            )
+            out['mt'] = ak.to_numpy(ak.fill_none(ak.values_astype(mt, np.float32), np.float32(SENTINEL)))
+        except Exception:
+            pass
     return out
 
 
-def _jet_lead_variables(objects: Dict[str, Any], btag_algo: str) -> Dict[str, np.ndarray]:
-    """Leading 3 jet kinematics + btag scores."""
+def _jet_lead_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    """Leading 3 jet kinematics + btag scores.
+
+    Output btag branch names are fixed (Jet{1,2,3}BTagScore) regardless of
+    which algorithm (PNet/deepJet/UParT/...) produced the score, so
+    downstream consumers don't need to track the algorithm choice per year.
+    """
     jets = objects.get('jets', ak.Array([]))
     btag = jets.btagScore if hasattr(jets, 'btagScore') else ak.zeros_like(jets.pt)
 
@@ -175,15 +197,15 @@ def _jet_lead_variables(objects: Dict[str, Any], btag_algo: str) -> Dict[str, np
         'Jet1Pt':              _lead(jets.pt,  0),
         'Jet1Eta':             _lead(jets.eta, 0),
         'Jet1Phi':             _lead(jets.phi, 0),
-        f'Jet1{btag_algo}':    _lead(btag,     0, default=SENTINEL),
+        'Jet1BTagScore':       _lead(btag,     0, default=SENTINEL),
         'Jet2Pt':              _lead(jets.pt,  1),
         'Jet2Eta':             _lead(jets.eta, 1),
         'Jet2Phi':             _lead(jets.phi, 1),
-        f'Jet2{btag_algo}':    _lead(btag,     1, default=SENTINEL),
+        'Jet2BTagScore':       _lead(btag,     1, default=SENTINEL),
         'Jet3Pt':              _lead(jets.pt,  2),
         'Jet3Eta':             _lead(jets.eta, 2),
         'Jet3Phi':             _lead(jets.phi, 2),
-        f'Jet3{btag_algo}':    _lead(btag,     2, default=SENTINEL),
+        'Jet3BTagScore':       _lead(btag,     2, default=SENTINEL),
         'JetHT':               _scalar(ak.sum(jets.pt, axis=1)),
     }
 
@@ -346,10 +368,12 @@ _SCALAR_BRANCHES: Dict[str, Any] = {
     'Recoil_JERUp': np.float32, 'Recoil_JERDown': np.float32,
     'costheta_star': np.float32,
     'njets': np.int32, 'n_bjets': np.int32, 'n_muons': np.int32,
-    'n_electrons': np.int32, 'n_taus': np.int32, 'b_flavor_count': np.int32,
+    'n_electrons': np.int32, 'n_tight_muons': np.int32, 'n_tight_electrons': np.int32,
+    'n_taus': np.int32, 'b_flavor_count': np.int32,
     'is_lead_bjet': np.int32, 'is_sublead_bjet': np.int32,
     'Bjet1bCond': np.int32, 'Bjet2bCond': np.int32,
     'n_z_muons': np.int32, 'n_z_electrons': np.int32, 'mll': np.float32, 'Zpt': np.float32,
+    'mt': np.float32,
     'Jet1Pt': np.float32, 'Jet1Eta': np.float32, 'Jet1Phi': np.float32,
     'Jet2Pt': np.float32, 'Jet2Eta': np.float32, 'Jet2Phi': np.float32,
     'Jet3Pt': np.float32, 'Jet3Eta': np.float32, 'Jet3Phi': np.float32,
@@ -383,23 +407,19 @@ _JAGGED_BRANCHES: Dict[str, Any] = {
 }
 
 
-def get_empty_branch_types(config: Dict[str, Any]) -> Dict[str, Any]:
+def get_empty_branch_types() -> Dict[str, Any]:
     """Return uproot mktree-compatible branch type dict for an empty Events TTree.
 
     Used to write an empty Events TTree when no events pass selection, so that
     hadd can merge files regardless of whether any chunk had selected events.
-    The btag branch name is config-driven; all other names are fixed.
     """
-    # Must match the algorithm used by compute_event_variables so empty-tree
-    # branch names (Jet1PNet, ...) align with filled trees for hadd. Loud on miss.
-    btag_algo = config["btagging"]["algorithm"]
     types: Dict[str, Any] = {}
     for name, dtype in _SCALAR_BRANCHES.items():
         types[name] = np.dtype(dtype)
     for name in _JAGGED_BRANCHES:
         types[name] = 'var * float32'
     for idx in (1, 2, 3):
-        types[f'Jet{idx}{btag_algo}'] = np.dtype(np.float32)
+        types[f'Jet{idx}BTagScore'] = np.dtype(np.float32)
     return types
 
 
@@ -419,7 +439,6 @@ def compute_event_variables(
     Returns flat dict: str → np.ndarray (scalar) or ak.Array (jagged).
     Sentinel -9.0 used for variables undefined on an event (e.g. < N jets).
     """
-    btag_algo = config["btagging"]["algorithm"]
     n_ev = len(events)
     out: Dict[str, Any] = {}
 
@@ -450,22 +469,26 @@ def compute_event_variables(
             out[_pv] = np.full(n_ev, -1, dtype=np.int32)
 
     # --- Per-trigger-group decisions (stored for per-region trigger requirement) ---
-    # MET trigger group: MET + SingleMuon (used for SR, muon CRs)
+    # MET trigger group: MET only (SingleMuon is for the trigger-efficiency study only)
     # EGamma trigger group: EGamma (used for electron CRs)
-    _met_trig_paths  = (config.get('triggers', {}).get('MET', [])
-                        + config.get('triggers', {}).get('SingleMuon', []))
-    _ele_trig_paths  = config.get('triggers', {}).get('EGamma', [])
-    def _trig_decision(paths):
-        mask = np.zeros(n_ev, dtype=np.int32)
-        for p in paths:
-            if p in events.fields:
-                try:
-                    mask = np.maximum(mask, ak.to_numpy(events[p]).astype(np.int32))
-                except Exception:
-                    pass
-        return mask
-    out['pass_met_trigger'] = _trig_decision(_met_trig_paths)
-    out['pass_ele_trigger'] = _trig_decision(_ele_trig_paths)
+    if config.get('data', {}).get('is_signal', False):
+        # Fastsim signal (BBDM-2HDMa) has no HLT branches — force trigger pass.
+        out['pass_met_trigger'] = np.ones(n_ev, dtype=np.int32)
+        out['pass_ele_trigger'] = np.ones(n_ev, dtype=np.int32)
+    else:
+        _met_trig_paths  = config.get('triggers', {}).get('MET', [])
+        _ele_trig_paths  = config.get('triggers', {}).get('EGamma', [])
+        def _trig_decision(paths):
+            mask = np.zeros(n_ev, dtype=np.int32)
+            for p in paths:
+                if p in events.fields:
+                    try:
+                        mask = np.maximum(mask, ak.to_numpy(events[p]).astype(np.int32))
+                    except Exception:
+                        pass
+            return mask
+        out['pass_met_trigger'] = _trig_decision(_met_trig_paths)
+        out['pass_ele_trigger'] = _trig_decision(_ele_trig_paths)
 
     # --- MET ---
     met_vars = _met_variables(events)
@@ -491,7 +514,7 @@ def compute_event_variables(
 
     # --- Leading jet scalars ---
     jets = objects.get('jets', ak.Array([]))
-    jet_lead = _jet_lead_variables(objects, btag_algo)
+    jet_lead = _jet_lead_variables(objects)
     # stash jet masses for composite computation
     if hasattr(jets, 'mass'):
         jet_lead['_j1m'] = _lead(jets.mass, 0, default=0.0)

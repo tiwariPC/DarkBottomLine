@@ -61,11 +61,11 @@ preprocessing:
 features:
   - "costheta_star"
   - "JetHT"
-  - "Jet1deepCSV"
+  - "Jet1BTagScore"
   - "dRJet12"
   - "dPhiJet12"
   - "Jet1Pt"
-  - "Jet2deepCSV"
+  - "Jet2BTagScore"
   - "Jet2Eta"
   - "Jet2Pt"
   - "eta_Jet1Jet2"

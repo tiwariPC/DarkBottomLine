@@ -26,12 +26,18 @@ def _build_event_cut_masks(
     """Build per-cut masks in the canonical selection order (trigger first)."""
     selection = config["event_selection"]
 
-    # --- Trigger (OR of all trigger types) ---
-    combined_trigger_mask = ak.zeros_like(events["event"], dtype=bool)
-    for trigger_paths in config["triggers"].values():
-        if trigger_paths:
-            combined_trigger_mask = combined_trigger_mask | pass_triggers(events, trigger_paths)
-    trigger_cut = combined_trigger_mask
+    # --- Trigger (OR of MET + EGamma; SingleMuon is efficiency-study only) ---
+    # Fastsim signal (BBDM-2HDMa) has no HLT branches — bypass the trigger
+    # requirement rather than dropping every signal event.
+    if config.get("data", {}).get("is_signal", False):
+        trigger_cut = ak.ones_like(events["event"], dtype=bool)
+    else:
+        combined_trigger_mask = ak.zeros_like(events["event"], dtype=bool)
+        for group in ("MET", "EGamma"):
+            trigger_paths = config["triggers"].get(group, [])
+            if trigger_paths:
+                combined_trigger_mask = combined_trigger_mask | pass_triggers(events, trigger_paths)
+        trigger_cut = combined_trigger_mask
 
     # --- Noise filters ---
     filter_cut = pass_met_filters(events, config["noise_filters"])

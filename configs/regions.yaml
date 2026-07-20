@@ -27,6 +27,7 @@ regions:
       Bjet1bCond: "==1"       # Nbjets==1 & pt-leading jet is the b-tagged one
       NAdditionalJets: "==0"
       Nmuons: "==1"
+      NmuonsTight: "==1"      # signal lepton tight ID + pt>30 (Run 2 parity)
       Nelectrons: "==0"
       MET: ">100"
       MT: "<160"
@@ -38,6 +39,7 @@ regions:
       Bjet1bCond: "==1"       # Nbjets==1 & pt-leading jet is the b-tagged one
       NAdditionalJets: "==0"
       Nelectrons: "==1"
+      NelectronsTight: "==1"  # signal lepton tight ID + pt>32 (Run 2 parity)
       Nmuons: "==0"
       MET: ">100"
       MT: "<160"
@@ -49,6 +51,7 @@ regions:
       Bjet2bCond: "==1"       # Nbjets==2 & pt-leading+subleading jets are the b-tagged ones
       NAdditionalJets: ">=1"
       Nmuons: "==1"
+      NmuonsTight: "==1"      # signal lepton tight ID + pt>30 (Run 2 parity)
       Nelectrons: "==0"
       MT: "<160"
   "2b:CR_Topenu":
@@ -59,6 +62,7 @@ regions:
       Bjet2bCond: "==1"       # Nbjets==2 & pt-leading+subleading jets are the b-tagged ones
       NAdditionalJets: ">=1"
       Nelectrons: "==1"
+      NelectronsTight: "==1"  # signal lepton tight ID + pt>32 (Run 2 parity)
       Nmuons: "==0"
       MT: "<160"
 

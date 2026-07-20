@@ -331,6 +331,19 @@ class Region:
             if "n_electrons" in events.fields:
                 return events["n_electrons"]
             return ak.Array(np.zeros(n_ev, dtype=np.int64))
+        if var == "NmuonsTight":
+            # W/Top CR signal lepton: tight ID + pt>pt_min (Run 2: tightId && pt>30)
+            if "tight_muons" in objects:
+                return self._safe_num_axis1(objects["tight_muons"], n_ev)
+            if "n_tight_muons" in events.fields:
+                return events["n_tight_muons"]
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
+        if var == "NelectronsTight":
+            if "tight_electrons" in objects:
+                return self._safe_num_axis1(objects["tight_electrons"], n_ev)
+            if "n_tight_electrons" in events.fields:
+                return events["n_tight_electrons"]
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "NmuonsZ":
             if "n_z_muons" in objects:
                 return objects["n_z_muons"]

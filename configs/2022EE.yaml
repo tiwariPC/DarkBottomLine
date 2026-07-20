@@ -117,3 +117,4 @@ event_selection:
 # Cleaning parameters
 cleaning:
    dr_jet: 0.4
+   dr_photon_lep: 0.4   # photon veto: dR cleaning vs loose electrons+muons (Run 2 parity)

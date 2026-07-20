@@ -31,7 +31,7 @@ common_variables:
   - Jet1Pt
   - Jet1Eta
   - Jet1Phi
-  - Jet1deepJet
+  - Jet1BTagScore
   - dPhi_jetMET
   - n_bjets
   - njets
@@ -48,7 +48,7 @@ region_variables:
     - Jet2Pt
     - Jet2Eta
     - Jet2Phi
-    - Jet2deepJet
+    - Jet2BTagScore
     - JetHT
     - M_Jet1Jet2
     - dEtaJet12
@@ -63,11 +63,11 @@ region_variables:
     - Jet2Pt
     - Jet2Eta
     - Jet2Phi
-    - Jet2deepJet
+    - Jet2BTagScore
     - Jet3Pt
     - Jet3Eta
     - Jet3Phi
-    - Jet3deepJet
+    - Jet3BTagScore
     - JetHT
     - M_Jet1Jet2
     - M_Jet1Jet3
@@ -96,7 +96,7 @@ region_variables:
     - Jet2Pt
     - Jet2Eta
     - Jet2Phi
-    - Jet2deepJet
+    - Jet2BTagScore
     - Jet3Pt
     - Jet3Eta
     - Jet3Phi
@@ -115,7 +115,7 @@ region_variables:
     - Jet2Pt
     - Jet2Eta
     - Jet2Phi
-    - Jet2deepJet
+    - Jet2BTagScore
     - Jet3Pt
     - Jet3Eta
     - Jet3Phi
@@ -280,6 +280,64 @@ met_suffix_patterns:
   - met_pt
   - recoil
 
+# Per-variable x-axis titles. Falls back to raw variable name if a variable
+# isn't listed here (no auto-formatting — add every variable you want labeled).
+variable_labels:
+  Recoil:              "Recoil [GeV]"
+  RecoilPhi:           "Recoil $\\phi$"
+  MET_pt:              "$p_{T}^{miss}$ [GeV]"
+  MET_phi:             "$p_{T}^{miss}$ $\\phi$"
+  METPhi:              "$p_{T}^{miss}$ $\\phi$"
+  Jet1Pt:              "Jet1 $p_{T}$ [GeV]"
+  Jet1Eta:             "Jet1 $\\eta$"
+  Jet1Phi:             "Jet1 $\\phi$"
+  Jet1BTagScore:       "Jet1 b-tag score"
+  Jet2Pt:              "Jet2 $p_{T}$ [GeV]"
+  Jet2Eta:             "Jet2 $\\eta$"
+  Jet2Phi:             "Jet2 $\\phi$"
+  Jet2BTagScore:       "Jet2 b-tag score"
+  Jet3Pt:              "Jet3 $p_{T}$ [GeV]"
+  Jet3Eta:             "Jet3 $\\eta$"
+  Jet3Phi:             "Jet3 $\\phi$"
+  Jet3BTagScore:       "Jet3 b-tag score"
+  dPhi_jetMET:         "$\\Delta\\phi(\\mathrm{jet}, p_{T}^{miss})$"
+  dEtaJet12:           "$\\Delta\\eta(\\mathrm{Jet1}, \\mathrm{Jet2})$"
+  dPhiJet12:           "$\\Delta\\phi(\\mathrm{Jet1}, \\mathrm{Jet2})$"
+  dPhiJet13:           "$\\Delta\\phi(\\mathrm{Jet1}, \\mathrm{Jet3})$"
+  dRJet12:             "$\\Delta R(\\mathrm{Jet1}, \\mathrm{Jet2})$"
+  JetHT:               "$H_{T}$ [GeV]"
+  M_Jet1Jet2:          "$M_{\\mathrm{Jet1,Jet2}}$ [GeV]"
+  M_Jet1Jet3:          "$M_{\\mathrm{Jet1,Jet3}}$ [GeV]"
+  pT_Jet1Jet2:         "$p_{T}^{\\mathrm{Jet1+Jet2}}$ [GeV]"
+  ratioJet1PtMET:      "Jet1 $p_{T}$ / $p_{T}^{miss}$"
+  ratioPtJet21:        "Jet2 $p_{T}$ / Jet1 $p_{T}$"
+  costheta_star:       "$|\\cos\\theta^{*}|$"
+  b_flavor_count:      "B-flavor jet count"
+  n_bjets:             "Number of b-jets"
+  n_jets:              "Number of jets"
+  njets:               "Number of jets"
+  n_muons:             "Number of muons"
+  n_electrons:         "Number of electrons"
+  n_taus:              "Number of taus"
+  PV_npvsGood:         "Number of good PVs"
+  PV_npvsGood_noPU:    "Number of good PVs (no PU)"
+  mt:                  "$M_{T}$ [GeV]"
+  z_mass:              "$M_{\\ell\\ell}$ [GeV]"
+  z_pt:                "$p_{T}^{\\ell\\ell}$ [GeV]"
+  muon_lep1_pt:        "Muon1 $p_{T}$ [GeV]"
+  muon_lep1_eta:       "Muon1 $\\eta$"
+  muon_lep1_phi:       "Muon1 $\\phi$"
+  muon_lep2_pt:        "Muon2 $p_{T}$ [GeV]"
+  muon_lep2_eta:       "Muon2 $\\eta$"
+  electron_lep1_pt:    "Electron1 $p_{T}$ [GeV]"
+  electron_lep1_eta:   "Electron1 $\\eta$"
+  electron_lep1_phi:   "Electron1 $\\phi$"
+  electron_lep2_pt:    "Electron2 $p_{T}$ [GeV]"
+  electron_lep2_eta:   "Electron2 $\\eta$"
+  ml_score:            "DNN score"
+  dnn_score:           "DNN score"
+  MET_significance:    "$p_{T}^{miss}$ significance"
+
 # Per-variable bin edges.
 # Format A (linspace): {low: float, high: float, n: int}
 # Format B (explicit): {edges: [e0, e1, ..., eN]}
@@ -288,7 +346,7 @@ variable_bins:
   METPhi:             {low: -3.14159, high: 3.14159, n: 15}
   MET_phi:            {low: -3.14159, high: 3.14159, n: 15}
   RecoilPhi:          {low: -3.14159, high: 3.14159, n: 15}
-  dPhi_jetMET:        {low: 0.0,      high: 3.2,     n: 17}
+  dPhi_jetMET:        {low: 0.5,      high: 3.2,     n: 17}
   del_plus:           {low: 0.0,      high: 3.2,     n: 17}   # |dphi_jMET + dphi_j12 - pi| in [0, pi]
   del_minus:          {low: -3.2,     high: 3.2,     n: 17}   # dphi_jMET - dphi_j12 in [-pi, pi]
   dPhiJet12:          {low: -7.5,     high: 7.5,     n: 21}
@@ -299,6 +357,8 @@ variable_bins:
   Jet1Phi:            {low: -3.14159, high: 3.14159, n: 15}
   Jet2Eta:            {low: -2.5,     high: 2.5,     n: 15}
   Jet2Phi:            {low: -3.14159, high: 3.14159, n: 15}
+  Jet3Eta:            {low: -2.5,     high: 2.5,     n: 15}
+  Jet3Phi:            {low: -3.14159, high: 3.14159, n: 15}
   bjet_eta:           {low: -2.5,     high: 2.5,     n: 15}
   bjet_phi:           {low: -3.14159, high: 3.14159, n: 15}
   jet_eta:            {low: -2.5,     high: 2.5,     n: 15}
@@ -308,12 +368,13 @@ variable_bins:
   muon_eta:           {low: -2.5,     high: 2.5,     n: 15}
   muon_phi:           {low: -3.14159, high: 3.14159, n: 15}
   # pT / energy (variable-width where physics motivated)
-  MET:                {edges: [100, 200, 300, 400, 500, 750, 1000]}
-  MET_pt:             {edges: [100, 200, 300, 400, 500, 750, 1000]}
+  MET:                {edges: [100, 300, 400, 500, 750, 1000]}
+  MET_pt:             {edges: [100, 300, 400, 500, 750, 1000]}
   Recoil:             {edges: [250, 300, 400, 550, 1000]}
   recoil:             {edges: [250, 300, 400, 550, 1000]}
-  Jet1Pt:             {low: 30.,  high: 800.,  n: 24}
+  Jet1Pt:             {low: 100.,  high: 800.,  n: 24}
   Jet2Pt:             {low: 30.,  high: 800.,  n: 24}
+  Jet3Pt:             {low: 30.,  high: 800.,  n: 24}
   bjet_pt:            {low: 30.,  high: 800.,  n: 24}
   jet_pt:             {low: 30.,  high: 800.,  n: 24}
   electron_pt:        {low: 20.,  high: 500.,  n: 25}
@@ -321,33 +382,34 @@ variable_bins:
   JetHT:              {low: 0.,   high: 2000., n: 21}
   M_Jet1Jet2:         {low: 0.,   high: 2000., n: 21}
   pT_Jet1Jet2:        {low: 0.,   high: 800.,  n: 24}
-  ratioPtJet21:       {low: 0.,   high: 2.,    n: 21}
+  ratioPtJet21:       {low: 0.,   high: 1.,    n: 21}
   ratioJet1PtMET:     {low: 0.,   high: 5.,    n: 22}
   # b-tagging discriminants
-  Jet1DeepJet:        {low: 0.,   high: 1.2,   n: 25}
-  Jet2DeepJet:        {low: 0.,   high: 1.2,   n: 25}
-  jet_btag:           {low: 0.,   high: 1.2,   n: 25}
+  Jet1BTagScore:      {low: 0.,   high: 1,   n: 25}
+  Jet2BTagScore:      {low: 0.,   high: 1,   n: 25}
+  Jet3BTagScore:      {low: 0.,   high: 1,   n: 25}
+  jet_btag:           {low: 0.,   high: 1,   n: 25}
   # multiplicities (half-integer edges for clean integer display)
-  n_jets:             {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
-  n_bjets:            {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
-  n_electrons:        {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
-  n_muons:            {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
-  n_taus:             {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
-  njets:              {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5, 9.5]}
-  b_flavor_count:     {edges: [-0.5, 0.5, 1.5, 2.5, 3.5, 4.5, 5.5]}
+  n_jets:             {edges: [0.5, 1.5, 2.5, 3.5]}
+  n_bjets:            {edges: [-0.5, 0.5, 1.5, 2.5, 3.5]}
+  n_electrons:        {edges: [-0.5, 0.5, 1.5, 2.5, 3.5]}
+  n_muons:            {edges: [-0.5, 0.5, 1.5, 2.5, 3.5]}
+  n_taus:             {edges: [-0.5, 0.5, 1.5, 2.5, 3.5]}
+  njets:              {edges: [-0.5, 0.5, 1.5, 2.5, 3.5]}
+  b_flavor_count:     {edges: [-0.5, 0.5, 1.5, 2.5]}
   PV_npvsGood:        {low: 0.0, high: 80.0, n: 80}
   # lepton kinematics
-  muon_lep1_pt:       {low: 20.,  high: 400.,  n: 20}
+  muon_lep1_pt:       {low: 30.,  high: 400.,  n: 20}
   muon_lep1_eta:      {low: -2.5, high: 2.5,   n: 15}
   muon_lep2_pt:       {low: 10.,  high: 300.,  n: 20}
   muon_lep2_eta:      {low: -2.5, high: 2.5,   n: 15}
-  electron_lep1_pt:   {low: 20.,  high: 400.,  n: 20}
+  electron_lep1_pt:   {low: 30.,  high: 400.,  n: 20}
   electron_lep1_eta:  {low: -2.5, high: 2.5,   n: 15}
   electron_lep2_pt:   {low: 10.,  high: 300.,  n: 20}
   electron_lep2_eta:  {low: -2.5, high: 2.5,   n: 15}
   # W/Z/top masses and transverse quantities
-  mt:                 {low: 0.,   high: 300.,  n: 30}
-  z_mass:             {low: 50.,  high: 130.,  n: 40}
+  mt:                 {low: 0.,   high: 160.,  n: 30}
+  z_mass:             {low: 70.,  high: 110.,  n: 40}
   z_pt:               {low: 0.,   high: 800.,  n: 24}
   # scores
   costheta_star:      {edges: [0.0, 0.25, 0.50, 0.75, 1.0]}
@@ -357,18 +419,6 @@ variable_bins:
 
 
 # Process grouping
-#
-# type:     "background" (default) | "signal" | "data"
-# color:    hex color (optional; falls back to _PROCESS_CONFIG in plot_utils.py)
-# label:    LaTeX display label (optional; falls back to _PROCESS_CONFIG)
-# patterns: list of substring patterns — any ROOT/PKL file in --input-folder whose
-#           name contains the pattern is matched to this group.
-#           Use the shortest unambiguous prefix, e.g. "WtoLNu-2Jets_PTLNu-100to250_2J"
-#           (everything up to and including _2J is enough to uniquely identify the slice).
-#
-# Resolution order per file in the folder:
-#   1. Try each pattern in order; first match wins.
-#   2. Files matching no pattern in any group are skipped with a warning.
 
 process_groups:
   WtoLNuJets:

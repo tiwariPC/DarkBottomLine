@@ -442,6 +442,9 @@ class PlotManager:
             'n_pv', 'pu_npv'
         ])
 
+        # Per-variable x-axis title overrides — falls back to raw variable name.
+        self.variable_labels: Dict[str, str] = dict(self.config.get("variable_labels", {}))
+
         # Region-specific exclusions — kept for backward-compat but no longer used by default path
         self.region_exclusions = self.config.get("region_exclusions", {})
 
@@ -1201,7 +1204,7 @@ class PlotManager:
         ax.set_xlim(x_lo, x_hi)
         ax.set_ylabel("Events / bin", fontsize=self.fontsize_axis, labelpad=6)
         if not show_ratio:
-            ax.set_xlabel(variable, fontsize=self.fontsize_axis)
+            ax.set_xlabel(self.variable_labels.get(variable, variable), fontsize=self.fontsize_axis)
         ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]))
         ax.grid(False)
 
@@ -1239,7 +1242,7 @@ class PlotManager:
                 )
             ax_ratio.legend(loc="upper right", fontsize=self.fontsize_legend, frameon=False)
             ax_ratio.set_ylabel("Data / MC", fontsize=self.fontsize_axis, labelpad=6)
-            ax_ratio.set_xlabel(variable, fontsize=self.fontsize_axis, labelpad=8)
+            ax_ratio.set_xlabel(self.variable_labels.get(variable, variable), fontsize=self.fontsize_axis, labelpad=8)
             ax_ratio.set_ylim(self.ratio_ylim[0], self.ratio_ylim[1])
             ax_ratio.set_xlim(x_lo, x_hi)
             ax_ratio.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]))
@@ -2243,10 +2246,15 @@ class PlotManager:
                         "genmodel_cols": gm_cols,
                         "file_label": sig_label,
                     })
-                    logging.info("[Signal:%s] loaded %s: wte=%.1f, xsec=%s, masspoints=%d",
-                                 sig_label, p.name, loaded["wte"],
-                                 "%.4g pb" % xsec if xsec is not None else "None",
-                                 len(gm_cols) if gm_cols else 1)
+                    if gm_cols:
+                        logging.info("[Signal:%s] loaded %s: wte=%.1f, masspoints=%d "
+                                     "(per-masspoint xsec resolved individually below)",
+                                     sig_label, p.name, loaded["wte"], len(gm_cols))
+                    else:
+                        logging.info("[Signal:%s] loaded %s: wte=%.1f, xsec=%s "
+                                     "(single masspoint, file-level xsec)",
+                                     sig_label, p.name, loaded["wte"],
+                                     "%.4g pb" % xsec if xsec is not None else "None")
         logging.info("Signal files loaded: %d", len(sig_file_entries))
 
         # ---- per-region processing ----
@@ -2482,9 +2490,9 @@ class PlotManager:
                         logging.debug("  %s/%s: data sum=%.1f", region_name, var, float(np.sum(data_hist)))
 
                 # ---- signal histograms per masspoint ----
-                # Compute for all regions (SR and CRs); PNG/PDF selects 3, ROOT gets all.
+                # SR only — signal must never be drawn in CR plots.
                 sig_rows_for_plot: List[Tuple[str, np.ndarray]] = []
-                if sig_file_entries and bins_ref is not None:
+                if _is_sr and sig_file_entries and bins_ref is not None:
                     for _sfe in sig_file_entries:
                         _sbr  = _sfe["branches"]
                         _swte = _sfe["wte"]
@@ -3015,7 +3023,7 @@ class PlotManager:
             ax_r.stairs(r_dn, bins, fill=False, linewidth=self.signal_linewidth, linestyle=":",  color=_sc_dn)
             ax_r.set_ylim(0.5, 1.5)
             ax_r.set_ylabel("Var / Nom", fontsize=self.fontsize_axis, labelpad=6)
-            ax_r.set_xlabel(svar, fontsize=self.fontsize_axis, labelpad=8)
+            ax_r.set_xlabel(self.variable_labels.get(svar, svar), fontsize=self.fontsize_axis, labelpad=8)
             ax_r.yaxis.set_major_locator(_ticker.FixedLocator([0.5, 0.75, 1.0, 1.25, 1.5]))
             ax_r.grid(False)
             _x_lim_lo = float(bins[np.where(v_nom > 0)[0][0]]) if np.any(v_nom > 0) else float(bins[0])
@@ -3790,21 +3798,9 @@ class PlotManager:
 
     def _get_variable_label(self, var_name: str) -> str:
         """Get a formatted label for a variable name."""
-        # Simple mapping - can be expanded
-        labels = {
-            'met': 'MET [GeV]',
-            'jet_pt': 'Jet pT [GeV]',
-            'jet_eta': 'Jet η',
-            'n_jets': 'Number of Jets',
-            'n_bjets': 'Number of B-jets',
-            'n_muons': 'Number of Muons',
-            'n_electrons': 'Number of Electrons',
-            'electron_pt': 'Electron pT [GeV]',
-            'electron_eta': 'Electron η',
-            'muon_pt': 'Muon pT [GeV]',
-            'muon_eta': 'Muon η',
-        }
-        return labels.get(var_name, var_name.replace('_', ' ').title())
+        if var_name in self.variable_labels:
+            return self.variable_labels[var_name]
+        return var_name.replace('_', ' ').title()
 
     def _create_region_plots_single(self, results: Dict[str, Any], region: str,
                                   output_path: Path, show_data: bool,

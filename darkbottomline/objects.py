@@ -84,12 +84,13 @@ def build_jet_collection(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
 
 
 def build_photon_collection(events: ak.Array) -> ak.Array:
-    """Zip the photon collection (veto object): pt/eta/phi/cutBased."""
+    """Zip the photon collection (veto object): pt/eta/phi/cutBased/electronVeto."""
     return ak.zip({
         "pt": events["Photon_pt"],
         "eta": events["Photon_eta"],
         "phi": events["Photon_phi"],
         "cutBased": events["Photon_cutBased"],
+        "electronVeto": events["Photon_electronVeto"],
     })
 
 
@@ -205,13 +206,15 @@ def select_taus(events: ak.Array, config: Dict[str, Any], wp: str = "loose") -> 
 
 
 def select_photons(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
-    """Select photons for veto: loose ID, pt > 15, |eta| < 2.5.
+    """Select photons for veto: loose ID, pt > 15, |eta| < 2.5, pixel-seed
+    electron veto (rejects electrons reconstructed as photon candidates).
 
     Mask reads flat branches directly (like select_jets) — no zip needed here."""
     pt_mask = events["Photon_pt"] > config["pt_min"]
     eta_mask = abs(events["Photon_eta"]) < config["eta_max"]
     id_mask = events["Photon_cutBased"] >= config["id_wp_loose"]
-    return pt_mask & eta_mask & id_mask
+    ele_veto_mask = events["Photon_electronVeto"] == 1
+    return pt_mask & eta_mask & id_mask & ele_veto_mask
 
 
 def select_jets(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
@@ -373,6 +376,32 @@ def build_z_candidates(
     return n_z_muons, n_z_electrons, mll_mu, mll_el, z_pt_mu, z_pt_el
 
 
+def build_transverse_mass(
+    tight_muons: ak.Array,
+    tight_electrons: ak.Array,
+    met_pt: ak.Array,
+    met_phi: ak.Array,
+) -> Tuple[ak.Array, ak.Array]:
+    """
+    W transverse mass per flavor: leading tight lepton vs MET.
+    SENTINEL if no tight lepton of that flavor.
+
+    Returns:
+        mt_mu, mt_el: per-event MT for muon/electron channel (SENTINEL if none)
+    """
+    def _one_flavor(tight_lep: ak.Array) -> ak.Array:
+        has_lep = ak.num(tight_lep, axis=1) > 0
+        lead = ak.firsts(tight_lep)
+        lpt  = ak.fill_none(lead.pt,  0.0)
+        lphi = ak.fill_none(lead.phi, 0.0)
+        dphi = np.abs(lphi - met_phi)
+        dphi = ak.where(dphi > np.pi, 2 * np.pi - dphi, dphi)
+        mt = np.sqrt(2 * lpt * met_pt * (1 - np.cos(dphi)))
+        return ak.where(has_lep, mt, SENTINEL)
+
+    return _one_flavor(tight_muons), _one_flavor(tight_electrons)
+
+
 def calculate_costheta_star(jets: ak.Array) -> ak.Array:
     """
     cos(theta*) = |tanh(dEta_j1j2 / 2)|
@@ -418,16 +447,17 @@ def _recoil_from_met(met_pt, met_phi, muons, electrons):
     return _recoil_from_sums(met_pt, met_phi, lep_px, lep_py)
 
 
+def _met_field(events: ak.Array, *candidates):
+    for v in candidates:
+        if v in events.fields:
+            return events[v]
+    raise KeyError(f"No MET branch found among {candidates}")
+
+
 def calculate_recoil(events: ak.Array, objects: Dict[str, Any]):
     """Recoil = |-(MET_vec + sum pT(loose muons+electrons))|. Returns (recoil_pt, recoil_phi)."""
-    def _met_field(*candidates):
-        for v in candidates:
-            if v in events.fields:
-                return events[v]
-        raise KeyError(f"No MET branch found among {candidates}")
-
-    met_pt  = _met_field("PuppiMET_pt",  "PFMET_pt",  "MET_pt")
-    met_phi = _met_field("PuppiMET_phi", "PFMET_phi", "MET_phi")
+    met_pt  = _met_field(events, "PuppiMET_pt",  "PFMET_pt",  "MET_pt")
+    met_phi = _met_field(events, "PuppiMET_phi", "PFMET_phi", "MET_phi")
     muons     = objects.get("muons",     ak.Array([]))
     electrons = objects.get("electrons", ak.Array([]))
     return _recoil_from_met(met_pt, met_phi, muons, electrons)
@@ -463,17 +493,12 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
     tau_mask_tight = select_taus(events, config["objects"]["taus"], wp="tight")
     tau_mask = tau_mask_loose
 
-    photon_mask = select_photons(events, config["objects"]["photons"])
-    photons = build_photon_collection(events)
-    selected_photons = photons[photon_mask]
-
     jet_mask = select_jets(events, config["objects"]["jets"])
 
     if verbose:
         print(f"    Muons (loose): {ak.sum(muon_mask_loose)}, tight: {ak.sum(muon_mask_loose & muon_mask_tight)}")
         print(f"    Electrons (loose): {ak.sum(electron_mask_loose)}, tight: {ak.sum(electron_mask_loose & electron_mask_tight)}")
         print(f"    Taus (loose): {ak.sum(tau_mask_loose)}, tight: {ak.sum(tau_mask_loose & tau_mask_tight)}")
-        print(f"    Photons (loose veto): {ak.sum(photon_mask)}")
         print(f"    Jets selected: {ak.sum(jet_mask)}")
 
     # Build collections via shared builders (single field-list source of truth)
@@ -504,6 +529,31 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
         selected_muons, selected_electrons,
         pt_lead_min_mu=mu_pt_min, pt_lead_min_el=el_pt_min, pt_sublead_min=10.0
     )
+
+    # W transverse mass per flavor: leading tight lepton vs MET
+    _met_pt_mt  = _met_field(events, "PuppiMET_pt",  "PFMET_pt",  "MET_pt")
+    _met_phi_mt = _met_field(events, "PuppiMET_phi", "PFMET_phi", "MET_phi")
+    mt_mu, mt_el = build_transverse_mass(tight_muons, tight_electrons, _met_pt_mt, _met_phi_mt)
+
+    # Photon veto collection: pixel-seed veto in select_photons, then ΔR-cleaned
+    # against loose electrons AND muons (Run 2 parity: SkimTree cleanedPho_ag_ele/ag_mu).
+    # Without this, every electron is double-counted as a photon candidate and
+    # max_photons=0 vetoes W→eν / Z→ee events.
+    photon_mask = select_photons(events, config["objects"]["photons"])
+    photons = build_photon_collection(events)
+    selected_photons = photons[photon_mask]
+    dr_photon_lep = config["cleaning"]["dr_photon_lep"]
+    photon_clean_mask = clean_jets_from_leptons(
+        selected_photons,
+        ak.concatenate([
+            selected_muons[["eta", "phi"]],
+            selected_electrons[["eta", "phi"]],
+        ], axis=1),
+        dr_photon_lep,
+    )
+    selected_photons = selected_photons[photon_clean_mask]
+    if verbose:
+        print(f"    Photons (loose veto, lepton-cleaned): {ak.sum(ak.num(selected_photons, axis=1))}")
 
     selected_jets = jets[jet_mask]
 
@@ -578,6 +628,8 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
         "mll_el": mll_el,
         "z_pt_mu": z_pt_mu,
         "z_pt_el": z_pt_el,
+        "mt_mu": mt_mu,
+        "mt_el": mt_el,
         "jets": cleaned_jets,
         "bjets": selected_bjets,
         "btag_score": config["btagging"]["score"],

@@ -507,7 +507,7 @@ class DarkBottomLineProcessor:
                         # Always write an empty Events tree with the correct schema so
                         # hadd can merge this file with chunks that have selected events.
                         logging.info("No selected events — writing empty Events tree for hadd compatibility")
-                        f.mktree("Events", get_empty_branch_types(self.config))
+                        f.mktree("Events", get_empty_branch_types())
 
                     # Flat 1-bin TH1 per scalar — hadd sums bin contents correctly
                     edges_1bin = np.array([0.0, 1.0])
