@@ -134,13 +134,15 @@ class TestObjectSelection:
 
     def test_select_photons(self):
         events = ak.Array({
-            "Photon_pt":      [[20.0, 10.0, 30.0], [16.0, 8.0], [40.0]],
-            "Photon_eta":     [[1.0, 2.0, 0.5],    [1.5, 3.0],  [0.8]],
-            "Photon_cutBased":[[1, 1, 1],          [1, 1],      [1]],
+            "Photon_pt":           [[20.0, 10.0, 30.0], [16.0, 8.0], [40.0]],
+            "Photon_eta":          [[1.0, 2.0, 0.5],    [1.5, 3.0],  [0.8]],
+            "Photon_cutBased":     [[1, 1, 1],          [1, 1],      [1]],
+            "Photon_electronVeto": [[1, 1, 0],          [1, 1],      [1]],
         })
         mask = select_photons(events, PHO_CFG)
-        # pt_min=15, eta_max=2.5, cutBased>=1
-        assert ak.to_list(ak.sum(mask, axis=1)) == [2, 1, 1]
+        # pt_min=15, eta_max=2.5, cutBased>=1, electronVeto==1
+        # ev0: 20 passes, 10 fails pt, 30 fails electronVeto → 1
+        assert ak.to_list(ak.sum(mask, axis=1)) == [1, 1, 1]
 
     def test_select_jets(self):
         events = ak.Array({
@@ -214,10 +216,11 @@ class TestBuildObjects:
             "Jet_mass":        [[10.0, 8.0],  [9.0],  [12.0]],
             "Jet_btagPNetB":   [[0.9, 0.1],   [0.5],  [0.8]],
             "Jet_hadronFlavour":[[5, 0],      [5],    [5]],
-            "Photon_pt":      [[10.0], [20.0], [8.0]],
-            "Photon_eta":     [[1.0],  [1.5],  [0.8]],
-            "Photon_phi":     [[0.0],  [0.5],  [1.5]],
-            "Photon_cutBased":[[1],    [1],    [1]],
+            "Photon_pt":           [[10.0], [20.0], [8.0]],
+            "Photon_eta":          [[1.0],  [1.5],  [0.8]],
+            "Photon_phi":          [[0.0],  [0.5],  [1.5]],
+            "Photon_cutBased":     [[1],    [1],    [1]],
+            "Photon_electronVeto": [[1],    [1],    [1]],
             "PuppiMET_pt":  [50.0, 60.0, 70.0],
             "PuppiMET_phi": [0.5, 1.0, 1.5],
         })
@@ -229,7 +232,7 @@ class TestBuildObjects:
                 "photons": PHO_CFG, "jets": JET_CFG,
             },
             "btagging": {"branch": "Jet_btagPNetB", "score": 0.2605},
-            "cleaning": {"dr_jet": 0.4},
+            "cleaning": {"dr_jet": 0.4, "dr_photon_lep": 0.4},
         }
 
     def test_build_objects_keys_and_shapes(self):

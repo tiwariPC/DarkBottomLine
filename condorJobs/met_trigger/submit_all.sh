@@ -62,8 +62,8 @@ for line in "${JOBLINES[@]}"; do
         -append "TXTFILE=${TXTFILE}" \
         -append "BATCH=${BATCH}" \
         -append "NJOBS=${NJOBS}" \
-        -append "USER_INITIAL=${USER:0:1}" \
-        -append "LOGDIR=${LOGDIR}" </dev/null
+        -append "LOGDIR=${LOGDIR}" \
+        -append "USER_INITIAL=${USER:0:1}" </dev/null
     n_clusters=$((n_clusters + 1))
 done
 

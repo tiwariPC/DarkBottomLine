@@ -16,6 +16,7 @@ corrections:
    electronHLT: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_electronHlt.json.gz
    electronHLT_name: "2024Re-recoBCD"
    electronHLT_WP: "HLT_SF_Ele30_TightID"
+   metHlt: data/corrections/2024/Run3-Summer24-NanoAODv15_metHlt.json.gz
    jetJEC: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_jet_jerc.json.gz
    jetJEC_tag: "Summer24_22Sep2023_V1_MC"
    jetJEC_algo: "AK4PFPuppi"
@@ -129,3 +130,4 @@ event_selection:
 # Cleaning parameters
 cleaning:
    dr_jet: 0.4
+   dr_photon_lep: 0.4   # photon veto: dR cleaning vs loose electrons+muons (Run 2 parity)

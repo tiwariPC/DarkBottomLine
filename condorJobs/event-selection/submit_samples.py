@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 """
-Simple script to submit condor jobs for sample files.
+Simple script to submit condor jobs for event-selection sample files.
 
-For each sample file (*.txt in samplefiles/):
+For each sample file (*.txt in data/samplelist/<year>/):
   - Counts the number of ROOT files in it
   - Submits N condor jobs (one job per file)
   - Each sample gets its own condor cluster
+  - Runs `darkbottomline analyze --mode event-selection` (NanoAOD -> EVENTSELECTION.root)
 
 Usage:
-    python3 submit_samples.py [options]
+    python3 submit_samples.py --year 2022 [options]
 
 Example:
-    python3 submit_samples.py --input-dir samplefiles --config configs/2022.yaml
+    python3 submit_samples.py --year 2022 --config configs/2022.yaml
 """
 
 import argparse
 import logging
 import os
 import pwd
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -126,10 +128,11 @@ def create_submit_file(
     sample_file: str,
     num_jobs: int,
     config: str,
-    regions_config: str,
+    year: str,
     executor: str,
     chunk_size: Union[int, str],
     workers: int,
+    is_data: bool,
     max_events: str = "",
 ) -> None:
     """Create a submit file from template with specific settings."""
@@ -137,8 +140,8 @@ def create_submit_file(
         lines = f.readlines()
 
     # Get repository directory (absolute path from submission location)
-    condor_dir = output_file.parent.parent  # condorJobs directory
-    repo_dir = condor_dir.parent  # Repository root directory
+    condor_dir = output_file.parent.parent  # condorJobs/event-selection directory
+    repo_dir = condor_dir.parent.parent  # Repository root directory
     repo_dir_abs = repo_dir.resolve()
 
     # Build environment variable string
@@ -147,11 +150,12 @@ def create_submit_file(
     env_parts = [
         f'DBL_REPO_DIR={repo_dir_abs}',
         f'DBL_CONFIG={config}',
-        f'DBL_REGIONS_CONFIG={regions_config}',
         f'DBL_BKG_FILE={sample_file}',
+        f'DBL_YEAR={year}',
         f'DBL_EXECUTOR={executor}',
         f'DBL_CHUNK_SIZE={chunk_size}',
         f'DBL_WORKERS={workers}',
+        f'DBL_DATA={"true" if is_data else "false"}',
     ]
     if max_events:
         env_parts.append(f'DBL_MAX_EVENTS={max_events}')
@@ -159,7 +163,7 @@ def create_submit_file(
     env_vars = ' \\\n'.join(env_parts)
 
     # Background file is in repository, accessible from condor nodes
-    # No need to transfer - file is read from DBL_REPO_DIR/condorJobs/samplefiles/
+    # No need to transfer - file is read from DBL_REPO_DIR/data/samplelist/<year>/
     # So we don't need transfer_input_files for the background file
 
     # Get username and user ID for x509userproxy path
@@ -212,12 +216,17 @@ def create_submit_file(
         f.writelines(new_lines)
 
 
+def is_data_sample(sample_name: str) -> bool:
+    """Detect collision data samples by name, e.g. JetMET-Run2022D-22Sep2023-v1."""
+    return re.search(r'-Run20\d{2}', sample_name) is not None
+
+
 def submit_sample(
     sample_file: Path,
     condor_dir: Path,
     template_file: Path,
     config: str,
-    regions_config: str,
+    year: str,
     executor: str,
     chunk_size: Optional[int],
     workers: int,
@@ -242,6 +251,9 @@ def submit_sample(
     print(f"  Files in sample: {num_files}")
     print(f"  Will submit: {num_files} jobs (1 job per file)")
 
+    is_data = is_data_sample(sample_name)
+    print(f"  Sample type: {'DATA' if is_data else 'MC'}")
+
     # Handle chunk size: if None (auto), pass "auto" string to let each worker optimize
     # Otherwise, use the provided value (int or "auto" string)
     if chunk_size is None:
@@ -265,10 +277,11 @@ def submit_sample(
         sample_file=sample_filename,
         num_jobs=num_files,
         config=config,
-        regions_config=regions_config,
+        year=year,
         executor=executor,
         chunk_size=chunk_size_str,
         workers=workers,
+        is_data=is_data,
         max_events=max_events,
     )
 
@@ -313,51 +326,54 @@ def submit_sample(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Submit condor jobs for sample files',
+        description='Submit condor jobs for event-selection sample files',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Submit all *.txt files in samplefiles/ directory
-  python3 submit_samples.py
+  # Run from repo root
+  python3 condorJobs/event-selection/submit_samples.py --year 2022
 
-  # Specify input directory
-  python3 submit_samples.py --input-dir samplefiles
+  # Submit all *.txt files in data/samplelist/2022/
+  python3 submit_samples.py --year 2022
+
+  # Override input directory
+  python3 submit_samples.py --year 2022 --input-dir /path/to/samplelist
 
   # Dry run (don't actually submit)
-  python3 submit_samples.py --dry-run
+  python3 submit_samples.py --year 2022 --dry-run
 
   # Custom configuration
-  python3 submit_samples.py --config configs/2022.yaml --workers 8
+  python3 submit_samples.py --year 2022 --config configs/2022.yaml --workers 8
 
   # Auto-optimize chunk size per sample
-  python3 submit_samples.py --chunk-size auto
+  python3 submit_samples.py --year 2022 --chunk-size auto
 
   # Use fixed chunk size
-  python3 submit_samples.py --chunk-size 100000
+  python3 submit_samples.py --year 2022 --chunk-size 100000
         """
     )
 
-    # Default to samplefiles directory relative to script location
-    # We'll resolve this in main() to handle both absolute and relative paths
+    parser.add_argument(
+        '--year',
+        type=str,
+        required=True,
+        choices=['2022', '2022EE', '2023', '2024'],
+        help='Data-taking year: selects data/samplelist/<year>/ and configs/<year>.yaml by default',
+    )
+
+    # Default to data/samplelist/<year>/ relative to repo root (set after --year is known)
     parser.add_argument(
         '--input-dir',
         type=Path,
-        default='samplefiles',
-        help='Directory containing *.txt sample files (default: samplefiles relative to script)',
+        default=None,
+        help='Directory containing *.txt sample files (default: data/samplelist/<year>/)',
     )
 
     parser.add_argument(
         '--config',
         type=str,
-        default='configs/2022.yaml',
-        help='Configuration file (default: configs/2022.yaml)',
-    )
-
-    parser.add_argument(
-        '--regions-config',
-        type=str,
-        default='configs/regions.yaml',
-        help='Regions configuration file (default: configs/regions.yaml)',
+        default=None,
+        help='Configuration file (default: configs/<year>.yaml)',
     )
 
     parser.add_argument(
@@ -410,15 +426,21 @@ Examples:
         format='%(levelname)s: %(message)s'
     )
 
-    # Get script directory
+    # Get script directory and repository root (condorJobs/event-selection/../..)
     condor_dir = Path(__file__).parent
+    repo_dir = condor_dir.parent.parent
 
-    # Handle input directory path
-    if args.input_dir.is_absolute():
+    # Default config: configs/<year>.yaml
+    if args.config is None:
+        args.config = f'configs/{args.year}.yaml'
+
+    # Handle input directory path: default to data/samplelist/<year>/ at repo root
+    if args.input_dir is None:
+        input_dir = (repo_dir / 'data' / 'samplelist' / args.year).resolve()
+    elif args.input_dir.is_absolute():
         input_dir = args.input_dir
     else:
-        # Resolve relative to condor_dir (where the script is located)
-        input_dir = (condor_dir / args.input_dir).resolve()
+        input_dir = (repo_dir / args.input_dir).resolve()
 
     # Check input directory exists
     if not input_dir.exists():
@@ -516,8 +538,10 @@ Examples:
         sys.exit(1)
 
     print("="*60)
-    print("DarkBottomLine Condor Job Submission")
+    print("DarkBottomLine Condor Job Submission (event-selection)")
     print("="*60)
+    print(f"Year: {args.year}")
+    print(f"Config: {args.config}")
     print(f"Input directory: {input_dir}")
     print(f"Log directories: {logs_dir}/")
     print(f"Request memory: {request_memory_mb} MB")
@@ -530,7 +554,8 @@ Examples:
     print(f"Found {len(sample_files)} sample file(s):")
     for sample in sample_files:
         num_files = count_files_in_sample(sample)
-        print(f"  - {sample.name}: {num_files} files")
+        tag = "DATA" if is_data_sample(sample.stem) else "MC"
+        print(f"  - {sample.name} [{tag}]: {num_files} files")
     print()
 
     if args.dry_run:
@@ -545,7 +570,7 @@ Examples:
             condor_dir=condor_dir,
             template_file=args.template,
             config=args.config,
-            regions_config=args.regions_config,
+            year=args.year,
             executor=args.executor,
             chunk_size=chunk_size,
             workers=workers,  # Use auto-derived workers from request_cpus

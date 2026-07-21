@@ -12,9 +12,9 @@
 
 set -u
 
-INPUT_DIR="${1:-../TestingSamples/NanoAODv12_2022}"
+INPUT_DIR="${1:-../TestingSamples/NanoAODv15_2024}"
 OUTPUT_DIR="${2:-outputs/eventsel}"
-CONFIG="${3:-configs/2022.yaml}"
+CONFIG="${3:-configs/2024.yaml}"
 
 # Filename substring that identifies collision data (gets --data)
 DATA_PATTERN="JetMET-Run"

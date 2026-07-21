@@ -635,6 +635,55 @@ class CorrectionManager:
             return var["down"]
         return var["central"]
 
+    def _get_metHLT_sf_correction(self):
+        """Return the MET-HLT-SF correction evaluator from the loaded CorrectionSet."""
+        if "metHlt" not in self.corrections:
+            return None
+        cs = self.corrections["metHlt"]
+        for name in ("MET-HLT-SF", "met_hlt_sf", "met_hlt"):
+            try:
+                return cs[name]
+            except (IndexError, KeyError, TypeError):
+                continue
+        if hasattr(cs, "keys"):
+            first = next(iter(cs.keys()), None)
+            if first is not None:
+                return cs[first]
+        return None
+
+    def get_metHLT_sf_nominal_up_down(self, recoil: ak.Array) -> Dict[str, ak.Array]:
+        """
+        Get MET trigger scale factors as central, up, and down.
+        Uses MET-HLT-SF with ValType sf/sfup/sfdown. Signature: evaluate(val_type, recoil).
+        Per-event (flat), unlike per-object electron/muon SFs.
+        """
+        ones = ak.ones_like(recoil, dtype=float)
+        out = {"central": ones, "up": ones, "down": ones}
+        corr = self._get_metHLT_sf_correction()
+        if corr is None or len(ak.ravel(recoil)) == 0:
+            return out
+        flat_recoil = np.asarray(ak.ravel(recoil), dtype=float)
+        for val_type, key in [("sf", "central"), ("sfup", "up"), ("sfdown", "down")]:
+            try:
+                val = np.asarray(corr.evaluate(val_type, flat_recoil), dtype=float)
+                out[key] = ak.Array(val)
+            except Exception as e:
+                logging.warning(f"MET HLT SF evaluate failed for {val_type}: {e}")
+        return out
+
+    def get_metHLT_sf(
+        self,
+        recoil: ak.Array,
+        systematic: str = "central",
+    ) -> ak.Array:
+        """Get MET trigger scale factors (central, up, or down)."""
+        var = self.get_metHLT_sf_nominal_up_down(recoil)
+        if systematic == "up":
+            return var["up"]
+        if systematic == "down":
+            return var["down"]
+        return var["central"]
+
     def _btag_sf_config(self) -> Dict[str, Any]:
         """Read b-tag SF settings from config.btagging (config-driven, no hardcoding).
 
@@ -993,6 +1042,10 @@ class CorrectionManager:
                 "down": self._per_event_product(hlt_var["down"]),
             }
 
+        # MET HLT trigger SF: per-event, evaluated on hadronic recoil -> weight_metHLT
+        if "recoil" in objects and len(ak.ravel(objects["recoil"])) > 0:
+            corrections["weight_metHLT"] = self.get_metHLT_sf_nominal_up_down(objects["recoil"])
+
         # JEC: product of correction factors over all jets -> weight_JEC
         if "jets" in objects and len(ak.flatten(objects["jets"])) > 0:
             corrections["weight_JEC"] = self.get_jet_jec_weight_nominal_up_down(
@@ -1074,7 +1127,7 @@ class CorrectionManager:
         Compute total event weight and per-systematic up/down variations.
 
         full_event_weight = genweight * weight_pileup * weight_btag * weight_muon
-                            * weight_electron * weight_electronHLT * weight_JEC
+                            * weight_electron * weight_electronHLT * weight_metHLT * weight_JEC
 
         For each component X:
             weight_XUP   = (full_event_weight / weight_X_central) * weight_X_up
@@ -1082,7 +1135,7 @@ class CorrectionManager:
 
         Returns dict with keys: full_event_weight, weight_pileupUP/DOWN,
         weight_btagUP/DOWN, weight_muonUP/DOWN, weight_electronUP/DOWN,
-        weight_electronHLTUP/DOWN, weight_JECUP/DOWN.
+        weight_electronHLTUP/DOWN, weight_metHLTUP/DOWN, weight_JECUP/DOWN.
         """
         n_events = len(events)
         ones = ak.Array(np.ones(n_events, dtype=float))
@@ -1131,6 +1184,16 @@ class CorrectionManager:
             "tight_electrons", self.get_electronHLT_sf, self.get_electronHLT_sf_nominal_up_down
         )
 
+        # MET HLT (per-event, on hadronic recoil)
+        recoil = objects.get("recoil")
+        if recoil is not None and len(ak.ravel(recoil)) > 0:
+            met_hlt_var = self.get_metHLT_sf_nominal_up_down(recoil)
+            w_met_hlt, w_met_hlt_up, w_met_hlt_down = (
+                met_hlt_var["central"], met_hlt_var["up"], met_hlt_var["down"]
+            )
+        else:
+            w_met_hlt = w_met_hlt_up = w_met_hlt_down = ones
+
         # JEC
         jets = objects.get("jets")
         if jets is not None and len(ak.ravel(jets.pt)) > 0:
@@ -1139,7 +1202,7 @@ class CorrectionManager:
         else:
             w_jec = w_jec_up = w_jec_down = ones
 
-        sf_weight = w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_jec
+        sf_weight = w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_met_hlt * w_jec
         full_event_weight = genweight * sf_weight
 
         def _vary(total, central, variation):
@@ -1167,6 +1230,8 @@ class CorrectionManager:
             "weight_electronDOWN": _vary(full_event_weight, w_electron, w_electron_down),
             "weight_electronHLTUP": _vary(full_event_weight, w_ele_hlt, w_ele_hlt_up),
             "weight_electronHLTDOWN": _vary(full_event_weight, w_ele_hlt, w_ele_hlt_down),
+            "weight_metHLTUP": _vary(full_event_weight, w_met_hlt, w_met_hlt_up),
+            "weight_metHLTDOWN": _vary(full_event_weight, w_met_hlt, w_met_hlt_down),
             "weight_JECUP": _vary(full_event_weight, w_jec, w_jec_up),
             "weight_JECDOWN": _vary(full_event_weight, w_jec, w_jec_down),
             "weight_pdfUP":   (_fw * pdf_scale["pdf_up"]).astype(np.float32),

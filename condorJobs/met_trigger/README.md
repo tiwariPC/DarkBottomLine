@@ -3,16 +3,17 @@
 **One cluster per samplelist `.txt`, one job per BATCH-sized slice of ROOT files.**
 Each job skims up to `BATCH` files (default **50**): its slice = lines
 `[ProcId*BATCH+1 .. ProcId*BATCH+BATCH]` of the `.txt`. A `.txt` with 594 files
-becomes a cluster of `ceil(594/50)=12` jobs. Each input ROOT still produces one
-output:
+becomes a cluster of `ceil(594/50)=12` jobs. The skim step merges every file it's
+given into ONE output, so each job (one BATCH-sized slice) produces one output:
 
 ```text
-<OUTDIR>/<txtfile stem>/<txtfile stem>_<unique last string of the input ROOT filename>.root
+<OUTDIR>/<txtfile stem>/<txtfile stem>_<ClusterId>_<ProcId>.root
 ```
 
-i.e. each samplelist `.txt` gets its own subdirectory under `OUTDIR`, and the
-per-ROOT skims land inside it. (For the 2024 joblist, BATCH=50 gives ~419 jobs
-total instead of ~19,915 — a ~47× reduction.)
+i.e. each samplelist `.txt` gets its own subdirectory under `OUTDIR`, with one
+merged skim per job inside it (the `_<ClusterId>_<ProcId>` suffix keeps concurrent
+and resubmitted jobs for the same `.txt` from writing the same file). (For the 2024
+joblist, BATCH=50 gives ~419 jobs total instead of ~19,915 — a ~47× reduction.)
 
 ## Files
 
@@ -26,10 +27,10 @@ total instead of ~19,915 — a ~47× reduction.)
 ## Run
 
 ```bash
-# 1. Grid proxy — XRootD reads inside the jobs need it. It must live under your
-#    AFS home (NOT $HOME/~ if those resolve elsewhere, and NOT /eos). The default
-#    voms proxy name is x509up_u<uid>; submit.sub's Proxy_filename must match:
-voms-proxy-init --voms cms --valid 192:00 --out /afs/cern.ch/user/${USER:0:1}/${USER}/private/x509up_u$(id -u)
+# 1. Grid proxy — XRootD reads inside the jobs need it. Put it under your AFS home
+#    with the default voms name (x509up_u<uid>); submit.sub ships it to the sandbox:
+voms-proxy-init --voms cms --valid 192:00 \
+    --out /afs/cern.ch/user/${USER:0:1}/${USER}/private/x509up_u$(id -u)
 
 # 2. Build the joblist for an era (Muon* = data; all bkg samplelists = mc)
 condorJobs/met_trigger/make_joblist.sh 2024
@@ -37,11 +38,8 @@ condorJobs/met_trigger/make_joblist.sh 2024
 # 3. Edit submit.sub:
 #      REPO_DIR / OUTDIR  -> replace the /CHANGE/ME/ placeholders with your paths
 #                            (OUTDIR must be job-visible: AFS or EOS).
-#      Proxy_filename     -> set to x509up_u<your uid> (matches step 1).
-#    The proxy DIRECTORY auto-resolves: Proxy_path already uses
-#    /afs/cern.ch/user/$(USER_INITIAL)/$ENV(USER)/private/ — submit_all.sh injects
-#    USER_INITIAL=${USER:0:1} and $ENV(USER) is your username, so only the
-#    Proxy_filename needs to match your uid.
+#      Proxy_filename     -> x509up_u<your uid> (matches step 1). The proxy DIR
+#                            auto-resolves from $(USER_INITIAL)/$ENV(USER).
 
 # 4. Submit — one cluster per txt, ceil(NFILES/BATCH) jobs each (BATCH=50 default)
 condorJobs/met_trigger/submit_all.sh
@@ -50,22 +48,34 @@ condorJobs/met_trigger/submit_all.sh
 ```
 
 `submit_all.sh` counts the ROOT lines in each `.txt`, computes
-`NJOBS=ceil(NFILES/BATCH)`, and calls `condor_submit` once per `.txt`, passing
-`KIND` / `TXTFILE` / `BATCH` / `NJOBS` / `USER_INITIAL` into `submit.sub`, so each
-`.txt` gets its own `ClusterId` with `NJOBS` jobs.
+`NJOBS=ceil(NFILES/BATCH)`, creates `logs/` next to the scripts, and calls
+`condor_submit` once per `.txt`, passing `KIND` / `TXTFILE` / `BATCH` / `NJOBS` /
+`USER_INITIAL` / `LOGDIR` into `submit.sub` — so each `.txt` gets its own `ClusterId`
+with `NJOBS` jobs.
 
-The proxy is shipped into each job sandbox via `transfer_input_files`, and
-`run_skim.sh` exports `X509_USER_PROXY` from it before reading any XRootD file.
-The job also sets up the software env itself (`source LCG_109 setup.sh` + repo
-`.local` on `PYTHONPATH`).
+The job sets up the software env itself (`source LCG_109 setup.sh` + repo `.local`
+on `PYTHONPATH`); the skim script is self-contained (no `darkbottomline` import).
+The proxy is shipped via `transfer_input_files` and `run_skim.sh` exports
+`X509_USER_PROXY` from it before any XRootD read.
 
 ## After the jobs finish — step 2 (analyze)
 
-Skims land in `<OUTDIR>/<txtstem>/<txtstem>_<rootid>.root`. Each stores raw
-per-event `sign(genWeight)` + 1-bin `genTotalSumw` / `genTotalCount` histos — NO
-xsec/lumi/sumw normalisation yet.
+Skims land in `<OUTDIR>/<txtstem>/<txtstem>_<ClusterId>_<ProcId>.root` — one per condor
+job (already a merge of that job's BATCH-sized slice). The `MetTriggerSkim` TTree has
+ONE row per selected event, with orthogonal `wmu` / `zmu` flags (an event is a W→μν
+or a Z→μμ candidate, never both) and these branches:
 
-**`hadd` one merged ROOT per MC sample** (a sample's per-file skims → one file). The
+```text
+recoil recoilPhi  lep1Pt lep1Eta lep1Phi  lep2Pt lep2Eta lep2Phi
+Jet1Pt Jet1Eta Jet1Phi  muTrigPass metTrigPass  wmu zmu  genweight
+```
+
+`genweight` is raw `sign(genWeight)`; the file's total `sign(genWeight)` and raw event
+count are stored as 1-bin `genTotalSumw` / `genTotalCount` histos. NO xsec/lumi/sumw
+normalisation yet — that is applied in analyze. (Trees are written as classic TTrees,
+not RNTuple, so ROOT viewers and `hadd` read them correctly.)
+
+**`hadd` one merged ROOT per sample** (a sample's per-job skims → one file). The
 histos hadd-sum, so the merged file carries the sample-total SUMW:
 
 ```bash
@@ -93,5 +103,9 @@ can be changed without re-skimming.
 - `CONFIG` is a job argument, so the same setup works for any era (2022/2023/2024).
   Uses `data/cross-section/xsection_background_run3.json` for xsecs.
 - Bump `request_memory` / `+JobFlavour` in `submit.sub` if a batch is large/slow.
-- One bad XRootD file in a batch is skipped (per-file try/except); the rest of the
-  slice still produces outputs. Failed jobs re-run up to 3× (`periodic_release`).
+- XRootD reads are retried **3× per file** (5s/10s backoff) before that file is
+  skipped, so transient errors (`Invalid operation`, timeouts) recover. A file skipped
+  after all retries doesn't kill the job — the rest of the slice still produces output.
+- A file MISSING the MET / IsoMu trigger branches fails the job loudly (KeyError) —
+  it would otherwise silently bias the efficiency, so fix/exclude such files.
+- At the condor level, a failed job is held and re-run up to 3× (`periodic_release`).
