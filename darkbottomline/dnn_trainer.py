@@ -939,7 +939,8 @@ class DNNTrainer:
         model_path = outdir_p / "dnn_model.pt"
         save_checkpoint(str(model_path), model=net, spec=spec)
         if self._dnn_scaler is not None:
-            (outdir_p / "scaler.json").write_text(json.dumps(self._dnn_scaler.to_jsonable(), indent=2) + "\n")
+            scaler_path = outdir_p / "dnn_model_scaler.json"
+            scaler_path.write_text(json.dumps(self._dnn_scaler.to_jsonable(), indent=2) + "\n")
 
         # Metrics JSON
         metrics = {

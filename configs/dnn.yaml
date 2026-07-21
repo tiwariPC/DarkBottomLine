@@ -43,9 +43,16 @@ feature_selection:
 
 # Topology decorrelation penalty
 topology_decorrelation:
-  weight: 0.0              # Set >0 to suppress score vs topology correlation
+  weight: 1.0              # Set >0 to suppress score vs topology correlation
   features: "M_Jet1Jet2,dRJet12"
   min_signal_events: 16    # Minimum signal events in batch to activate penalty
+
+# DNN scoring control during processing
+# These flags control whether the model is applied during event processing.
+# Both require a trained model (model_path) to be set via CLI or in this config.
+scoring:
+  write_to_root: true        # Compute ml_score and save to EVENTSELECTION ROOT output
+  fill_histograms: false     # Fill DNN score into per-region histograms (coffea path)
 
 # Data preprocessing
 preprocessing:

@@ -46,8 +46,12 @@ class DNNInference:
         self._net.to(self.device)
         self._net.eval()
 
-        # Load scaler sidecar
+        # Load scaler sidecar (try _scaler.json first, then scaler.json)
         scaler_path = str(model_path).replace(".pt", "_scaler.json")
+        if not Path(scaler_path).exists():
+            alt = str(Path(model_path).parent / "scaler.json")
+            if Path(alt).exists():
+                scaler_path = alt
         self._scaler: Optional[_StandardScaler] = None
         if Path(scaler_path).exists():
             self._scaler = _StandardScaler.from_jsonable(

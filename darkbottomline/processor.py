@@ -100,6 +100,23 @@ class DarkBottomLineProcessor:
         self.histogram_manager = HistogramManager()
         self.histograms = self.histogram_manager.define_histograms()
 
+        # DNN model (optional — loaded when config["dnn"]["model_path"] is set)
+        self._dnn_inference = None
+        self._dnn_features = None
+        dnn_cfg = config.get("dnn", {})
+        scoring_cfg = dnn_cfg.get("scoring", {})
+        self._dnn_score_to_root = bool(scoring_cfg.get("write_to_root", False))
+        self._dnn_score_histograms = bool(scoring_cfg.get("fill_histograms", False))
+        dnn_model_path = dnn_cfg.get("model_path")
+        if dnn_model_path:
+            from .dnn_inference import DNNInference
+            from dnn.feature_engineering import REQUESTED_FEATURES_25
+            dnn_config_path = dnn_cfg.get("config_path")
+            self._dnn_inference = DNNInference(dnn_model_path, config_path=dnn_config_path)
+            model_info = self._dnn_inference.get_model_info()
+            self._dnn_features = model_info.get("features") or list(REQUESTED_FEATURES_25)
+            logging.info("DNN model loaded: %s (n_inputs=%d)", dnn_model_path, len(self._dnn_features))
+
         # Golden JSON lumi mask (data only)
         data_cfg = config.get("data", {})
         self.is_data = bool(data_cfg.get("is_data", False))
@@ -191,6 +208,11 @@ class DarkBottomLineProcessor:
         # Optionally save event-level selection results immediately and continue
         if event_selection_output:
             try:
+                # ── DNN scoring (in-process, before saving, controlled by dnn.yaml scoring.write_to_root) ──
+                if self._dnn_score_to_root and self._dnn_inference is not None and len(selected_events) > 0:
+                    logging.info("Computing DNN scores for event selection output...")
+                    selected_events = self._compute_dnn_scores(selected_events, selected_objects)
+
                 logging.info(f"Saving event-level selection to {event_selection_output} ({len(selected_events)} events)")
                 self._save_event_selection(event_selection_output, selected_events, selected_objects,
                                             max_events=self.config.get("max_events"),
@@ -277,6 +299,52 @@ class DarkBottomLineProcessor:
         logging.info(f"Processing time: {processing_time:.2f} seconds")
 
         return self.accumulator
+
+    def _compute_dnn_scores(self, events: ak.Array, objects: dict) -> ak.Array:
+        """Compute DNN scores for events and return events with ml_score field added.
+
+        Uses the same feature-engineering pipeline as _add_dnn_scores_to_events
+        (compute_event_variables + _NAME_MAP), ensuring consistency between
+        training, apply-dnn, and in-process scoring.
+        """
+        import pandas as _pd
+        from .variables import compute_event_variables
+        from dnn.common import sanitize_feature_frame
+
+        features = self._dnn_features
+        n = len(events)
+
+        # Build feature matrix via standard variable pipeline
+        all_vars = compute_event_variables(events, objects, self.config)
+        btag_algo = self.config["btagging"]["algorithm"]
+        _NAME_MAP: dict = {
+            "MET":          "MET_pt",
+            "METPhi":       "MET_phi",
+            "pfMetCorrSig": "MET_significance",
+            "rJet1PtMET":   "ratioJet1PtMET",
+            "Jet1deepCSV":  f"Jet1{btag_algo}",
+            "Jet2deepCSV":  f"Jet2{btag_algo}",
+        }
+
+        X_dict: dict = {}
+        for feat in features:
+            var_name = _NAME_MAP.get(feat, feat)
+            arr = all_vars.get(var_name)
+            if arr is not None:
+                X_dict[feat] = np.asarray(arr, dtype="f8").ravel()
+            else:
+                X_dict[feat] = np.full(n, -9999.0, dtype="f8")
+
+        df = _pd.DataFrame(X_dict)
+        df = sanitize_feature_frame(df)
+        X = df.to_numpy(dtype="f8")
+        masses = np.zeros(n, dtype="f8")
+        scores = self._dnn_inference.predict(X, masses).ravel().astype("float32")
+
+        events_with_score = ak.with_field(events, ak.Array(scores), "ml_score")
+        logging.info("DNN scoring complete: n=%d mean=%.4f median=%.4f",
+                     n, float(np.mean(scores)), float(np.median(scores)))
+        return events_with_score
 
     def _create_skimmed_events(
         self,

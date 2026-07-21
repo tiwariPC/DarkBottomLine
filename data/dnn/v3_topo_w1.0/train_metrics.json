@@ -83,7 +83,7 @@
     "phi_Jet1Jet2": "branch:phi_Jet1Jet2"
   },
   "top_k_significance": 0,
-  "topology_decorrelation_weight": 0.0,
+  "topology_decorrelation_weight": 1.0,
   "topology_decorrelation_features": [
     "M_Jet1Jet2",
     "dRJet12"
@@ -103,9 +103,9 @@
     ],
     "dropout": 0.2
   },
-  "auc_train": 0.9559896121878705,
-  "auc_val": 0.9538227908182899,
-  "auc_test": 0.954031842662037,
+  "auc_train": 0.9547386328875793,
+  "auc_val": 0.952539828697505,
+  "auc_test": 0.9531602862014399,
   "n_train": 1406825,
   "n_val": 562730,
   "n_test": 844095,

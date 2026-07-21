@@ -712,6 +712,13 @@ def run_analyzer(args):
         config.setdefault("data", {})["is_data"] = True
     config.setdefault("data", {})["is_signal"] = _is_signal_sample(args.input)
 
+    # Inject DNN model path into config so DarkBottomLineProcessor can load it
+    # during process() and score events before writing EVENTSELECTION output.
+    if dnn_model:
+        config.setdefault("dnn", {})["model_path"] = dnn_model
+    if dnn_config:
+        config.setdefault("dnn", {})["config_path"] = dnn_config
+
     try:
         import uproot
         import awkward as ak
@@ -1327,10 +1334,15 @@ def train_dnn(args):
 def apply_dnn(args):
     """Score events in event-selection ROOT files with a trained DNN model.
 
-    Reads each flat Events ROOT file, applies the trained model, and writes
-    a new branch (default: ml_score) back to the file — or to a new output
-    ROOT file when --output-dir is given.
+    Reads only the 25 feature columns from each flat Events ROOT file, runs
+    the DNN, then writes the output via chunked uproot.recreate() + extend(),
+    copying all existing branches plus the new score branch in chunks.
+    This avoids loading all 100+ branches into memory at once, preventing OOM
+    on large files (e.g. W+jets with 12M events).
     """
+    import os
+    import tempfile
+    import shutil
     import pandas as pd
     from dnn.feature_engineering import build_feature_frame_from_tree, REQUESTED_FEATURES_25
     from dnn.common import sanitize_feature_frame
@@ -1345,34 +1357,75 @@ def apply_dnn(args):
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Chunk size for iterate+extend (100k events per chunk keeps memory low)
+    CHUNK_SIZE = 100_000
+
     skipped = []
     for fpath in input_files:
         try:
+            # ── Step 1: read ONLY 25 features, predict all scores ──
             with uproot.open(fpath) as in_f:
                 if "Events" not in in_f:
                     logging.warning("No 'Events' tree in %s, skipping", fpath)
                     skipped.append((fpath, "No Events tree"))
                     continue
                 tree = in_f["Events"]
+                # Collect branch names + numpy dtypes for mktree (before we close the file)
+                branch_dtypes = {}
+                for name in tree.keys():
+                    interp = tree[name].interpretation
+                    if hasattr(interp, 'numpy_dtype'):
+                        branch_dtypes[name] = interp.numpy_dtype
+                    else:
+                        branch_dtypes[name] = np.float64
+
                 df, _, _ = build_feature_frame_from_tree(tree, features)
                 df = sanitize_feature_frame(df)
                 n = len(df)
                 X = df.to_numpy(dtype="f8")
                 masses = np.zeros(n, dtype="f8")
-                scores = inference.predict(X, masses).ravel()
+                scores = inference.predict(X, masses).ravel().astype("f4")
 
-                # Collect all existing branches
-                arrays = tree.arrays(library="np")
+            # ── Step 2: add score branch to dtype map ──
+            branch_dtypes[score_branch] = np.float32
 
-            arrays[score_branch] = scores.astype("f4")
-
+            # ── Step 3: chunked copy + score ──
             if output_dir:
-                out_path = output_dir / Path(fpath).name
+                out_path = str(output_dir / Path(fpath).name)
             else:
                 out_path = fpath
 
-            with uproot.recreate(str(out_path)) as out_f:
-                out_f["Events"] = arrays
+            # Write to a temp file first, then atomically move to destination
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                suffix=".root", prefix="applydnn_", dir=output_dir or Path(fpath).parent
+            )
+            os.close(tmp_fd)
+
+            try:
+                with uproot.recreate(tmp_path) as fout:
+                    fout.mktree("Events", branch_dtypes)
+
+                    start = 0
+                    for chunk in uproot.iterate(
+                        f"{fpath}:Events", step_size=CHUNK_SIZE, library="np"
+                    ):
+                        chunk_size = len(next(iter(chunk.values())))
+                        end = start + chunk_size
+                        chunk[score_branch] = scores[start:end]
+                        fout["Events"].extend(chunk)
+                        start = end
+
+                # Atomically move to final destination
+                if output_dir:
+                    shutil.move(tmp_path, out_path)
+                else:
+                    # In-place: replace original with scored file
+                    shutil.move(tmp_path, out_path)
+            except Exception:
+                # Clean up temp file on failure
+                if os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+                raise
 
             logging.info("Scored %s: n=%d → %s (branch: %s)", Path(fpath).name, n, out_path, score_branch)
         except Exception as _exc:

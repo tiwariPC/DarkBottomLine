@@ -395,6 +395,7 @@ _SCALAR_BRANCHES: Dict[str, Any] = {
     'weight_scaleUP': np.float32, 'weight_scaleDOWN': np.float32,
     'pass_met_trigger': np.int32,
     'pass_ele_trigger': np.int32,
+    'ml_score': np.float32,
 }
 
 # Jagged branches: name → numpy dtype of elements

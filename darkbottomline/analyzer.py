@@ -337,7 +337,17 @@ class DarkBottomLineAnalyzer:
                     "weight_total_nominal": np.ones(n_ev, dtype=np.float64),
                 }
 
-        # Step 2b: Optionally save preselected+weighted events to file AFTER weight corrections
+        # Step 2b: DNN scoring (in-process, before saving to ROOT)
+        # Controlled by dnn.yaml scoring.write_to_root flag.
+        # Skip if ml_score already present (e.g. from CoffeaProcessor's per-chunk scoring).
+        if (self.base_processor._dnn_score_to_root
+                and self.base_processor._dnn_inference is not None
+                and len(events) > 0
+                and "ml_score" not in events.fields):
+            logging.info("Computing DNN scores for event selection output...")
+            events = self.base_processor._compute_dnn_scores(events, objects)
+
+        # Step 2c: Optionally save preselected+weighted events to file AFTER weight corrections
         if event_selection_output:
             try:
                 logging.info(f"Saving event-selected (with weights) to {event_selection_output} ({len(events)} events)")
