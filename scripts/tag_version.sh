@@ -29,7 +29,16 @@ echo "Updated _version.py"
 
 # Commit version bump (after tag — tag stays on feature commit)
 git add "$VERSION_FILE"
-read -rp "Commit message (optional, appended as body — Enter to skip): " BODY_MSG
+
+BODY_MSG_FILE=$(mktemp)
+trap 'rm -f "$BODY_MSG_FILE"' EXIT
+cat > "$BODY_MSG_FILE" <<EOF
+# Optional commit body — appended below "chore(version): bump to ${GIT_TAG}".
+# Lines starting with '#' are ignored. Save + quit empty to skip.
+EOF
+"${EDITOR:-vi}" "$BODY_MSG_FILE"
+BODY_MSG=$(grep -v '^#' "$BODY_MSG_FILE" | awk 'NF{p=1} p')
+
 if [[ -n "$BODY_MSG" ]]; then
     git commit -m "chore(version): bump to ${GIT_TAG}" -m "$BODY_MSG"
 else
