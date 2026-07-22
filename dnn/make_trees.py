@@ -34,11 +34,17 @@ import uproot
 
 _DEFAULT_SIGNAL_KEYWORDS = ("chichi", "bbdm", "bbchi", "dark", "invisible", "_dm_", "signal")
 _DATA_PREFIXES = ("run20", "data")
+# Real collision-data dataset naming (matches configs/plotting.yaml's data_groups
+# patterns: JetMET/JetMET0/JetMET1/MET/EGamma/EGamma0/EGamma1, each "-Run...").
+_DATA_SUBSTRINGS = ("jetmet-run", "jetmet0-run", "jetmet1-run", "met-run",
+                    "egamma-run", "egamma0-run", "egamma1-run")
 
 
 def _is_data(name: str) -> bool:
     n = os.path.basename(name).lower()
-    return any(n.startswith(p) for p in _DATA_PREFIXES) or "collisions" in n
+    return (any(n.startswith(p) for p in _DATA_PREFIXES)
+            or any(s in n for s in _DATA_SUBSTRINGS)
+            or "collisions" in n)
 
 
 def _is_signal_heuristic(name: str, signal_patterns: tuple[str, ...], signal_prefix: Optional[str]) -> bool:

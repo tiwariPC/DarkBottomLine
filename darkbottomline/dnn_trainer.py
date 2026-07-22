@@ -18,6 +18,7 @@ from __future__ import annotations
 import csv
 import json
 import logging
+import os
 import yaml
 import numpy as np
 from pathlib import Path
@@ -29,6 +30,12 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from dnn.model import ModelSpec, build_mlp, parse_hidden_layers, save_checkpoint, load_checkpoint
 from dnn.scaler import StandardScaler as _StandardScaler
+
+
+def _variable_label(name: str, variable_labels: Optional[Dict[str, str]] = None) -> str:
+    """x-axis label for *name*, from dnn.yaml's variable_labels — falls back to
+    the raw name if absent."""
+    return (variable_labels or {}).get(name, name)
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +130,8 @@ def _compute_feature_significance(
     source_map: dict | None = None,
     n_bins: int = 40,
     sig_syst: float = 0.0,
+    plot_dir: Path | None = None,
+    variable_labels: dict | None = None,
 ) -> list[dict]:
     from sklearn.metrics import roc_auc_score
 
@@ -145,9 +154,15 @@ def _compute_feature_significance(
     else:
         z_counting_syst = z_counting_stat
 
+    feature_plot_dir = Path(plot_dir) / "features" if plot_dir is not None else None
+    if feature_plot_dir is not None:
+        feature_plot_dir.mkdir(parents=True, exist_ok=True)
+
+    from darkbottomline.objects import SENTINEL
+
     for feat in features:
         x = np.asarray(X_df[feat].to_numpy(), dtype="f8")
-        m = np.isfinite(x)
+        m = np.isfinite(x) & (x != SENTINEL)
         x, yy, ww = x[m], y_i[m], w_f[m]
 
         if x.size == 0 or np.sum(ww[yy == 1]) <= 0 or np.sum(ww[yy == 0]) <= 0:
@@ -172,6 +187,10 @@ def _compute_feature_significance(
                      "auc": auc, "asimov_z": z, "asimov_z_syst": z_syst,
                      "delta_z": z - z_counting_stat, "delta_z_syst": z_syst - z_counting_syst})
 
+        if feature_plot_dir is not None:
+            _plot_feature_distribution(edges, hs, hb, feat, feature_plot_dir / f"feature_{feat}.png",
+                                        variable_labels=variable_labels)
+
     sort_key = "asimov_z_syst" if float(sig_syst) > 0.0 else "asimov_z"
     rows.sort(key=lambda r: (r[sort_key], abs((r["auc"] if np.isfinite(r["auc"]) else 0.5) - 0.5)), reverse=True)
 
@@ -182,59 +201,206 @@ def _compute_feature_significance(
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from utils.plot_utils import CMSPlotStyle, _PALETTE
+    import mplhep as hep
 
-    labels = [r["feature"] for r in rows]
+    CMSPlotStyle().set_style()
+
+    feat_names = [r["feature"] for r in rows]
+    labels = [_variable_label(f, variable_labels) for f in feat_names]
     vals_stat = [float(r["asimov_z"]) for r in rows]
     vals_syst = [float(r["asimov_z_syst"]) for r in rows]
     has_syst = float(sig_syst) > 0.0
 
-    def _draw_bars(ax, vals, ylabel, title, color="#3f90da"):
+    def _draw_bars(ax, vals, ylabel, title, color=_PALETTE[0]):
         ax.bar(labels, vals, color=color, edgecolor="black", linewidth=0.8)
         ax.set_xticks(range(len(labels)))
-        ax.set_xticklabels(labels, rotation=40, ha="right")
+        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=9)
         ax.set_ylabel(ylabel)
-        ax.set_title(title)
+        hep.cms.label(llabel="Work in Progress", data=False, com=13.6, ax=ax, loc=0)
+        ax.text(0.02, 0.88, title, transform=ax.transAxes, fontsize=11,
+                va="top", ha="left")
+
+    fig_width = max(14.0, 0.55 * len(labels))
 
     if has_syst:
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(max(16, 1.1 * len(labels)), 5.5))
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(fig_width, 13.0))
         _draw_bars(ax1, vals_stat, "Asimov Z (pure stat)", "Per-feature significance (pure statistical)")
-        syst_label = f"syst-aware (\u03c3_rel={float(sig_syst)*100:.0f}%)"
-        _draw_bars(ax2, vals_syst, f"Asimov Z ({syst_label})", f"Per-feature significance ({syst_label})", "#d62728")
+        syst_label = f"syst-aware (σ_rel={float(sig_syst)*100:.0f}%)"
+        _draw_bars(ax2, vals_syst, f"Asimov Z ({syst_label})", f"Per-feature significance ({syst_label})", _PALETTE[2])
         fig.tight_layout()
-        fig.savefig(outdir / "feature_significance.png", dpi=160)
+        fig.savefig(outdir / "feature_significance.png", dpi=300)
         plt.close(fig)
     else:
-        fig, ax = plt.subplots(1, 1, figsize=(max(12, 0.7 * len(labels)), 5.5))
+        fig, ax = plt.subplots(1, 1, figsize=(fig_width, 6.5))
         _draw_bars(ax, vals_stat, "Asimov Z (pure stat)", "Per-feature significance (pure statistical)")
         fig.tight_layout()
-        fig.savefig(outdir / "feature_significance.png", dpi=160)
+        fig.savefig(outdir / "feature_significance.png", dpi=300)
         plt.close(fig)
 
     # Delta-Z plot
     vals_delta_stat = [float(r["delta_z"]) for r in rows]
     vals_delta_syst = [float(r["delta_z_syst"]) for r in rows]
     if has_syst:
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(max(16, 1.1 * len(labels)), 5.5))
-        _draw_bars(ax1, vals_delta_stat, "\u0394Z (pure stat)",
-                   f"Effective significance (pure stat)\nbaseline = S/\u221aB = {z_counting_stat:.2f}\u03c3")
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(fig_width, 13.0))
+        _draw_bars(ax1, vals_delta_stat, "ΔZ (pure stat)",
+                   f"Effective significance (pure stat), baseline S/√B = {z_counting_stat:.2f}σ")
         ax1.axhline(y=0, color="gray", linewidth=0.8, linestyle="--")
-        syst_label = f"syst-aware (\u03c3_rel={float(sig_syst)*100:.0f}%)"
-        _draw_bars(ax2, vals_delta_syst, f"\u0394Z ({syst_label})",
-                   f"Effective significance ({syst_label})\nbaseline = S/\u221aB (syst) = {z_counting_syst:.2f}\u03c3", "#d62728")
+        syst_label = f"syst-aware (σ_rel={float(sig_syst)*100:.0f}%)"
+        _draw_bars(ax2, vals_delta_syst, f"ΔZ ({syst_label})",
+                   f"Effective significance ({syst_label}), baseline = {z_counting_syst:.2f}σ", _PALETTE[2])
         ax2.axhline(y=0, color="gray", linewidth=0.8, linestyle="--")
         fig.tight_layout()
-        fig.savefig(outdir / "feature_significance_delta.png", dpi=160)
+        fig.savefig(outdir / "feature_significance_delta.png", dpi=300)
         plt.close(fig)
     else:
-        fig, ax = plt.subplots(1, 1, figsize=(max(12, 0.7 * len(labels)), 5.5))
-        _draw_bars(ax, vals_delta_stat, "\u0394Z (pure stat)",
-                   f"Effective significance\nbaseline = S/\u221aB = {z_counting_stat:.2f}\u03c3")
+        fig, ax = plt.subplots(1, 1, figsize=(fig_width, 6.5))
+        _draw_bars(ax, vals_delta_stat, "ΔZ (pure stat)",
+                   f"Effective significance, baseline S/√B = {z_counting_stat:.2f}σ")
         ax.axhline(y=0, color="gray", linewidth=0.8, linestyle="--")
         fig.tight_layout()
-        fig.savefig(outdir / "feature_significance_delta.png", dpi=160)
+        fig.savefig(outdir / "feature_significance_delta.png", dpi=300)
         plt.close(fig)
 
     return rows
+
+
+def _plot_feature_distribution(
+    edges: np.ndarray,
+    hs: np.ndarray,
+    hb: np.ndarray,
+    feature_name: str,
+    out_path: "Path",
+    variable_labels: dict | None = None,
+) -> None:
+    """CMS-style filled signal-vs-background distribution for one feature."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from utils.plot_utils import CMSPlotStyle, _PALETTE
+    import mplhep as hep
+
+    CMSPlotStyle().set_style()
+    color_bkg, color_sig = _PALETTE[0], "#e76300"  # #3f90da, #e76300
+
+    hs_norm = hs / max(float(np.sum(hs)), 1e-12)
+    hb_norm = hb / max(float(np.sum(hb)), 1e-12)
+
+    fig, ax = plt.subplots(figsize=(8.5, 6.5))
+    hep.histplot(hb_norm, bins=edges, ax=ax, histtype="fill",
+                 color=color_bkg, alpha=0.65, edgecolor=color_bkg, label="Background")
+    hep.histplot(hs_norm, bins=edges, ax=ax, histtype="fill",
+                 color=color_sig, alpha=0.65, edgecolor=color_sig, label="Signal")
+    ax.set_xlabel(_variable_label(feature_name, variable_labels))
+    ax.set_ylabel("Normalized events")
+    ax.set_xlim(edges[0], edges[-1])
+    ax.set_ylim(bottom=0.0)
+    ax.legend(loc="best")
+    hep.cms.label(llabel="Work in Progress", data=False, com=13.6, ax=ax, loc=0)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
+
+
+def _weighted_corrcoef(sx: np.ndarray, sy: np.ndarray, sw: np.ndarray) -> float:
+    """Weighted Pearson correlation coefficient.
+
+    r_w = cov_w(x,y) / sqrt(cov_w(x,x) * cov_w(y,y)), with weighted mean/covariance
+    mu_w(x) = sum(w*x)/sum(w), cov_w(x,y) = sum(w*(x-mu_x)*(y-mu_y))/sum(w).
+    """
+    wsum = float(np.sum(sw))
+    if wsum <= 0.0:
+        return 0.0
+    mx = float(np.sum(sw * sx) / wsum)
+    my = float(np.sum(sw * sy) / wsum)
+    cov_xy = float(np.sum(sw * (sx - mx) * (sy - my)) / wsum)
+    cov_xx = float(np.sum(sw * (sx - mx) ** 2) / wsum)
+    cov_yy = float(np.sum(sw * (sy - my) ** 2) / wsum)
+    if cov_xx <= 0.0 or cov_yy <= 0.0:
+        return 0.0
+    return cov_xy / np.sqrt(cov_xx * cov_yy)
+
+
+def _plot_feature_correlation(
+    X_df,
+    features: list[str],
+    out_path: Path,
+    variable_labels: dict | None = None,
+    weights: np.ndarray | None = None,
+) -> None:
+    """CMS-style Pearson correlation heatmap between input features.
+
+    Sentinel-filled entries (darkbottomline.objects.SENTINEL) are masked out
+    per-column-pair before computing correlation, same as significance/plots.
+
+    When *weights* is given, uses weighted Pearson correlation (event weights,
+    e.g. lumi*xsec/wte) instead of unweighted — reflects correlations in the
+    physically-normalized sample rather than raw event counts.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from utils.plot_utils import CMSPlotStyle
+    import mplhep as hep
+    from darkbottomline.objects import SENTINEL
+
+    CMSPlotStyle().set_style()
+
+    n = len(features)
+    X = np.asarray(X_df[features].to_numpy(), dtype="f8")
+    X = np.where((X == SENTINEL) | ~np.isfinite(X), np.nan, X)
+    w_all = np.maximum(np.asarray(weights, dtype="f8"), 0.0) if weights is not None else None
+
+    corr = np.full((n, n), np.nan, dtype="f8")
+    for i in range(n):
+        for j in range(i, n):
+            xi, xj = X[:, i], X[:, j]
+            m = np.isfinite(xi) & np.isfinite(xj)
+            if w_all is not None:
+                m = m & np.isfinite(w_all) & (w_all > 0.0)
+            if m.sum() < 2:
+                c = 0.0
+            else:
+                sx, sy = xi[m], xj[m]
+                if np.std(sx) == 0.0 or np.std(sy) == 0.0:
+                    c = 1.0 if i == j else 0.0
+                elif w_all is not None:
+                    c = _weighted_corrcoef(sx, sy, w_all[m])
+                else:
+                    c = float(np.corrcoef(sx, sy)[0, 1])
+            corr[i, j] = c
+            corr[j, i] = c
+
+    labels = [_variable_label(f, variable_labels) for f in features]
+
+    fig_size = max(9.0, 0.42 * n)
+    fig, ax = plt.subplots(figsize=(fig_size + 1.5, fig_size))
+    im = ax.imshow(corr, cmap="RdBu_r", vmin=-1.0, vmax=1.0, aspect="equal")
+    ax.set_xticks(range(n))
+    ax.set_yticks(range(n))
+    ax.set_xticklabels(labels, rotation=90, fontsize=8)
+    ax.set_yticklabels(labels, fontsize=8)
+    ax.tick_params(length=0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+
+    fontsize_cell = 6 if n > 20 else 7
+    for i in range(n):
+        for j in range(n):
+            v = corr[i, j]
+            color = "white" if abs(v) > 0.6 else "black"
+            ax.text(j, i, f"{v:.2f}", ha="center", va="center", fontsize=fontsize_cell, color=color)
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.03)
+    cbar.set_label("Weighted correlation coefficient" if w_all is not None else "Correlation coefficient")
+
+    subtitle = "Event-weighted" if w_all is not None else "Unweighted"
+    hep.cms.label(llabel="Work in Progress", rlabel=f"{subtitle}, 13.6 TeV", ax=ax, loc=0)
+    fig.tight_layout()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +418,11 @@ def _plot_score_distribution(
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from utils.plot_utils import CMSPlotStyle, _PALETTE
+    import mplhep as hep
+
+    CMSPlotStyle().set_style()
+    color_bkg, color_sig = _PALETTE[0], "#e76300"  # #3f90da, #e76300
 
     y = np.asarray(y_true, dtype="i4")
     s = np.clip(np.asarray(y_score, dtype="f8"), 0.0, 1.0)
@@ -264,21 +435,24 @@ def _plot_score_distribution(
     hb, _ = np.histogram(s[y == 0], bins=bins, weights=w[y == 0])
     hs = hs / max(float(np.sum(hs)), 1e-12)
     hb = hb / max(float(np.sum(hb)), 1e-12)
-    centers = 0.5 * (bins[:-1] + bins[1:])
 
-    plt.figure(figsize=(7.0, 5.5))
-    plt.step(centers, hs, where="mid", linewidth=2.0, color="#bd1f01", label="Signal")
-    plt.step(centers, hb, where="mid", linewidth=2.0, color="#3f90da", label="Background")
-    plt.xlim(0.0, 1.0)
-    plt.xlabel("DNN score")
-    plt.ylabel("Normalized events")
-    plt.title(title)
-    plt.grid(alpha=0.22)
-    plt.legend(loc="best")
-    plt.tight_layout()
+    fig, ax = plt.subplots(figsize=(8.5, 6.5))
+    hep.histplot(hb, bins=bins, ax=ax, histtype="fill",
+                 color=color_bkg, alpha=0.65, edgecolor=color_bkg, label="Background")
+    hep.histplot(hs, bins=bins, ax=ax, histtype="fill",
+                 color=color_sig, alpha=0.65, edgecolor=color_sig, label="Signal")
+    ax.set_xlim(0.0, 1.0)
+    ax.set_ylim(bottom=0.0)
+    ax.set_xlabel("DNN score")
+    ax.set_ylabel("Normalized events")
+    ax.legend(loc="best")
+    hep.cms.label(llabel="Work in Progress", com=13.6, ax=ax, loc=0)
+    ax.text(0.02, 0.92, title, transform=ax.transAxes, fontsize=11,
+            va="top", ha="left")
+    fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=160)
-    plt.close()
+    fig.savefig(out_path, dpi=300)
+    plt.close(fig)
 
 
 def _write_score_table(
@@ -343,6 +517,55 @@ def _topology_decorrelation_penalty(
     corr = cov / (torch.sqrt(log_var + eps) * torch.sqrt(feat_var + eps) + eps)
     corr = torch.nan_to_num(corr, nan=0.0, posinf=0.0, neginf=0.0)
     return torch.mean(corr * corr)
+
+
+def _feature_scan_worker(task: tuple) -> dict:
+    """Train + plot the 1D DNN scan for one feature. Module-level (picklable)
+    so it can run as a multiprocessing worker — each feature's mini-DNN is
+    trained fully independently of every other feature's, so the serial
+    per-feature loop (previously the largest single stage of train-dnn wall
+    time: ~50 features x their own epochs, one at a time on one core) is
+    dispatched across CPU cores instead."""
+    # Env vars alone don't reach torch's thread pool here: under the "spawn"
+    # start method, torch is already imported (and its intra-op thread pool
+    # initialized) by the time this module's top-level `import torch` runs in
+    # the child, before this function body executes — so OMP_NUM_THREADS set
+    # here is too late. torch.set_num_threads() works at any point instead.
+    torch.set_num_threads(1)
+
+    (feat, xtr_f, xte_f, y_train_i, y_test_i, w_train_eff, w_test_eff,
+     seed, single_feat_epochs, batch_size, lr, patience, dropout,
+     variable_labels, feature_sources, signif_row,
+     plot_dir_str, safe_feat) = task
+
+    # Small (16x16) per-feature models gain nothing from GPU and CUDA
+    # contexts aren't safely shared across spawned processes — always CPU here.
+    device = torch.device("cpu")
+
+    _, score_te_f, auc_tr_f, auc_te_f = _train_single_feature_dnn(
+        xtr_f, xte_f,
+        y_train_i, y_test_i,
+        w_train_eff, w_test_eff,
+        seed=seed, epochs=single_feat_epochs, batch_size=batch_size,
+        lr=lr, patience=patience, dropout=dropout,
+        device=device,
+    )
+
+    plot_dir_p = Path(plot_dir_str)
+    _plot_score_distribution(
+        y_test_i, score_te_f, w_test_eff,
+        plot_dir_p / f"score_distribution_feature_{safe_feat}.png",
+        f"1D DNN score ({_variable_label(feat, variable_labels)}, test)",
+    )
+    _write_score_table(y_test_i, score_te_f, w_test_eff, plot_dir_p / f"score_distribution_feature_{safe_feat}.csv")
+
+    return {
+        "feature": feat,
+        "source": feature_sources.get(feat, "unknown"),
+        "feature_asimov_z": None if signif_row is None else float(signif_row.get("asimov_z", 0.0)),
+        "dnn_auc_train": float(auc_tr_f),
+        "dnn_auc_test": float(auc_te_f),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -427,8 +650,11 @@ def _train_single_feature_dnn(
 # ParametricDNN — thin wrapper so existing code still works
 # ---------------------------------------------------------------------------
 
+MASS_DIM = 2  # (MH3, MH4) — Mchi is fixed at 1 GeV across the signal grid
+
+
 class ParametricDNN(nn.Module):
-    """Wraps dnn.model.build_mlp. mass is concatenated when parametric_input=True."""
+    """Wraps dnn.model.build_mlp. mass (MH3, MH4) is concatenated when parametric_input=True."""
 
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
@@ -437,7 +663,7 @@ class ParametricDNN(nn.Module):
 
         n_inputs = int(config.get("input_features", 25))
         if self.parametric_input:
-            n_inputs += 1
+            n_inputs += MASS_DIM
 
         hidden = config.get("hidden_layers", [128, 128])
         if isinstance(hidden, str):
@@ -447,13 +673,14 @@ class ParametricDNN(nn.Module):
             n_inputs=n_inputs,
             hidden_layers=tuple(int(h) for h in hidden),
             dropout=float(config.get("dropout", 0.1)),
+            parametric=self.parametric_input,
         )
         self._net = build_mlp(spec)
         self._spec = spec
 
     def forward(self, x: torch.Tensor, mass: Optional[torch.Tensor] = None) -> torch.Tensor:
         if self.parametric_input and mass is not None:
-            x = torch.cat([x, mass.unsqueeze(-1)], dim=-1)
+            x = torch.cat([x, mass], dim=-1)
         return torch.sigmoid(self._net(x))
 
 
@@ -509,11 +736,13 @@ class DNNTrainer:
         """Load training data from ROOT files using dnn.data helpers."""
         import uproot
         from dnn.data import list_sample_region_trees, read_tree_as_arrays
-        from dnn.feature_engineering import build_feature_frame_from_tree, REQUESTED_FEATURES_25
+        from dnn.feature_engineering import build_feature_frame_from_tree
         from dnn.common import sanitize_feature_frame
 
         region = self.data_config.get("region", "preselection")
-        features_req = list(REQUESTED_FEATURES_25)
+        features_req = self.config.get("features")
+        if not features_req:
+            raise ValueError("dnn.yaml has no features: list — required for DNN training.")
         weight_branch = f"weight_{region}"
         max_ev = int(self.data_config.get("max_events_per_sample", 200000))
 
@@ -591,11 +820,15 @@ class DNNTrainer:
         feature_sources: Optional[Dict[str, str]] = None,
         outdir: str = "data/dnn",
         plot_dir: str = "outputs/dnn",
+        mass: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
         """Full training pipeline from pre-loaded (X, y, w) arrays.
 
         Identical logic to train_from_root() but skips the ROOT/uproot loading phase.
         Useful when inputs are flat event-selection ROOT files (not ppbbchichi-trees).
+
+        *mass*, when given, is an (N, MASS_DIM) array of (MH3, MH4) values aligned
+        row-for-row with X — only used when model.parametric_input is true.
         """
         features = list(X.columns)
         return self._run_training_pipeline(
@@ -608,6 +841,7 @@ class DNNTrainer:
             plot_dir=plot_dir,
             region="preselection",
             root_path="<in-memory>",
+            mass=mass,
         )
 
     # ------------------------------------------------------------------
@@ -631,7 +865,7 @@ class DNNTrainer:
         import uproot
         import pandas as pd
         from dnn.data import list_sample_region_trees, read_tree_as_arrays
-        from dnn.feature_engineering import build_feature_frame_from_tree, REQUESTED_FEATURES_25
+        from dnn.feature_engineering import build_feature_frame_from_tree
         from dnn.common import DEFAULT_SIGNAL_PATTERNS, is_signal, sanitize_feature_frame
 
         if features is None:
@@ -639,7 +873,7 @@ class DNNTrainer:
             if isinstance(cfg_feats, list) and cfg_feats:
                 features = [str(f) for f in cfg_feats]
             else:
-                features = list(REQUESTED_FEATURES_25)
+                raise ValueError("dnn.yaml has no features: list — required for DNN training.")
 
         tc = self.training_config
         weight_clip = float(tc.get("weight_clip", 100.0))
@@ -738,10 +972,17 @@ class DNNTrainer:
         region: str,
         root_path: str,
         used_samples: Optional[Dict[str, int]] = None,
+        mass: Optional[np.ndarray] = None,
     ) -> Dict[str, Any]:
         import pandas as pd
         from sklearn.model_selection import train_test_split
         from sklearn.metrics import roc_auc_score, roc_curve
+
+        parametric = bool(self.model_config.get("parametric_input", False)) and mass is not None
+        if parametric and (mass.shape[0] != len(X) or mass.shape[1] != MASS_DIM):
+            raise ValueError(
+                f"mass array shape {mass.shape} does not match X rows={len(X)} / MASS_DIM={MASS_DIM}"
+            )
 
         outdir_p = Path(outdir)
         outdir_p.mkdir(parents=True, exist_ok=True)
@@ -773,8 +1014,17 @@ class DNNTrainer:
         # Feature significance ranking (syst-aware when configured)
         sig_syst_val = float(self.training_config.get("sig_syst", 0.0))
         signif_rows = _compute_feature_significance(X, y, w, features, plot_dir_p, source_map=feature_sources,
-                                                     sig_syst=sig_syst_val)
+                                                     sig_syst=sig_syst_val, plot_dir=plot_dir_p,
+                                                     variable_labels=self.config.get("variable_labels"))
         logging.info("Feature significance written to %s", plot_dir_p / "feature_significance.csv")
+
+        _plot_feature_correlation(X, features, plot_dir_p / "feature_correlation.png",
+                                   variable_labels=self.config.get("variable_labels"))
+        logging.info("Feature correlation matrix written to %s", plot_dir_p / "feature_correlation.png")
+
+        _plot_feature_correlation(X, features, plot_dir_p / "feature_correlation_weighted.png",
+                                   variable_labels=self.config.get("variable_labels"), weights=w)
+        logging.info("Weighted feature correlation matrix written to %s", plot_dir_p / "feature_correlation_weighted.png")
 
         if top_k > 0:
             ranked = [str(r["feature"]) for r in signif_rows if str(r.get("feature", "")) in X.columns]
@@ -792,13 +1042,23 @@ class DNNTrainer:
         topo_indices = [int(features.index(f)) for f in topo_feats if f in features]
 
         # 60/20/20 stratified split
-        X_train, X_temp, y_train, y_temp, w_train, w_temp = train_test_split(
-            X, y, w, test_size=val_size + test_size, random_state=seed, stratify=y,
-        )
-        test_frac_of_temp = test_size / (val_size + test_size)
-        X_val, X_test, y_val, y_test, w_val, w_test = train_test_split(
-            X_temp, y_temp, w_temp, test_size=test_frac_of_temp, random_state=seed, stratify=y_temp,
-        )
+        if parametric:
+            X_train, X_temp, y_train, y_temp, w_train, w_temp, mass_train, mass_temp = train_test_split(
+                X, y, w, mass, test_size=val_size + test_size, random_state=seed, stratify=y,
+            )
+            test_frac_of_temp = test_size / (val_size + test_size)
+            X_val, X_test, y_val, y_test, w_val, w_test, mass_val, mass_test = train_test_split(
+                X_temp, y_temp, w_temp, mass_temp, test_size=test_frac_of_temp, random_state=seed, stratify=y_temp,
+            )
+        else:
+            X_train, X_temp, y_train, y_temp, w_train, w_temp = train_test_split(
+                X, y, w, test_size=val_size + test_size, random_state=seed, stratify=y,
+            )
+            test_frac_of_temp = test_size / (val_size + test_size)
+            X_val, X_test, y_val, y_test, w_val, w_test = train_test_split(
+                X_temp, y_temp, w_temp, test_size=test_frac_of_temp, random_state=seed, stratify=y_temp,
+            )
+            mass_train = mass_val = mass_test = None
 
         y_train_i = np.asarray(y_train, dtype="i4")
         y_val_i = np.asarray(y_val, dtype="i4")
@@ -835,11 +1095,13 @@ class DNNTrainer:
         X_val_np = self._dnn_scaler.transform(X_val_np).astype("float32")
         X_test_np = self._dnn_scaler.transform(X_test_np).astype("float32")
 
-        # Build model matching actual feature count
+        # Build model matching actual feature count (+ MASS_DIM when parametric)
+        n_inputs = int(X_train_np.shape[1]) + (MASS_DIM if parametric else 0)
         spec = ModelSpec(
-            n_inputs=int(X_train_np.shape[1]),
+            n_inputs=n_inputs,
             hidden_layers=parse_hidden_layers(str(self.model_config.get("hidden_layers", "128,128"))),
             dropout=float(self.model_config.get("dropout", 0.1)),
+            parametric=parametric,
         )
         torch.manual_seed(seed)
         net = build_mlp(spec).to(self.device)
@@ -857,7 +1119,14 @@ class DNNTrainer:
         wva_t = torch.from_numpy(w_val_eff.astype("float32"))
         Xte = torch.from_numpy(X_test_np)
 
-        loader = DataLoader(TensorDataset(Xtr, ytr, wtr), batch_size=batch_size, shuffle=True, drop_last=False)
+        if parametric:
+            Mtr = torch.from_numpy(np.asarray(mass_train, dtype="float32"))
+            Mva = torch.from_numpy(np.asarray(mass_val, dtype="float32"))
+            Mte = torch.from_numpy(np.asarray(mass_test, dtype="float32"))
+            loader = DataLoader(TensorDataset(Xtr, ytr, wtr, Mtr), batch_size=batch_size, shuffle=True, drop_last=False)
+        else:
+            Mva = Mte = None
+            loader = DataLoader(TensorDataset(Xtr, ytr, wtr), batch_size=batch_size, shuffle=True, drop_last=False)
 
         best_auc, best_state, bad = -np.inf, None, 0
         train_losses: List[float] = []
@@ -869,10 +1138,17 @@ class DNNTrainer:
             net.train()
             running, n_batches = 0.0, 0
 
-            for xb, yb, wb in loader:
+            for batch in loader:
+                if parametric:
+                    xb, yb, wb, mb = batch
+                    mb = mb.to(self.device)
+                else:
+                    xb, yb, wb = batch
+                    mb = None
                 xb, yb, wb = xb.to(self.device), yb.to(self.device), wb.to(self.device)
                 optim.zero_grad(set_to_none=True)
-                logits = net(xb).squeeze(1)
+                net_in = torch.cat([xb, mb], dim=-1) if parametric else xb
+                logits = net(net_in).squeeze(1)
                 wnorm = wb / (wb.mean() + 1e-12)
                 loss = (bce_loss(logits, yb) * wnorm).mean()
 
@@ -888,7 +1164,8 @@ class DNNTrainer:
 
             net.eval()
             with torch.no_grad():
-                logits_va = net(Xva.to(self.device)).squeeze(1)
+                Xva_in = torch.cat([Xva.to(self.device), Mva.to(self.device)], dim=-1) if parametric else Xva.to(self.device)
+                logits_va = net(Xva_in).squeeze(1)
                 y_score_va = torch.sigmoid(logits_va).cpu().numpy()
                 wva_d = wva_t.to(self.device)
                 loss_val = float(
@@ -924,9 +1201,17 @@ class DNNTrainer:
         # Final evaluation
         net.eval()
         with torch.no_grad():
-            y_score_test = torch.sigmoid(net(Xte.to(self.device)).squeeze(1)).cpu().numpy()
-            y_score_train = torch.sigmoid(net(Xtr.to(self.device)).squeeze(1)).cpu().numpy()
-            y_score_val = torch.sigmoid(net(Xva.to(self.device)).squeeze(1)).cpu().numpy()
+            if parametric:
+                Xte_in = torch.cat([Xte.to(self.device), Mte.to(self.device)], dim=-1)
+                Xtr_in = torch.cat([Xtr.to(self.device), Mtr.to(self.device)], dim=-1)
+                Xva_in = torch.cat([Xva.to(self.device), Mva.to(self.device)], dim=-1)
+            else:
+                Xte_in = Xte.to(self.device)
+                Xtr_in = Xtr.to(self.device)
+                Xva_in = Xva.to(self.device)
+            y_score_test = torch.sigmoid(net(Xte_in).squeeze(1)).cpu().numpy()
+            y_score_train = torch.sigmoid(net(Xtr_in).squeeze(1)).cpu().numpy()
+            y_score_val = torch.sigmoid(net(Xva_in).squeeze(1)).cpu().numpy()
 
         auc_test = float(roc_auc_score(y_test_i, y_score_test, sample_weight=w_test_eff))
         auc_train = float(roc_auc_score(y_train_i, y_score_train, sample_weight=w_train_eff))
@@ -936,10 +1221,19 @@ class DNNTrainer:
         fpr_train, tpr_train, _ = roc_curve(y_train_i, y_score_train, sample_weight=w_train_eff)
 
         # Save model
+        if parametric:
+            mass_grid = sorted({tuple(row) for row in np.asarray(mass, dtype="f8").tolist()})
+            spec = ModelSpec(
+                n_inputs=spec.n_inputs, hidden_layers=spec.hidden_layers, dropout=spec.dropout,
+                parametric=True, mass_grid=[list(m) for m in mass_grid],
+            )
         model_path = outdir_p / "dnn_model.pt"
         save_checkpoint(str(model_path), model=net, spec=spec)
         if self._dnn_scaler is not None:
-            (outdir_p / "scaler.json").write_text(json.dumps(self._dnn_scaler.to_jsonable(), indent=2) + "\n")
+            scaler_json = json.dumps(self._dnn_scaler.to_jsonable(), indent=2) + "\n"
+            (outdir_p / "scaler.json").write_text(scaler_json)
+            # DNNInference looks for "<model_stem>_scaler.json" next to the checkpoint.
+            (outdir_p / f"{model_path.stem}_scaler.json").write_text(scaler_json)
 
         # Metrics JSON
         metrics = {
@@ -952,7 +1246,10 @@ class DNNTrainer:
             "balance_classes": balance_classes,
             "class_balance_factors": class_balance_factors,
             "used_samples": used_samples or {},
-            "model_spec": {"n_inputs": int(spec.n_inputs), "hidden_layers": list(spec.hidden_layers), "dropout": float(spec.dropout)},
+            "model_spec": {
+                "n_inputs": int(spec.n_inputs), "hidden_layers": list(spec.hidden_layers), "dropout": float(spec.dropout),
+                "parametric": bool(spec.parametric), "mass_grid": spec.mass_grid,
+            },
             "auc_train": auc_train, "auc_val": auc_val, "auc_test": auc_test,
             "n_train": int(len(X_train)), "n_val": int(len(X_val)), "n_test": int(len(X_test)),
             "seed": seed,
@@ -966,18 +1263,24 @@ class DNNTrainer:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
+        from utils.plot_utils import CMSPlotStyle, _PALETTE
+        import mplhep as hep
 
-        plt.figure(figsize=(6.5, 6))
-        plt.plot(fpr_train, tpr_train, label=f"Train AUC={auc_train:.4f}", color="#3f90da")
-        plt.plot(fpr_test, tpr_test, label=f"Test AUC={auc_test:.4f}", color="#bd1f01")
-        plt.plot([0, 1], [0, 1], "--", color="gray", linewidth=1)
-        plt.xlabel("False Positive Rate")
-        plt.ylabel("True Positive Rate")
-        plt.title(f"ROC Train vs Test ({region})")
-        plt.legend(loc="lower right")
-        plt.tight_layout()
-        plt.savefig(plot_dir_p / "roc_train_vs_test.png", dpi=160)
-        plt.close()
+        CMSPlotStyle().set_style()
+
+        fig, ax = plt.subplots(figsize=(8.0, 7.0))
+        ax.plot(fpr_train, tpr_train, label=f"Train AUC={auc_train:.4f}", color=_PALETTE[0], linewidth=2.0)
+        ax.plot(fpr_test, tpr_test, label=f"Test AUC={auc_test:.4f}", color=_PALETTE[2], linewidth=2.0)
+        ax.plot([0, 1], [0, 1], "--", color="gray", linewidth=1)
+        ax.set_xlabel("False Positive Rate")
+        ax.set_ylabel("True Positive Rate")
+        ax.legend(loc="lower right")
+        hep.cms.label(llabel="Work in Progress", com=13.6, ax=ax, loc=0)
+        ax.text(0.02, 0.97, f"ROC ({region})", transform=ax.transAxes, fontsize=11,
+                va="top", ha="left")
+        fig.tight_layout()
+        fig.savefig(plot_dir_p / "roc_train_vs_test.png", dpi=300)
+        plt.close(fig)
 
         for split, yt, ys, wt in [
             ("test", y_test_i, y_score_test, w_test_eff),
@@ -986,56 +1289,61 @@ class DNNTrainer:
             _plot_score_distribution(yt, ys, wt, plot_dir_p / f"score_distribution_{split}.png", f"DNN score ({split}, {region})")
             _write_score_table(yt, ys, wt, plot_dir_p / f"score_distribution_{split}.csv")
 
-        plt.figure(figsize=(7, 5))
-        plt.plot(epoch_ids, train_losses, marker="o", linewidth=1.5, label="Train loss")
-        plt.plot(epoch_ids, val_losses, marker="s", linewidth=1.5, label="Val loss")
-        plt.xlabel("Epoch")
-        plt.ylabel("Weighted BCE loss")
-        plt.title(f"Loss vs Epoch ({region})")
-        plt.grid(alpha=0.25)
-        plt.legend(loc="best")
-        plt.tight_layout()
-        plt.savefig(plot_dir_p / "loss_curve.png", dpi=160)
-        plt.close()
+        fig, ax = plt.subplots(figsize=(8.5, 6.5))
+        ax.plot(epoch_ids, train_losses, marker="o", linewidth=1.5, color=_PALETTE[0], label="Train loss")
+        ax.plot(epoch_ids, val_losses, marker="s", linewidth=1.5, color=_PALETTE[2], label="Val loss")
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Weighted BCE loss")
+        ax.legend(loc="best")
+        hep.cms.label(llabel="Work in Progress", com=13.6, ax=ax, loc=0)
+        ax.text(0.02, 0.97, f"Loss vs Epoch ({region})", transform=ax.transAxes, fontsize=11,
+                va="top", ha="left")
+        fig.tight_layout()
+        fig.savefig(plot_dir_p / "loss_curve.png", dpi=300)
+        plt.close(fig)
 
-        plt.figure(figsize=(7, 5))
-        plt.plot(epoch_ids, val_aucs, marker="o", linewidth=1.5, color="#bd1f01")
-        plt.xlabel("Epoch")
-        plt.ylabel("Validation AUC")
-        plt.title(f"Validation AUC vs Epoch ({region})")
-        plt.grid(alpha=0.25)
-        plt.tight_layout()
-        plt.savefig(plot_dir_p / "auc_curve.png", dpi=160)
-        plt.close()
+        fig, ax = plt.subplots(figsize=(8.5, 6.5))
+        ax.plot(epoch_ids, val_aucs, marker="o", linewidth=1.5, color=_PALETTE[2])
+        ax.set_xlabel("Epoch")
+        ax.set_ylabel("Validation AUC")
+        hep.cms.label(llabel="Work in Progress", com=13.6, ax=ax, loc=0)
+        ax.text(0.02, 0.03, f"Validation AUC vs Epoch ({region})", transform=ax.transAxes, fontsize=11,
+                va="bottom", ha="left")
+        fig.tight_layout()
+        fig.savefig(plot_dir_p / "auc_curve.png", dpi=300)
+        plt.close(fig)
 
-        # Per-feature 1D DNN scans
-        top_feature_scan_rows = []
+        # Per-feature 1D DNN scans — each feature trains its own small,
+        # independent model, so dispatch across CPU cores instead of one at a
+        # time (this loop was previously the single largest wall-time stage
+        # of train-dnn: N features x their own epoch loop, serial, one core).
+        dropout_val = float(self.model_config.get("dropout", 0.1))
+        variable_labels = self.config.get("variable_labels")
+        scan_tasks = []
         for feat in list(features):
             xtr_f = np.asarray(X_train[feat].to_numpy(), dtype="f8")
             xte_f = np.asarray(X_test[feat].to_numpy(), dtype="f8")
-            _, score_te_f, auc_tr_f, auc_te_f = _train_single_feature_dnn(
-                xtr_f, xte_f,
-                y_train_i, y_test_i,
-                w_train_eff, w_test_eff,
-                seed=seed, epochs=single_feat_epochs, batch_size=batch_size,
-                lr=lr, patience=patience, dropout=float(self.model_config.get("dropout", 0.1)),
-                device=self.device,
-            )
             safe_feat = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in str(feat))
-            _plot_score_distribution(
-                y_test_i, score_te_f, w_test_eff,
-                plot_dir_p / f"score_distribution_feature_{safe_feat}.png",
-                f"1D DNN score ({feat}, test)",
-            )
-            _write_score_table(y_test_i, score_te_f, w_test_eff, plot_dir_p / f"score_distribution_feature_{safe_feat}.csv")
             feat_signif = next((r for r in signif_rows if str(r.get("feature")) == str(feat)), None)
-            top_feature_scan_rows.append({
-                "feature": feat,
-                "source": feature_sources.get(feat, "unknown"),
-                "feature_asimov_z": None if feat_signif is None else float(feat_signif.get("asimov_z", 0.0)),
-                "dnn_auc_train": float(auc_tr_f),
-                "dnn_auc_test": float(auc_te_f),
-            })
+            scan_tasks.append((
+                feat, xtr_f, xte_f, y_train_i, y_test_i, w_train_eff, w_test_eff,
+                seed, single_feat_epochs, batch_size, lr, patience, dropout_val,
+                variable_labels, feature_sources, feat_signif,
+                str(plot_dir_p), safe_feat,
+            ))
+
+        num_workers = int(os.environ.get("DNN_SCAN_WORKERS", max(1, (os.cpu_count() or 1))))
+        num_workers = max(1, min(num_workers, len(scan_tasks)))
+
+        if num_workers > 1 and len(scan_tasks) > 1:
+            import multiprocessing as mp
+
+            logging.info(f"Running per-feature DNN scan for {len(scan_tasks)} feature(s) with {num_workers} worker processes")
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=num_workers) as pool:
+                top_feature_scan_rows = pool.map(_feature_scan_worker, scan_tasks)
+        else:
+            top_feature_scan_rows = [_feature_scan_worker(t) for t in scan_tasks]
 
         if top_feature_scan_rows:
             pd.DataFrame(top_feature_scan_rows).to_csv(plot_dir_p / "top_feature_dnn_scores.csv", index=False)
@@ -1179,15 +1487,15 @@ class DNNTrainer:
             self._dnn_scaler = _StandardScaler.from_jsonable(json.loads(Path(scaler_path).read_text()))
         logging.info("Model loaded from %s", model_path)
 
-    def predict(self, features: np.ndarray, masses: np.ndarray) -> np.ndarray:
+    def predict(self, features: np.ndarray, masses: Optional[np.ndarray]) -> np.ndarray:
         self.model.eval()
         X = features.astype("f8")
         if self._dnn_scaler is not None:
             X = self._dnn_scaler.transform(X)
-        Xt = torch.from_numpy(X.astype("float32"))
-        Mt = torch.from_numpy(masses.astype("float32"))
+        Xt = torch.from_numpy(X.astype("float32")).to(self.device)
+        Mt = None if masses is None else torch.from_numpy(masses.astype("float32")).to(self.device)
         with torch.no_grad():
-            out = self.model(Xt.to(self.device), Mt.to(self.device)).cpu().numpy()
+            out = self.model(Xt, Mt).cpu().numpy()
         return out
 
     # ------------------------------------------------------------------
@@ -1218,6 +1526,6 @@ class DNNTrainer:
 
         plt.tight_layout()
         if save_path:
-            plt.savefig(save_path, dpi=160, bbox_inches="tight")
+            plt.savefig(save_path, dpi=300, bbox_inches="tight")
             logging.info("Training history saved to %s", save_path)
         plt.close()

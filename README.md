@@ -17,6 +17,7 @@ DarkBottomLine processes NanoAOD datasets through event selection, region analys
 - SR blinding by default (bkg-sum as pseudo-data); `--show-data` to unblind
 - DNN scoring integration (train or apply)
 - Executors: iterative, futures, Dask
+- Multi-core parallelization (`multiprocessing`) for DNN training/plotting and region-plot generation — see [Parallelization](#parallelization)
 
 ---
 
@@ -443,109 +444,199 @@ Keys match the `GenModel_*` branch suffix (strip `GenModel_` prefix). All models
 
 ## DNN Integration
 
-The framework supports training a binary classifier and injecting per-event DNN scores (`ml_score`) into the analysis pipeline.
+The framework supports training a binary classifier (optionally **parametric** — conditioned on the
+signal mass hypothesis) and injecting per-event DNN scores (`ml_score`) into the analysis pipeline.
 
-### Workflow Overview
+### Workflow
 
 ```
-  signal MC + bkg MC                 data ROOT
-       │                                  │
-       ▼                                  │
-  ┌───────────┐                           │
-  │  train-dnn │ ──→ dnn_model.pt ────────┤
-  │  (once)    │                           │
-  └───────────┘                           ▼
-                                   ┌────────────┐
-                                   │  apply-dnn  │ ──→ ROOT + ml_score
-                                   └────────────┘
+  outputs/eventsel/*_EVENTSELECTION.root  (signal + background + data)
+       │
+       ▼
+  darkbottomline train-dnn  ──→  data/dnn/dnn_model.pt, scaler.json, features.json
+       │
+       ▼
+  darkbottomline analyze --mode region-analysis --apply-dnn  ──→  region plots with ml_score
 ```
 
-### Integrated mode (train + score in one command)
+### Step 0 — Event selection (run once per sample)
+
+`scripts/run_eventsel_all.sh` loops `darkbottomline analyze --mode event-selection` over every
+`.root` file in a directory, auto-detecting data files (via filename pattern) and applying `--data`
+to them:
 
 ```bash
-# Train DNN on preselected MC, score all events, then run region analysis
-darkbottomline analyze \
-    --mode full \
-    --config configs/2022.yaml \
-    --regions-config configs/regions.yaml \
-    --input signal.root bkg1.root bkg2.root data.root \
-    --event-selection-output outputs/eventsel/sample_EVENTSELECTION.root \
-    --train-dnn configs/dnn.yaml \
-    --dnn-outdir data/dnn \
-    --dnn-plotdir outputs/dnn \
-    --signal-prefix "signal" \
-    --make-region-plots \
-    --output-dir outputs/
+scripts/run_eventsel_all.sh [INPUT_DIR] [OUTPUT_DIR] [CONFIG] [--dry-run]
 
-# Train only, skip region analysis
-darkbottomline analyze \
-    --mode full \
-    --config configs/2022.yaml \
-    --input signal.root bkg.root \
-    --train-dnn configs/dnn.yaml \
-    --dnn-outdir data/dnn \
-    --dnn-plotdir outputs/dnn \
-    --signal-prefix "signal" \
-    --dnn-only
+# e.g.
+scripts/run_eventsel_all.sh /path/to/NanoAODv15_2024 outputs/eventsel configs/2024.yaml
+```
 
-# Score with an existing model
+Defaults: `INPUT_DIR=../TestingSamples/NanoAODv15_2024`, `OUTPUT_DIR=outputs/eventsel`,
+`CONFIG=configs/2024.yaml`. `--dry-run` prints the planned per-file commands without running them.
+
+### Step 1 — Train
+
+```bash
+darkbottomline train-dnn \
+  --dnn-config configs/dnn.yaml \
+  --input outputs/eventsel \
+  --weight-branch full_event_weight \
+  --outdir data/dnn \
+  --plot-dir outputs/dnn \
+  --xsection-signal-json data/cross-section/xsection_signal.json \
+  --xsection-json data/cross-section/xsection_background_run3.json
+```
+
+Signal/background split, feature list, and model architecture all come from `configs/dnn.yaml`
+(`features:`, `model:`, `training:`) — no separate `--signal-prefix`/`--signal-pattern` needed when
+`--input` is an `outputs/eventsel/` folder, since signal vs. background is resolved from
+`configs/plotting.yaml`'s `process_groups` (`type: signal` / `type: background` entries).
+
+Writes `data/dnn/dnn_model.pt` (+ `_scaler.json`, `features.json`, `train_metrics.json`,
+`feature_significance.json`) and diagnostic plots (ROC, loss/AUC curves, score distributions,
+feature correlation/significance) to `outputs/dnn/`.
+
+**Parametric training** — set `model.parametric_input: true` in `configs/dnn.yaml` to train a single
+network conditioned on the signal's `(MH3, MH4)` mass grid instead of one mass-averaged classifier:
+signal events get their true masspoint (parsed from the `GenModel_MH3_*_MH4_*_Mchi_*` flag set on
+that event); background events get a masspoint sampled uniformly at random from the same 29-point
+grid. Same `train-dnn` command as above — no extra flags needed, the grid is derived automatically
+from `--xsection-signal-json`. `parametric_input: false` (default) trains the plain non-parametric
+classifier described above.
+
+### Step 2 — Apply, in region-analysis
+
+```bash
 darkbottomline analyze \
     --mode region-analysis \
-    --config configs/2022.yaml \
+    --config configs/2024.yaml \
     --regions-config configs/regions.yaml \
-    --input outputs/eventsel/ \
-    --dnn-model data/dnn/dnn_model.pt \
-    --dnn-config configs/dnn.yaml \
-    --make-region-plots \
-    --output-dir outputs/
+    --input outputs/eventsel \
+    --output-dir outputs/region_plots \
+    --xsection-json data/cross-section/xsection_background_run3.json \
+    --plot-config configs/plotting.yaml --make-region-plots \
+    --apply-dnn --dnn-model data/dnn/dnn_model.pt --dnn-config configs/dnn.yaml \
+    --xsection-signal-json data/cross-section/xsection_signal.json --signal-scale 10
 ```
 
-### Standalone commands
+`--apply-dnn` scores every event and adds `ml_score` as a plotted variable in every region
+(`common_variables` in `configs/plotting.yaml`) — same output structure as any other variable
+(PNG/PDF/ROOT/TXT per region).
+
+**Parametric models** — whether `data/dnn/dnn_model.pt` is parametric was decided at training time by
+`configs/dnn.yaml`'s `model.parametric_input` (`true`/`false`), baked into the checkpoint (`spec.parametric`)
+and read from there at apply time — there's no separate switch here, and no way to apply a
+non-parametric checkpoint as if it were parametric or vice versa. `--dnn-config` is only used to
+resolve the feature list if `features.json` is missing next to the checkpoint; it does **not**
+re-decide parametric-ness.
+
+By default `ml_score` is scored once at the checkpoint's benchmark masspoint (`mass_grid[0]`), same
+single-branch output as a non-parametric model — this is what you get with `parametric_input: false`,
+and it's also the default with `parametric_input: true` if `--dnn-mass-scan` is omitted. Add
+`--dnn-mass-scan` to evaluate a parametric checkpoint at other masspoints instead — produces one
+`ml_score_mh3_<a>_mh4_<b>` branch (and one full set of region plots) per point scanned:
 
 ```bash
-# Train DNN from event-selection ROOT files (no intermediate ppbbchichi-trees.root)
-darkbottomline train-dnn \
-    --config configs/dnn.yaml \
-    --input signal_EVENTSELECTION.root bkg_EVENTSELECTION.root \
-    --signal-prefix "signal" \
-    --outdir data/dnn \
-    --plot-dir outputs/dnn \
-    --max-events-per-sample 200000
+# Two specific masspoints
+darkbottomline analyze \
+    --mode region-analysis \
+    --config configs/2024.yaml \
+    --regions-config configs/regions.yaml \
+    --input outputs/eventsel \
+    --output-dir outputs/region_plots \
+    --xsection-json data/cross-section/xsection_background_run3.json \
+    --plot-config configs/plotting.yaml --make-region-plots \
+    --apply-dnn --dnn-model data/dnn/dnn_model.pt --dnn-config configs/dnn.yaml \
+    --xsection-signal-json data/cross-section/xsection_signal.json --signal-scale 10 \
+    --dnn-mass-scan MH3_600_MH4_300_Mchi_1,MH3_1500_MH4_1000_Mchi_1
 
-# Apply trained DNN to ROOT files (writes ml_score branch in-place or to --output-dir)
-darkbottomline apply-dnn \
-    --input data_EVENTSELECTION.root \
-    --model data/dnn/dnn_model.pt \
-    --score-branch ml_score \
-    --output-dir scored_outputs/
+# Every grid point (29 sets of region plots)
+    --dnn-mass-scan all
 ```
 
-### Signal / background labelling
+Ignored (no-op) for a non-parametric model.
 
-| Flag | Description |
-|------|-------------|
-| `--signal-prefix PREFIX` | Filenames starting with `PREFIX` are signal (label=1), others are background (label=0) |
-| `--signal-pattern REGEX` | Filenames matching the regex are signal; repeatable with `--signal-pattern A --signal-pattern B` |
-| `--label-csv labels.csv` | CSV with columns `path,label` (1=signal, 0=background); overrides prefix/pattern |
+### Standalone scoring (`apply-dnn`)
+
+Score existing `EVENTSELECTION.root` files directly, writing `ml_score` (or `ml_score_mh3_*` per
+scanned point) back to the ROOT file in-place or to `--output-dir`, without running region analysis:
+
+```bash
+darkbottomline apply-dnn \
+    --input outputs/eventsel/sample_EVENTSELECTION.root \
+    --model data/dnn/dnn_model.pt \
+    --config configs/dnn.yaml \
+    --score-branch ml_score \
+    --output-dir scored_outputs/ \
+    [--dnn-mass-scan all]   # parametric models only
+```
 
 ### Key DNN flags
 
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--train-dnn CONFIG` | — | DNN config YAML; triggers training before region analysis |
-| `--dnn-model PATH` | — | Pre-trained `.pt` checkpoint for scoring only |
-| `--dnn-config CONFIG` | — | DNN config for inference (feature list, etc.) |
-| `--dnn-outdir DIR` | `data/dnn` | Model artifacts: `dnn_model.pt`, `scaler.json`, `features.json`, `train_metrics.json` |
-| `--dnn-plotdir DIR` | `outputs/dnn` | Training plots: ROC, loss, AUC, score distributions, feature significance |
-| `--dnn-only` | `False` | Stop after DNN scoring, skip region analysis |
+| Flag | Subcommand(s) | Default | Description |
+| ---- | ------------- | ------- | ----------- |
+| `--dnn-config CONFIG` | `train-dnn` | required | DNN config YAML (`configs/dnn.yaml`) |
+| `--input FILES/DIR` | `train-dnn`, `apply-dnn` | required | `EVENTSELECTION.root` files or a folder |
+| `--weight-branch BRANCH` | `train-dnn` | `full_event_weight` | Per-event weight branch to train with |
+| `--outdir DIR` | `train-dnn` | `data/dnn` | Model artifacts: `dnn_model.pt`, `scaler.json`, `features.json`, `train_metrics.json` |
+| `--plot-dir DIR` | `train-dnn` | `outputs/dnn` | Training plots: ROC, loss, AUC, score distributions, feature significance |
+| `--xsection-signal-json JSON` | `train-dnn`, `analyze` | — | Signal cross sections / mass grid, e.g. `data/cross-section/xsection_signal.json` |
+| `--xsection-json JSON` | `train-dnn`, `analyze` | — | Background cross sections for per-file lumi×xsec weighting |
+| `--apply-dnn` | `analyze` | `False` | Score events with `--dnn-model`/`--dnn-config` in the region-plots path |
+| `--dnn-model PATH` | `analyze`, `apply-dnn` | — | Pre-trained `.pt` checkpoint |
+| `--dnn-config CONFIG` | `analyze`, `apply-dnn` | — | DNN config for inference (feature list, etc.) |
+| `--dnn-mass-scan SPEC` | `analyze`, `apply-dnn` | — (single benchmark) | Parametric models only: `all`, or comma list of `MH3_<a>_MH4_<b>_Mchi_<c>` labels |
+| `--signal-scale N` | `analyze` | `1` | Multiply signal histograms by N for shape visibility |
 
 ### DNN configuration (`configs/dnn.yaml`)
 
-- **model**: architecture (hidden layers, dropout, parametric mass input)
-- **training**: batch size, learning rate, epochs, early stopping, class balancing
+- **model**: architecture (hidden layers, dropout), `parametric_input` (mass-conditioned training)
+- **training**: batch size, learning rate, epochs, early stopping, class balancing, seed
 - **feature_selection**: top-K by Asimov significance, single-feature scans
 - **topology_decorrelation**: penalty weight for score vs topology correlations
-- **features**: 25 input variables (MET, jet kinematics, angular variables, b-tag scores)
+- **features**: input variables (MET, jet kinematics, angular variables, b-tag scores)
+- **variable_labels**: LaTeX x-axis labels for feature/score distribution plots
+
+---
+
+## Parallelization
+
+`train-dnn` and `analyze --mode region-analysis` dispatch independent per-item work
+(one input ROOT file, one feature, or one region/variable plot) across CPU cores via
+`multiprocessing.Pool` (`spawn` context) — not threads, since the work is CPU-bound
+(numpy/torch/matplotlib) and would serialize on the GIL under `threading`. Coffea's
+`--executor futures/dask` (file-chunk level parallelism) is unaffected and independent
+of this.
+
+| Stage | Command | Env var (default: `os.cpu_count()`) |
+| ----- | ------- | ------------------------------------ |
+| Loading input ROOT files | `train-dnn` | `DNN_LOAD_WORKERS` |
+| Per-feature significance ranking | `train-dnn` | `DNN_SIGNIF_WORKERS` |
+| Per-feature 1D DNN scan (post-training) | `train-dnn` | `DNN_SCAN_WORKERS` |
+| Region/variable plot generation | `analyze --make-region-plots` | `PLOT_NUM_WORKERS` |
+
+```bash
+# Force serial (e.g. to compare timing, or on a memory-constrained node)
+DNN_LOAD_WORKERS=1 DNN_SCAN_WORKERS=1 darkbottomline train-dnn ...
+PLOT_NUM_WORKERS=1 darkbottomline analyze --mode region-analysis --make-region-plots ...
+
+# Cap worker count explicitly
+PLOT_NUM_WORKERS=4 darkbottomline analyze --mode region-analysis --make-region-plots ...
+```
+
+**Notes:**
+
+- Each worker pins `OMP_NUM_THREADS=1`/`OPENBLAS_NUM_THREADS=1` (and `torch.set_num_threads(1)`
+  for torch-based workers) to avoid N workers × M BLAS threads oversubscribing the host.
+- In `train-dnn`, the per-feature DNN scan (`DNN_SCAN_WORKERS`) trains one small model per
+  feature — on large datasets (10⁶+ events) this stage is bound by per-worker `DataLoader`
+  mini-batch iteration, not raw core count, so speedup is sub-linear; reducing
+  `single_feature_epochs` or increasing `batch_size` in `configs/dnn.yaml` helps more than
+  adding workers.
+- In `analyze --mode region-analysis` (`--input` an `EVENTSELECTION.root` folder), only the
+  final draw+save step per region/variable is parallelized — region-cut application and DNN
+  scoring on the raw event arrays happens once, serially, before dispatch.
 
 ---
 

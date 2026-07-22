@@ -7,7 +7,7 @@ model:
   hidden_layers: "128,64,32"  # Hidden layer sizes
   activation: "relu"  # Activation function
   dropout: 0.2  # Dropout rate
-  parametric_input: true  # Include mass parameter as input
+  parametric_input: false  # Include mass parameter as input
   output_activation: "sigmoid"  # Output activation (0-1 for binary classification)
 
 # Training parameters
@@ -31,6 +31,10 @@ training:
   weight_clip: 100.0     # Maximum event weight
   # Fractional systematic uncertainty on background for syst-aware Asimov Z (0 = pure stat)
   sig_syst: 0.20
+  # Training is year-independent by design (lumi=1.0 always) unless this is set:
+  # when true, --config-year's lumi/luminosity is used for GenModel per-masspoint
+  # signal weighting instead of 1.0. Requires --config-year on train-dnn.
+  use_lumi: false
 
 # Feature selection
 feature_selection:
@@ -54,10 +58,10 @@ preprocessing:
   random_seed: 42
   shuffle_data: true
 
-# Input features — canonical branch names used in ppbbchichi-trees.root
-# These match REQUESTED_FEATURES_25 in dnn/feature_engineering.py.
-# Aliases and derived quantities are resolved automatically by build_feature_frame_from_tree.
-# Edit this list to add/remove features without touching Python code.
+# Input features — exact branch names as written in outputs/eventsel/*_EVENTSELECTION.root.
+# No aliasing/derivation happens in code: a name here must match a real branch,
+# or the feature comes through as all-missing. Edit this list to add/remove
+# features without touching Python code.
 features:
   - "costheta_star"
   - "JetHT"
@@ -68,76 +72,82 @@ features:
   - "Jet2BTagScore"
   - "Jet2Eta"
   - "Jet2Pt"
+  - "Jet3BTagScore"
+  - "Jet3Eta"
+  - "Jet3Pt"
   - "eta_Jet1Jet2"
   - "M_Jet1Jet2"
   - "dPhi_jetMET"
   - "dEtaJet12"
   - "MET_significance"
   - "pT_Jet1Jet2"
-  - "rJet1PtMET"
+  - "ratioJet1PtMET"
   - "ratioPtJet21"
   - "del_plus"
   - "Jet1Eta"
   - "del_minus"
-  - "METPhi"
+  - "MET_phi"
   - "Jet1Phi"
-  - "MET"
+#   - "MET_pt"
   - "Jet2Phi"
   - "phi_Jet1Jet2"
+  - "Recoil"
+  - "njets"
+  - "n_bjets"
+  - "RecoilPhi"
+  - "dPhiJet13"
+  - "M_Jet1Jet3"
+
+# x-axis labels for feature distribution plots (self-contained — does not
+# reference configs/plotting.yaml).
+variable_labels:
+  costheta_star:     "$|\\cos\\theta^{*}|$"
+  JetHT:              "$H_{T}$ [GeV]"
+  Jet1BTagScore:      "Jet1 b-tag score"
+  Jet2BTagScore:      "Jet2 b-tag score"
+  Jet3BTagScore:      "Jet3 b-tag score"
+  dRJet12:            "$\\Delta R(\\mathrm{Jet1}, \\mathrm{Jet2})$"
+  dPhiJet12:          "$\\Delta\\phi(\\mathrm{Jet1}, \\mathrm{Jet2})$"
+  dEtaJet12:          "$\\Delta\\eta(\\mathrm{Jet1}, \\mathrm{Jet2})$"
+  dPhi_jetMET:        "$\\Delta\\phi(\\mathrm{jet}, p_{T}^{miss})$"
+  Jet1Pt:             "Jet1 $p_{T}$ [GeV]"
+  Jet2Pt:             "Jet2 $p_{T}$ [GeV]"
+  Jet3Pt:             "Jet3 $p_{T}$ [GeV]"
+  Jet1Eta:            "Jet1 $\\eta$"
+  Jet2Eta:            "Jet2 $\\eta$"
+  Jet3Eta:            "Jet3 $\\eta$"
+  Jet1Phi:            "Jet1 $\\phi$"
+  Jet2Phi:            "Jet2 $\\phi$"
+  eta_Jet1Jet2:       "$\\eta_{\\mathrm{Jet1,Jet2}}$"
+  phi_Jet1Jet2:       "$\\phi_{\\mathrm{Jet1,Jet2}}$"
+  M_Jet1Jet2:         "$M_{\\mathrm{Jet1,Jet2}}$ [GeV]"
+  pT_Jet1Jet2:        "$p_{T}^{\\mathrm{Jet1+Jet2}}$ [GeV]"
+  MET_pt:             "$p_{T}^{miss}$ [GeV]"
+  MET_phi:            "$p_{T}^{miss}$ $\\phi$"
+  MET_significance:   "$p_{T}^{miss}$ significance"
+  ratioJet1PtMET:     "Jet1 $p_{T}$ / $p_{T}^{miss}$"
+  ratioPtJet21:       "Jet2 $p_{T}$ / Jet1 $p_{T}$"
+  del_plus:           "$|\\Delta\\phi(\\mathrm{jet},p_{T}^{miss}) + \\Delta\\phi(\\mathrm{Jet1},\\mathrm{Jet2}) - \\pi|$"
+  del_minus:          "$\\Delta\\phi(\\mathrm{jet},p_{T}^{miss}) - \\Delta\\phi(\\mathrm{Jet1},\\mathrm{Jet2})$"
+  Recoil:             "Recoil [GeV]"
+  RecoilPhi:          "Recoil $\\phi$"
+  njets:              "Number of jets"
+  n_bjets:            "Number of b-jets"
+  dPhiJet13:          "$\\Delta\\phi(\\mathrm{Jet1}, \\mathrm{Jet3})$"
+  M_Jet1Jet3:         "$M_{\\mathrm{Jet1,Jet3}}$ [GeV]"
 
 # Training data configuration
+#
+# Signal/background file selection happens at train-dnn CLI invocation time via
+# --input <folder or file list> + --signal-pattern/--signal-prefix/--label-csv,
+# not here. Background dataset groupings are defined in configs/plotting.yaml's
+# process_groups (exclude type: signal / type: data entries). Signal is one file
+# (BBDM-2HDMa-5f_..._EVENTSELECTION.root) with 29 GenModel_MH3_*_MH4_*_Mchi_*
+# masspoint flags — see data/cross-section/xsection_signal.json for per-masspoint
+# cross sections, used for GenModel-aware event weighting (--xsection-signal-json).
 data:
-  # Signal samples
-  signal:
-    samples:
-      - name: "signal_1000"
-        file: "signals/signal_1000.root"
-        mass: 1000
-        weight: 1.0
-      - name: "signal_1200"
-        file: "signals/signal_1200.root"
-        mass: 1200
-        weight: 1.0
-      - name: "signal_1400"
-        file: "signals/signal_1400.root"
-        mass: 1400
-        weight: 1.0
-      - name: "signal_1600"
-        file: "signals/signal_1600.root"
-        mass: 1600
-        weight: 1.0
-      - name: "signal_1800"
-        file: "signals/signal_1800.root"
-        mass: 1800
-        weight: 1.0
-      - name: "signal_2000"
-        file: "signals/signal_2000.root"
-        mass: 2000
-        weight: 1.0
-
-  # Background samples
-  background:
-    samples:
-      - name: "ttbar"
-        file: "backgrounds/ttbar.root"
-        weight: 1.0
-      - name: "wjets"
-        file: "backgrounds/wjets.root"
-        weight: 1.0
-      - name: "zjets"
-        file: "backgrounds/zjets.root"
-        weight: 1.0
-      - name: "qcd"
-        file: "backgrounds/qcd.root"
-        weight: 1.0
-      - name: "st"
-        file: "backgrounds/st.root"
-        weight: 1.0
-
-  # Data loading
+  region: "preselection"
   max_events_per_sample: 100000  # Limit events per sample for training
-  balance_classes: true  # Balance signal and background samples
-  signal_background_ratio: 0.5  # Target ratio of signal to background
 
 # Model evaluation
 evaluation:
@@ -249,4 +259,3 @@ interpretation:
     enabled: false
     n_samples: 1000
     n_features: 10
-

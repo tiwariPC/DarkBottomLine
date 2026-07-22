@@ -9,6 +9,8 @@ import yaml
 from typing import Dict, Any, List, Optional, Union
 import logging
 
+from .objects import SENTINEL
+
 warnings.filterwarnings("ignore", message="invalid value encountered in sqrt",
                         category=RuntimeWarning)
 
@@ -286,7 +288,7 @@ class Region:
                 wp = objects["btag_score"]
                 def _pos_b(idx):
                     b = ak.pad_none(jets.btagScore, idx + 1, clip=True)[:, idx]
-                    return ak.fill_none(b, -9.0) > wp
+                    return ak.fill_none(b, SENTINEL) > wp
                 if var == "LeadingBjet":
                     flag = _pos_b(0)
                 elif var == "SubleadingBjet":
@@ -386,64 +388,12 @@ class Region:
                 for _fname in ("mt", "MT", "w_mt"):
                     if _fname in events.fields:
                         return ak.fill_none(events[_fname], 0.0)
-                # Compute from scalar leading-lepton branches + MET
-                met_pt_f  = next((events[v] for v in ("PuppiMET_pt",  "PFMET_pt",  "MET_pt")  if v in events.fields), None)
-                met_phi_f = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
-                if met_pt_f is not None and met_phi_f is not None:
-                    for pt_f, phi_f in (
-                        ("muon_lep1_pt",     "muon_lep1_phi"),
-                        ("electron_lep1_pt", "electron_lep1_phi"),
-                        ("muon_pt",          "muon_phi"),      # jagged fallback
-                        ("electron_pt",      "electron_phi"),  # jagged fallback
-                    ):
-                        if pt_f in events.fields and phi_f in events.fields:
-                            try:
-                                lpt  = events[pt_f]
-                                lphi = events[phi_f]
-                                # jagged: take leading element; scalar: use directly
-                                if hasattr(lpt, 'ndim') and lpt.ndim == 1:
-                                    l1pt, l1phi = lpt, lphi
-                                else:
-                                    has1 = ak.num(lpt) >= 1
-                                    l1pt  = ak.where(has1, lpt[:, 0],  0.0)
-                                    l1phi = ak.where(has1, lphi[:, 0], 0.0)
-                                valid = l1pt > 0
-                                dphi = abs(l1phi - met_phi_f)
-                                dphi = ak.where(dphi > np.pi, 2 * np.pi - dphi, dphi)
-                                mt_val = ak.where(valid, np.sqrt(2 * l1pt * met_pt_f * (1 - np.cos(dphi))), 0.0)
-                                return ak.fill_none(mt_val, 0.0, axis=0)
-                            except Exception:
-                                pass
-            # Transverse mass (tight pt>30 leptons for CR)
-            met_pt  = next((events[v] for v in ("PuppiMET_pt",  "PFMET_pt",  "MET_pt")  if v in events.fields), None)
-            met_phi = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
-
-            muons = objects.get("tight_muons", ak.Array([]))
-            electrons = objects.get("tight_electrons", ak.Array([]))
-
-            mt = ak.zeros_like(met_pt)
-            try:
-                # Muon MT (argsort axis=1 can fail on depth-1)
-                has_muons = ak.num(muons) > 0
-                leading_muon = ak.firsts(muons[ak.argsort(muons.pt, ascending=False, axis=1)])
-                muon_pt = leading_muon.pt
-                muon_phi = leading_muon.phi
-                delta_phi_mu = abs(muon_phi - met_phi)
-                delta_phi_mu = ak.where(delta_phi_mu > np.pi, 2 * np.pi - delta_phi_mu, delta_phi_mu)
-                mt_mu = np.sqrt(2 * muon_pt * met_pt * (1 - np.cos(delta_phi_mu)))
-                mt = ak.where(has_muons, mt_mu, mt)
-
-                # Electron MT for events without muons
-                has_electrons = ak.num(electrons) > 0
-                leading_electron = ak.firsts(electrons[ak.argsort(electrons.pt, ascending=False, axis=1)])
-                ele_pt = leading_electron.pt
-                ele_phi = leading_electron.phi
-                delta_phi_el = abs(ele_phi - met_phi)
-                delta_phi_el = ak.where(delta_phi_el > np.pi, 2 * np.pi - delta_phi_el, delta_phi_el)
-                mt_el = np.sqrt(2 * ele_pt * met_pt * (1 - np.cos(delta_phi_el)))
-                mt = ak.where(~has_muons & has_electrons, mt_el, mt)
-            except (Exception, BaseException):
-                pass
+            # Transverse mass: precomputed in build_objects (mt_mu / mt_el)
+            n_tight_mu = self._safe_num_axis1(objects.get("tight_muons"), n_ev)
+            n_tight_el = self._safe_num_axis1(objects.get("tight_electrons"), n_ev)
+            mt_mu = objects.get("mt_mu", self._zeros_like_events(events, n_ev, dtype=float))
+            mt_el = objects.get("mt_el", self._zeros_like_events(events, n_ev, dtype=float))
+            mt = ak.where(n_tight_mu > 0, mt_mu, ak.where(n_tight_el > 0, mt_el, 0.0))
             return ak.fill_none(mt, 0.0, axis=0)
         if var in ("Mll", "MllMin", "MllMax"):
             # Flat-branch path: reading from EVENTSELECTION.root (objects={})
@@ -451,46 +401,6 @@ class Region:
                 for _fname in ("mll", "Mll", "z_mass"):
                     if _fname in events.fields:
                         return ak.fill_none(ak.values_astype(events[_fname], float), 0.0)
-                # Pick lepton flavor using n_z_electrons/n_z_muons flat branches
-                # to avoid computing Mll from the wrong lepton pair.
-                nzm_flat = events["n_z_muons"]     if "n_z_muons"     in events.fields else None
-                nze_flat = events["n_z_electrons"] if "n_z_electrons" in events.fields else None
-
-                def _mll_from_branches(l1pt_f, l1eta_f, l1phi_f, l2pt_f, l2eta_f, l2phi_f):
-                    if not all(f in events.fields for f in (l1pt_f, l1eta_f, l1phi_f, l2pt_f, l2eta_f, l2phi_f)):
-                        return None
-                    try:
-                        l1pt  = events[l1pt_f];  l1eta = events[l1eta_f]; l1phi = events[l1phi_f]
-                        l2pt  = events[l2pt_f];  l2eta = events[l2eta_f]; l2phi = events[l2phi_f]
-                        has2  = (l1pt > 0) & (l2pt > 0)
-                        dphi  = abs(l1phi - l2phi)
-                        dphi  = ak.where(dphi > np.pi, 2 * np.pi - dphi, dphi)
-                        deta  = l1eta - l2eta
-                        mll   = ak.where(
-                            has2,
-                            np.sqrt(2 * l1pt * l2pt * (np.cosh(deta) - np.cos(dphi))),
-                            0.0,
-                        )
-                        return ak.fill_none(mll, 0.0, axis=0)
-                    except Exception:
-                        return None
-
-                mu_fields  = ("muon_lep1_pt",     "muon_lep1_eta",     "muon_lep1_phi",
-                              "muon_lep2_pt",     "muon_lep2_eta",     "muon_lep2_phi")
-                el_fields  = ("electron_lep1_pt", "electron_lep1_eta", "electron_lep1_phi",
-                              "electron_lep2_pt", "electron_lep2_eta", "electron_lep2_phi")
-
-                # Prefer the flavor matching the Z candidate in each event
-                mll_mu = _mll_from_branches(*mu_fields)
-                mll_el = _mll_from_branches(*el_fields)
-
-                if mll_mu is not None and mll_el is not None and nzm_flat is not None and nze_flat is not None:
-                    mll = ak.where(nzm_flat == 2, mll_mu, ak.where(nze_flat == 2, mll_el, 0.0))
-                    return ak.fill_none(mll, 0.0, axis=0)
-                elif mll_mu is not None and (nzm_flat is None or nze_flat is None):
-                    return mll_mu
-                elif mll_el is not None:
-                    return mll_el
             # Z candidate mass: muon pair if NmuonsZ==2 else electron pair if NelectronsZ==2
             n_z_mu = objects.get("n_z_muons", self._zeros_like_events(events, n_ev, dtype=int))
             n_z_el = objects.get("n_z_electrons", self._zeros_like_events(events, n_ev, dtype=int))

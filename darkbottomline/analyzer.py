@@ -68,7 +68,7 @@ import numpy as np
 import os
 import time
 import logging
-from typing import Dict, Any, Optional, Union
+from typing import Dict, Any, Optional, Union, List, Tuple
 from pathlib import Path
 import json
 
@@ -453,6 +453,8 @@ class DarkBottomLineAnalyzer:
         is_data: bool = False,
         dnn_model: Optional[str] = None,
         dnn_config: Optional[str] = None,
+        dnn_inference: Optional[Any] = None,
+        dnn_mass_scan: Optional[List[Tuple[float, float]]] = None,
     ) -> Dict[str, Any]:
         """
         Run region analysis starting from a pre-selected flat-branch dict (EVENTSELECTION.root).
@@ -465,8 +467,19 @@ class DarkBottomLineAnalyzer:
             branches:                flat {name: np.ndarray} from EVENTSELECTION.root Events tree
             weighted_total_events:   sum of generator weights before preselection (from metadata TH1)
             is_data:                 True for collision data (unit weights)
-            dnn_model:               path to trained DNN checkpoint (optional)
-            dnn_config:              path to DNN config YAML (optional)
+            dnn_model:               path to trained DNN checkpoint (optional; ignored if
+                                      dnn_inference is given)
+            dnn_config:              path to DNN config YAML (optional; ignored if
+                                      dnn_inference is given)
+            dnn_inference:           pre-built DNNInference instance (optional). Callers looping
+                                      over many files should build this once and pass it in here
+                                      instead of dnn_model/dnn_config, to avoid reloading the
+                                      checkpoint from disk on every file.
+            dnn_mass_scan:           optional list of (MH3, MH4) points (already resolved via
+                                      dnn_inference._resolve_mass_scan by the caller). None (default)
+                                      scores once at the benchmark masspoint into a single "ml_score"
+                                      field, matching non-parametric behavior. When given, writes one
+                                      "ml_score_mh3_<a>_mh4_<b>" field per point instead.
 
         Returns:
             Same accumulator structure as process()
@@ -504,32 +517,25 @@ class DarkBottomLineAnalyzer:
                 event_weights_nominal = np.ones(n_ev, dtype=np.float64)
 
         # Optional DNN scoring
-        if dnn_model:
+        if dnn_inference is not None or dnn_model:
             try:
-                from .dnn_inference import DNNInference
-                from dnn.feature_engineering import REQUESTED_FEATURES_25
                 from dnn.common import sanitize_feature_frame
                 import pandas as _pd
 
-                inferencer = DNNInference(dnn_model, dnn_config)
-                model_info = inferencer.get_model_info()
-                features = model_info.get("features") or list(REQUESTED_FEATURES_25)
+                if dnn_inference is not None:
+                    inferencer = dnn_inference
+                else:
+                    from .dnn_inference import DNNInference
+                    inferencer = DNNInference(dnn_model, dnn_config)
+                features = inferencer.features
 
-                # Resolve DNN feature names to EVENTSELECTION branch names
-                # (same mapping as _build_dnn_feature_matrix_from_events in cli.py)
-                _NAME_MAP = {
-                    "MET":          "MET_pt",
-                    "METPhi":       "MET_phi",
-                    "pfMetCorrSig": "MET_significance",
-                    "rJet1PtMET":   "ratioJet1PtMET",
-                }
-
+                # Feature names are exact EVENTSELECTION.root branch names
+                # (configs/dnn.yaml features: is the source of truth).
                 X_parts = {}
                 for feat in features:
-                    var_name = _NAME_MAP.get(feat, feat)
-                    if var_name in events.fields:
+                    if feat in events.fields:
                         X_parts[feat] = np.asarray(
-                            ak.to_numpy(events[var_name]), dtype="f8"
+                            ak.to_numpy(events[feat]), dtype="f8"
                         )
                     else:
                         X_parts[feat] = np.full(n_ev, -9999.0, dtype="f8")
@@ -537,9 +543,15 @@ class DarkBottomLineAnalyzer:
                 X_df = _pd.DataFrame(X_parts)
                 X_df = sanitize_feature_frame(X_df)
                 X = X_df.to_numpy(dtype="f8")
-                scores = inferencer.predict(X).ravel().astype("float32")
-                events = ak.with_field(events, ak.Array(scores), "ml_score")
-                logging.info("DNN scores added to events (ml_score)")
+                if dnn_mass_scan is None:
+                    scores = inferencer.predict(X, None).ravel().astype("float32")
+                    events = ak.with_field(events, ak.Array(scores), "ml_score")
+                else:
+                    from .dnn_inference import _mass_branch_name
+                    for mh3, mh4 in dnn_mass_scan:
+                        masses = np.tile(np.asarray([mh3, mh4], dtype="f8"), (n_ev, 1))
+                        scores = inferencer.predict(X, masses).ravel().astype("float32")
+                        events = ak.with_field(events, ak.Array(scores), _mass_branch_name("ml_score", mh3, mh4))
             except Exception as _dnn_exc:
                 logging.warning("DNN scoring failed, continuing without scores: %s", _dnn_exc)
 
@@ -1138,28 +1150,20 @@ if COFFEA_AVAILABLE:
                     _obj = _build_obj(events_to_process, self.config)
                     # Inline feature extraction + scoring (avoids cli.py import)
                     from .dnn_inference import DNNInference
-                    from dnn.feature_engineering import REQUESTED_FEATURES_25
                     from dnn.common import sanitize_feature_frame
                     import pandas as _pd, awkward as _ak
 
                     _inf = DNNInference(self.dnn_model, self.dnn_config)
-                    _info = _inf.get_model_info()
-                    _feats = _info.get("features") or list(REQUESTED_FEATURES_25)
-                    _btag = self.config["btagging"]["algorithm"]
-                    _MAP = {
-                        "MET": "MET_pt", "METPhi": "MET_phi",
-                        "pfMetCorrSig": "MET_significance",
-                        "rJet1PtMET": "ratioJet1PtMET",
-                        "Jet1deepCSV": f"Jet1{_btag}",
-                        "Jet2deepCSV": f"Jet2{_btag}",
-                    }
+                    _feats = _inf.features
+
+                    # Feature names are exact compute_event_variables() output
+                    # keys (configs/dnn.yaml features: is the source of truth).
                     from .variables import compute_event_variables
                     _all_vars = compute_event_variables(events_to_process, _obj, self.config)
                     _n_ch = len(events_to_process)
                     _Xd = {}
                     for _f in _feats:
-                        _vn = _MAP.get(_f, _f)
-                        _arr = _all_vars.get(_vn)
+                        _arr = _all_vars.get(_f)
                         _Xd[_f] = np.asarray(_arr, dtype="f8").ravel() if _arr is not None else np.full(_n_ch, -9999.0, dtype="f8")
                     _Xdf = _pd.DataFrame(_Xd)
                     _Xdf = sanitize_feature_frame(_Xdf)

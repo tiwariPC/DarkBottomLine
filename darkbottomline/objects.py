@@ -6,7 +6,7 @@ import awkward as ak
 import numpy as np
 from typing import Dict, Any, Tuple
 
-SENTINEL = -9.0  # fill value for variables undefined due to insufficient objects
+SENTINEL = -9999.0  # fill value for variables undefined due to insufficient objects
 
 
 # ---------------------------------------------------------------------------

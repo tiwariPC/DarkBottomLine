@@ -32,7 +32,7 @@ try:
     # When installed as part of darkbottomline package
     from darkbottomline.dnn.common import DEFAULT_SIGNAL_PATTERNS, is_signal, sanitize_feature_frame
     from darkbottomline.dnn.data import list_sample_region_trees, read_tree_as_arrays
-    from darkbottomline.dnn.feature_engineering import REQUESTED_FEATURES_25, build_feature_frame_from_tree, get_default_feature_csv
+    from darkbottomline.dnn.feature_engineering import build_feature_frame_from_tree, get_default_feature_csv
     from darkbottomline.dnn.model import ModelSpec, build_mlp, parse_hidden_layers, save_checkpoint
     from darkbottomline.dnn.scaler import StandardScaler
 except ImportError:
@@ -40,19 +40,16 @@ except ImportError:
         # When executed as a module: `python -m darkbottomline.dnn.train_classifier ...`
         from dnn.common import DEFAULT_SIGNAL_PATTERNS, is_signal, sanitize_feature_frame
         from dnn.data import list_sample_region_trees, read_tree_as_arrays
-        from dnn.feature_engineering import REQUESTED_FEATURES_25, build_feature_frame_from_tree, get_default_feature_csv
+        from dnn.feature_engineering import build_feature_frame_from_tree, get_default_feature_csv
         from dnn.model import ModelSpec, build_mlp, parse_hidden_layers, save_checkpoint
         from dnn.scaler import StandardScaler
     except ImportError:
         # When executed as a script: `python darkbottomline/dnn/train_classifier.py ...`
         from common import DEFAULT_SIGNAL_PATTERNS, is_signal, sanitize_feature_frame
         from data import list_sample_region_trees, read_tree_as_arrays
-        from feature_engineering import REQUESTED_FEATURES_25, build_feature_frame_from_tree, get_default_feature_csv
+        from feature_engineering import build_feature_frame_from_tree, get_default_feature_csv
         from model import ModelSpec, build_mlp, parse_hidden_layers, save_checkpoint
         from scaler import StandardScaler
-
-
-DEFAULT_FEATURES = list(REQUESTED_FEATURES_25)
 
 
 def _load_label_csv(path: str) -> dict[str, int]:
@@ -270,6 +267,82 @@ def _asimov_significance_from_hist_syst(
     return float(np.sqrt(max(z2, 0.0)))
 
 
+def _significance_one_feature(
+    feat: str,
+    x: np.ndarray,
+    yy: np.ndarray,
+    ww: np.ndarray,
+    source: str,
+    n_bins: int,
+    sig_syst: float,
+    z_counting_stat: float,
+    z_counting_syst: float,
+) -> dict:
+    """Compute significance/AUC row for a single feature. Module-level so it is
+    picklable as a multiprocessing worker target."""
+    from sklearn.metrics import roc_auc_score
+
+    m_all = np.isfinite(x)
+    x = x[m_all]
+    yy = yy[m_all]
+    ww = ww[m_all]
+
+    empty_row = {
+        "feature": feat,
+        "source": source,
+        "auc": float("nan"),
+        "asimov_z": 0.0,
+        "asimov_z_syst": 0.0,
+        "delta_z": 0.0,
+        "delta_z_syst": 0.0,
+    }
+    if x.size == 0:
+        return empty_row
+
+    x_sig = x[yy == 1]
+    x_bkg = x[yy == 0]
+    w_sig = ww[yy == 1]
+    w_bkg = ww[yy == 0]
+
+    if x_sig.size == 0 or x_bkg.size == 0 or np.sum(w_sig) <= 0.0 or np.sum(w_bkg) <= 0.0:
+        return empty_row
+
+    qlo, qhi = _weighted_percentile(x, ww, np.array([0.01, 0.99], dtype="f8"))
+    lo = float(np.nanmin(x) if not np.isfinite(qlo) else qlo)
+    hi = float(np.nanmax(x) if not np.isfinite(qhi) else qhi)
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        lo = float(np.nanmin(x))
+        hi = float(np.nanmax(x))
+    if hi <= lo:
+        hi = lo + 1.0
+
+    edges = np.linspace(lo, hi, int(n_bins) + 1, dtype="f8")
+    hs, _ = np.histogram(x_sig, bins=edges, weights=w_sig)
+    hb, _ = np.histogram(x_bkg, bins=edges, weights=w_bkg)
+    z = _asimov_significance_from_hist(hs, hb)
+    z_syst = _asimov_significance_from_hist_syst(hs, hb, float(sig_syst))
+
+    auc = float(roc_auc_score(yy, x, sample_weight=ww))
+    return {
+        "feature": feat,
+        "source": source,
+        "auc": auc,
+        "asimov_z": z,
+        "asimov_z_syst": z_syst,
+        "delta_z": z - z_counting_stat,
+        "delta_z_syst": z_syst - z_counting_syst,
+    }
+
+
+def _significance_worker(args: tuple) -> dict:
+    (feat, x, yy, ww, source, n_bins, sig_syst, z_stat, z_syst) = args
+    # Each worker process must not itself spawn a BLAS thread pool per-call;
+    # cap to 1 so N worker processes don't oversubscribe the host's cores.
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+    return _significance_one_feature(feat, x, yy, ww, source, n_bins, sig_syst, z_stat, z_syst)
+
+
 def _compute_feature_significance(
     X_df,
     y: np.ndarray,
@@ -279,6 +352,7 @@ def _compute_feature_significance(
     source_map: dict[str, str] | None = None,
     n_bins: int = 40,
     sig_syst: float = 0.0,
+    num_workers: int | None = None,
 ) -> list[dict]:
     """Compute per-feature separation metrics and save ranking outputs.
 
@@ -288,11 +362,14 @@ def _compute_feature_significance(
         Fractional systematic uncertainty on background (0 = pure stat, 0.20 = 20%).
         When non-zero, ``asimov_z_syst`` is computed via the Cowan et al. 2011
         asymptotic formula and used for feature ranking.
+    num_workers : int | None
+        Number of processes to compute per-feature significance in parallel.
+        Defaults to ``DNN_SIGNIF_WORKERS`` env var, else ``os.cpu_count()``.
+        Each feature is independent (own histogram/AUC), so this parallelizes
+        across CPU cores via ``multiprocessing`` (not threads: GIL blocks the
+        numpy histogram/AUC compute from using multiple cores under threading).
     """
-    from sklearn.metrics import roc_auc_score
-
     outdir.mkdir(parents=True, exist_ok=True)
-    rows: list[dict] = []
 
     y_i = np.asarray(y, dtype="i4")
     w_f = np.maximum(np.asarray(w, dtype="f8"), 0.0)
@@ -311,73 +388,33 @@ def _compute_feature_significance(
     else:
         z_counting_syst = z_counting_stat
 
-    for feat in features:
-        x = np.asarray(X_df[feat].to_numpy(), dtype="f8")
-        m_all = np.isfinite(x)
-        x = x[m_all]
-        yy = y_i[m_all]
-        ww = w_f[m_all]
+    if num_workers is None:
+        num_workers = int(os.environ.get("DNN_SIGNIF_WORKERS", max(1, (os.cpu_count() or 1))))
+    num_workers = max(1, min(int(num_workers), len(features)))
 
-        if x.size == 0:
-            rows.append(
-                {
-                    "feature": feat,
-                    "source": (source_map or {}).get(feat, "unknown"),
-                    "auc": float("nan"),
-                    "asimov_z": 0.0,
-                    "asimov_z_syst": 0.0,
-                    "delta_z": 0.0,
-                    "delta_z_syst": 0.0,
-                }
-            )
-            continue
-
-        x_sig = x[yy == 1]
-        x_bkg = x[yy == 0]
-        w_sig = ww[yy == 1]
-        w_bkg = ww[yy == 0]
-
-        if x_sig.size == 0 or x_bkg.size == 0 or np.sum(w_sig) <= 0.0 or np.sum(w_bkg) <= 0.0:
-            rows.append(
-                {
-                    "feature": feat,
-                    "source": (source_map or {}).get(feat, "unknown"),
-                    "auc": float("nan"),
-                    "asimov_z": 0.0,
-                    "asimov_z_syst": 0.0,
-                    "delta_z": 0.0,
-                    "delta_z_syst": 0.0,
-                }
-            )
-            continue
-
-        qlo, qhi = _weighted_percentile(x, ww, np.array([0.01, 0.99], dtype="f8"))
-        lo = float(np.nanmin(x) if not np.isfinite(qlo) else qlo)
-        hi = float(np.nanmax(x) if not np.isfinite(qhi) else qhi)
-        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-            lo = float(np.nanmin(x))
-            hi = float(np.nanmax(x))
-        if hi <= lo:
-            hi = lo + 1.0
-
-        edges = np.linspace(lo, hi, int(n_bins) + 1, dtype="f8")
-        hs, _ = np.histogram(x_sig, bins=edges, weights=w_sig)
-        hb, _ = np.histogram(x_bkg, bins=edges, weights=w_bkg)
-        z = _asimov_significance_from_hist(hs, hb)
-        z_syst = _asimov_significance_from_hist_syst(hs, hb, float(sig_syst))
-
-        auc = float(roc_auc_score(yy, x, sample_weight=ww))
-        rows.append(
-            {
-                "feature": feat,
-                "source": (source_map or {}).get(feat, "unknown"),
-                "auc": auc,
-                "asimov_z": z,
-                "asimov_z_syst": z_syst,
-                "delta_z": z - z_counting_stat,
-                "delta_z_syst": z_syst - z_counting_syst,
-            }
+    tasks = [
+        (
+            feat,
+            np.asarray(X_df[feat].to_numpy(), dtype="f8"),
+            y_i,
+            w_f,
+            (source_map or {}).get(feat, "unknown"),
+            n_bins,
+            sig_syst,
+            z_counting_stat,
+            z_counting_syst,
         )
+        for feat in features
+    ]
+
+    if num_workers > 1:
+        import multiprocessing as mp
+
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=num_workers) as pool:
+            rows = pool.map(_significance_worker, tasks)
+    else:
+        rows = [_significance_one_feature(*t) for t in tasks]
 
     # Sort by syst-aware Z when available, else pure stat Z
     sort_key = "asimov_z_syst" if float(sig_syst) > 0.0 else "asimov_z"
@@ -416,14 +453,14 @@ def _compute_feature_significance(
         _draw_feature_bars(ax2, vals_syst, f"Asimov Z ({syst_label})",
                            f"Per-feature significance ({syst_label})", "#d62728")
         fig.tight_layout()
-        fig.savefig(outdir / "feature_significance.png", dpi=160)
+        fig.savefig(outdir / "feature_significance.png", dpi=300)
         plt.close(fig)
     else:
         fig, ax = plt.subplots(1, 1, figsize=(max(12, 0.7 * len(labels)), 5.5))
         _draw_feature_bars(ax, vals_stat, "Asimov Z (pure stat)",
                            "Per-feature significance (pure statistical)")
         fig.tight_layout()
-        fig.savefig(outdir / "feature_significance.png", dpi=160)
+        fig.savefig(outdir / "feature_significance.png", dpi=300)
         plt.close(fig)
 
     # ---- Delta-Z plot(s) (counting baseline S/√B subtracted) ----
@@ -438,7 +475,7 @@ def _compute_feature_significance(
                            "#d62728")
         ax2.axhline(y=0, color="gray", linewidth=0.8, linestyle="--")
         fig.tight_layout()
-        fig.savefig(outdir / "feature_significance_delta.png", dpi=160)
+        fig.savefig(outdir / "feature_significance_delta.png", dpi=300)
         plt.close(fig)
     else:
         fig, ax = plt.subplots(1, 1, figsize=(max(12, 0.7 * len(labels)), 5.5))
@@ -446,7 +483,7 @@ def _compute_feature_significance(
                            f"Effective significance\nbaseline = counting S/\u221aB = {z_counting_stat:.2f}\u03c3")
         ax.axhline(y=0, color="gray", linewidth=0.8, linestyle="--")
         fig.tight_layout()
-        fig.savefig(outdir / "feature_significance_delta.png", dpi=160)
+        fig.savefig(outdir / "feature_significance_delta.png", dpi=300)
         plt.close(fig)
 
     return rows
@@ -495,7 +532,7 @@ def _plot_score_distribution(
     plt.legend(loc="best")
     plt.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path, dpi=160)
+    plt.savefig(out_path, dpi=300)
     plt.close()
 
 
@@ -1250,7 +1287,7 @@ def main():
     plt.title(f"ROC Train vs Test ({region})")
     plt.legend(loc="lower right")
     plt.tight_layout()
-    plt.savefig(plot_dir / "roc_train_vs_test.png", dpi=160)
+    plt.savefig(plot_dir / "roc_train_vs_test.png", dpi=300)
     plt.close()
 
     _plot_score_distribution(
@@ -1339,7 +1376,7 @@ def main():
     plt.grid(alpha=0.25)
     plt.legend(loc="best")
     plt.tight_layout()
-    plt.savefig(plot_dir / "loss_curve.png", dpi=160)
+    plt.savefig(plot_dir / "loss_curve.png", dpi=300)
     plt.close()
 
     plt.figure(figsize=(7, 5))
@@ -1349,7 +1386,7 @@ def main():
     plt.title(f"Validation AUC vs Epoch ({region})")
     plt.grid(alpha=0.25)
     plt.tight_layout()
-    plt.savefig(plot_dir / "auc_curve.png", dpi=160)
+    plt.savefig(plot_dir / "auc_curve.png", dpi=300)
     plt.close()
 
     print(f"[OK] Trained DNN model. AUC(val)={auc_val:.4f}, AUC(test)={auc_test:.4f}, AUC(train)={auc_train:.4f}")

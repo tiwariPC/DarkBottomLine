@@ -356,14 +356,15 @@ class TestHistogramAndSumw2:
         assert hv[1] == pytest.approx(1.0 * scale)
 
     def test_sentinel_values_excluded(self):
-        # _clip_overflow clips sentinel -9.0 to bins[0]=0 → lands in bin 0.
+        # _clip_overflow clips sentinel to bins[0]=0 → lands in bin 0.
         # Test by using a bin range that starts above 0 so sentinels truly stay out.
         # Use _apply_variable_plot_filter which strips sentinels before histogramming.
-        vals_with_sentinel = np.array([-9.0, -9.0, 30., 40.])
+        from darkbottomline.objects import SENTINEL
+        from darkbottomline.plotting import _apply_variable_plot_filter
+        vals_with_sentinel = np.array([SENTINEL, SENTINEL, 30., 40.])
         vals_clean         = np.array([30., 40.])
         bins = np.array([0., 50., 100.])
         # After _apply_variable_plot_filter, sentinel is stripped
-        from darkbottomline.plotting import _apply_variable_plot_filter
         filtered = _apply_variable_plot_filter("some_var", vals_with_sentinel)
         np.testing.assert_array_equal(filtered, vals_clean)
 

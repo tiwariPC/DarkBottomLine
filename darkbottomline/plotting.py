@@ -4,6 +4,7 @@ Data/MC plotting module for DarkBottomLine framework.
 
 import copy
 import math
+import re
 from collections import Counter
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend for batch mode
@@ -36,7 +37,7 @@ from utils.plot_utils import (
 # Sentinel & histogram utilities (used by create_stacked_plots)
 # ---------------------------------------------------------------------------
 
-_SENTINEL = -9.0
+from .objects import SENTINEL as _SENTINEL
 
 # Pseudo-variables: plotted like a normal variable but sourced from a different
 # branch and/or weighted by a different weight branch. Used for cross-check plots
@@ -373,6 +374,42 @@ def _get_legend_label(name: str) -> str:
     return cfg["label"] if cfg else name
 
 
+def _plot_stacked_variable_worker(args: tuple) -> tuple:
+    """Draw + save one (region, variable) stacked plot. Module-level so it's
+    picklable as a multiprocessing worker target — each call's inputs are
+    plain arrays/scalars already aggregated by the caller, independent of
+    every other (region, variable) task."""
+    (config, kwargs, region, var) = args
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
+    pm = PlotManager(config)
+    files = pm._plot_stacked_variable(**kwargs)
+    return region, var, files
+
+
+def _plot_one_region_worker(args: tuple) -> tuple:
+    """Produce all plots (individual-variable + grouped) for a single region.
+    Module-level (picklable) multiprocessing worker target — reconstructs a
+    fresh PlotManager from config in each process rather than sharing a live
+    instance, since PlotManager mutates self mid-call (_regions_config_path
+    etc.) and matplotlib figures aren't picklable across process boundaries."""
+    (config, results, region, output_dir, show_data, version, formats, hist_scale) = args
+    # Avoid N worker processes each spawning their own BLAS thread pool.
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
+    pm = PlotManager(config)
+    individual_plots = pm._create_individual_variable_plots(
+        results, region, output_dir, show_data, version, formats,
+        hist_scale=hist_scale,
+    )
+    grouped_plots = pm._create_region_plots_single(
+        results, region, Path(output_dir), show_data, version, output_dir
+    )
+    return region, {**individual_plots, **grouped_plots}
+
+
 class PlotManager:
     """
     Manager for creating data/MC plots with region comparisons.
@@ -518,6 +555,12 @@ class PlotManager:
             cts_spec = self._variable_bins_cfg.get("costheta_star")
             if cts_spec:
                 return np.array(cts_spec["edges"], dtype=float)
+        if name.startswith("ml_score_mh3_"):
+            ml_spec = self._variable_bins_cfg.get("ml_score")
+            if ml_spec:
+                if "edges" in ml_spec:
+                    return np.array(ml_spec["edges"], dtype=float)
+                return np.linspace(float(ml_spec["low"]), float(ml_spec["high"]), int(ml_spec["n"]))
         return None
 
     def create_stacked_plot_from_files(
@@ -1373,6 +1416,10 @@ class PlotManager:
         show_data: bool = False,
         signal_scale: float = 1.0,
         make_syst_plots: bool = False,
+        apply_dnn: bool = False,
+        dnn_model: Optional[str] = None,
+        dnn_config: Optional[str] = None,
+        dnn_mass_scan: Optional[str] = None,
     ) -> List[str]:
         """Create stacked MC+data plots.
 
@@ -1446,6 +1493,10 @@ class PlotManager:
                 show_data=show_data,
                 signal_scale=signal_scale,
                 make_syst_plots=make_syst_plots,
+                apply_dnn=apply_dnn,
+                dnn_model=dnn_model,
+                dnn_config=dnn_config,
+                dnn_mass_scan=dnn_mass_scan,
             ))
         return created
 
@@ -1905,6 +1956,7 @@ class PlotManager:
 
         created: List[str] = []
         skipped_region_var = []
+        plot_tasks: List[tuple] = []
         logging.info("Regions to process: %d (%s)", len(all_regions), ', '.join(all_regions[:5]) + ('...' if len(all_regions) > 5 else ''))
         for region in all_regions:
             all_vars_set: set = set()
@@ -1964,18 +2016,37 @@ class PlotManager:
 
                 data_hist = _data_hist_for_region(region, var)
                 data_sum = float(np.sum(data_hist)) if data_hist is not None else 0
-                logging.info("Plotting %s/%s: bins=%d, bkg_rows=%d, total_mc=%.3f, data_sum=%.1f, procs=%s",
+                logging.info("Queuing %s/%s: bins=%d, bkg_rows=%d, total_mc=%.3f, data_sum=%.1f, procs=%s",
                              region, var, len(bins_ref) - 1, len(bkg_rows),
                              float(np.sum(total_mc)), data_sum, ', '.join(procs_with_data))
 
-                files = self._plot_stacked_variable(
+                plot_kwargs = dict(
                     variable=var, bins=bins_ref,
                     background_rows=bkg_rows, data_ndarray=data_hist,
                     output_dir=output_dir, luminosity=luminosity, year=year,
                     region=region, version=version, save_root=save_root,
                 )
-                created.extend(files)
-                logging.info("Created region plot: %s / %s -> %d files", region, var, len(files))
+                plot_tasks.append((self.config, plot_kwargs, region, var))
+
+        # Each (region, var) draw+save is independent — parallelize across
+        # CPU cores via multiprocessing (matplotlib draw + numpy hist math is
+        # CPU-bound, so threading would just serialize on the GIL).
+        num_workers = int(os.environ.get("PLOT_NUM_WORKERS", max(1, (os.cpu_count() or 1))))
+        num_workers = max(1, min(num_workers, len(plot_tasks)))
+
+        if num_workers > 1 and len(plot_tasks) > 1:
+            import multiprocessing as mp
+
+            logging.info(f"Plotting {len(plot_tasks)} region/variable combos with {num_workers} worker processes")
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=num_workers) as pool:
+                task_results = pool.map(_plot_stacked_variable_worker, plot_tasks)
+        else:
+            task_results = [_plot_stacked_variable_worker(t) for t in plot_tasks]
+
+        for region, var, files in task_results:
+            created.extend(files)
+            logging.info("Created region plot: %s / %s -> %d files", region, var, len(files))
 
         if skipped_region_var:
             logging.warning("Skipped %d region/var combos: %s",
@@ -2003,6 +2074,10 @@ class PlotManager:
         show_data: bool = False,
         signal_scale: float = 1.0,
         make_syst_plots: bool = False,
+        apply_dnn: bool = False,
+        dnn_model: Optional[str] = None,
+        dnn_config: Optional[str] = None,
+        dnn_mass_scan: Optional[str] = None,
     ) -> List[str]:
         """Load event-selected ROOT/PKL files, apply region cuts in-memory, produce stacked region plots.
 
@@ -2028,6 +2103,42 @@ class PlotManager:
         target_regions: List[str] = regions or all_region_names
 
         weight_branch = weight_systematic or "full_event_weight"
+
+        # ---- DNN scoring setup (shared model instance across all files) ----
+        _dnn_inference = None
+        _dnn_mass_scan_resolved: Optional[List[Tuple[float, float]]] = None
+        if apply_dnn and dnn_model:
+            from .dnn_inference import DNNInference, _mass_branch_name, _resolve_mass_scan
+
+            _dnn_inference = DNNInference(dnn_model, config_path=dnn_config)
+            _dnn_mass_scan_resolved = _resolve_mass_scan(dnn_mass_scan, _dnn_inference)
+            logging.info("DNN scoring enabled for region-from-events plots: model=%s, mass_scan=%s",
+                        dnn_model, _dnn_mass_scan_resolved)
+
+        def _score_tree_with_dnn(tree) -> Dict[str, np.ndarray]:
+            """Score an uproot Events tree with the shared DNN model; returns {branch: scores}.
+
+            Uses build_feature_frame_from_tree (via DNNInference.extract_features) so
+            raw-branch aliasing (MET -> MET_pt, METPhi -> MET_phi, ...) and derived
+            features (e.g. rJet1PtMET = Jet1Pt/MET) are resolved identically to
+            training and the apply-dnn CLI command, instead of a flat name lookup.
+
+            None mass_scan (default) -> single {"ml_score": ...} at the benchmark
+            masspoint (masses=None lets DNNInference default to mass_grid[0] for
+            parametric models; no-op for non-parametric models). Otherwise one
+            {"ml_score_mh3_<a>_mh4_<b>": ...} per scanned point.
+            """
+            X = _dnn_inference.extract_features(tree)
+            n = X.shape[0]
+            if _dnn_mass_scan_resolved is None:
+                scores = _dnn_inference.predict(X, None).ravel()
+                return {"ml_score": scores.astype("f4")}
+            out: Dict[str, np.ndarray] = {}
+            for mh3, mh4 in _dnn_mass_scan_resolved:
+                masses = np.tile(np.asarray([mh3, mh4], dtype="f8"), (n, 1))
+                scores = _dnn_inference.predict(X, masses).ravel()
+                out[_mass_branch_name("ml_score", mh3, mh4)] = scores.astype("f4")
+            return out
 
         # ---- helpers ----
 
@@ -2118,6 +2229,11 @@ class PlotManager:
                             ', '.join(f"{n}({r[:40]})" for n, r in skipped_branches[:5])
                             + ('...' if len(skipped_branches) > 5 else '')
                         )
+                    if _dnn_inference is not None and branches:
+                        try:
+                            branches.update(_score_tree_with_dnn(tree))
+                        except Exception as _dnn_err:
+                            logging.warning("DNN scoring failed for %s: %s", path.name, _dnn_err)
                     return {"branches": branches, "wte": wte}
             except Exception as exc:
                 logging.warning("Could not load %s: %s", path.name, exc)
@@ -2134,6 +2250,11 @@ class PlotManager:
                     if isinstance(v, (np.ndarray, list)):
                         branches[k] = np.asarray(v)
                 wte = float(d.get("weighted_total_events", 0.0))
+                if _dnn_inference is not None and branches:
+                    logging.warning(
+                        "DNN scoring requested but %s is a PKL file (no Events tree available "
+                        "for alias/derived-feature resolution) — ml_score not added", path.name
+                    )
                 return {"branches": branches, "wte": wte}
             except Exception as exc:
                 logging.warning("Could not load %s: %s", path.name, exc)
@@ -2260,6 +2381,7 @@ class PlotManager:
         # ---- per-region processing ----
         created: List[str] = []
         skipped_region_var = []
+        events_plot_tasks: List[tuple] = []
         logging.info("Regions to process: %d (%s)", len(target_regions),
                      ', '.join(target_regions[:5]) + ('...' if len(target_regions) > 5 else ''))
 
@@ -2288,6 +2410,14 @@ class PlotManager:
             _whitelist = (self.common_variables
                           + list(self.region_variables.get(region_name) or
                                  next((v for k, v in self.region_variables.items() if k in region_name), []) or []))
+            if _dnn_mass_scan_resolved is not None:
+                # Mass-scan mode: "ml_score" was never written as a branch (only
+                # ml_score_mh3_<a>_mh4_<b> variants were) and regions.py's generic
+                # fallback would otherwise silently return an all-zeros array for
+                # it (treating it as a legitimate-but-missing derived variable) —
+                # drop the literal whitelist entry so only the real scan branches
+                # (already in candidate_vars) get expanded/plotted.
+                _whitelist = [v for v in _whitelist if v != "ml_score"]
             candidate_vars = list(dict.fromkeys(list(candidate_vars) + _whitelist))
             var_list = self._get_allowed_variables_for_region(region_name, candidate_vars)
             logging.info("Region '%s': candidate_vars=%d, after filtering=%d",
@@ -2369,9 +2499,9 @@ class PlotManager:
                                         _arr = _derived.astype(float)
                                     else:
                                         _arr = np.asarray(_ak.to_numpy(
-                                            _ak.fill_none(_ak.Array(_derived), -9.0)
+                                            _ak.fill_none(_ak.Array(_derived), _SENTINEL)
                                             if not isinstance(_derived, _ak.Array)
-                                            else _ak.fill_none(_derived, -9.0)
+                                            else _ak.fill_none(_derived, _SENTINEL)
                                         ), dtype=float)
                                     if _arr.ndim == 1 and len(_arr) == len(mask_np):
                                         vals_raw = _arr
@@ -2473,7 +2603,7 @@ class PlotManager:
                                     if _derived is not None:
                                         _dvals_raw = np.asarray(_ak.to_numpy(
                                             _ak.fill_none(_derived if isinstance(_derived, _ak.Array)
-                                                          else _ak.Array(_derived), -9.0)
+                                                          else _ak.Array(_derived), _SENTINEL)
                                         ), dtype=float)
                                         if _dvals_raw.ndim != 1 or len(_dvals_raw) != len(mask_d_np):
                                             _dvals_raw = None
@@ -2595,18 +2725,38 @@ class PlotManager:
                              "blinded" if (_is_sr and not show_data) else (f"sum={float(np.sum(data_hist)):.1f}" if data_hist is not None else "none"),
                              len(sig_rows_for_plot))
 
-                files = self._plot_stacked_variable(
+                plot_kwargs = dict(
                     variable=var, bins=bins_ref,
                     background_rows=bkg_rows, data_ndarray=data_hist,
                     output_dir=output_dir, luminosity=luminosity, year=year,
                     region=region_name, version=version, save_root=False,
                     signal_rows=sig_rows_for_plot if sig_rows_for_plot else None,
                 )
-                created.extend(files)
-                logging.info("Created region-from-events plot: %s / %s%s -> %d files",
-                             region_name, var, syst_label, len(files))
+                events_plot_tasks.append((self.config, plot_kwargs, region_name, f"{var}{syst_label}"))
 
         # ---- systematic ROOT files (weight systs + kinematic JES/JER) ----
+        # Nominal (region, var) draw+save calls are independent of each other —
+        # aggregation above needed the live _entry_cache/awkward arrays (main
+        # process only), but by this point each task carries just plain
+        # arrays/scalars, so dispatch the draw+save step across CPU cores.
+        num_workers = int(os.environ.get("PLOT_NUM_WORKERS", max(1, (os.cpu_count() or 1))))
+        num_workers = max(1, min(num_workers, len(events_plot_tasks)))
+
+        if num_workers > 1 and len(events_plot_tasks) > 1:
+            import multiprocessing as mp
+
+            logging.info(f"Plotting {len(events_plot_tasks)} region/variable combos with {num_workers} worker processes")
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=num_workers) as pool:
+                events_task_results = pool.map(_plot_stacked_variable_worker, events_plot_tasks)
+        else:
+            events_task_results = [_plot_stacked_variable_worker(t) for t in events_plot_tasks]
+
+        for region_name, var_label, files in events_task_results:
+            created.extend(files)
+            logging.info("Created region-from-events plot: %s / %s -> %d files",
+                         region_name, var_label, len(files))
+
         if self.systematic_variables and not weight_systematic:
             try:
                 import uproot as _up_syst
@@ -3476,23 +3626,30 @@ class PlotManager:
             hist_scale = 1.0
             logging.warning("weighted_total_events=0 in metadata — histograms shown unnormalised")
 
-        for region in regions:
-            logging.info(f"Creating plots for region {region}")
+        # Each region's plots (individual-variable + grouped) are independent
+        # of every other region's — read-only config, own histogram slice,
+        # own output files. Parallelize across CPU cores via multiprocessing
+        # (not threading: matplotlib draw + hist fill are CPU-bound, GIL would
+        # serialize them under threads). Override with PLOT_NUM_WORKERS env.
+        num_workers = int(os.environ.get("PLOT_NUM_WORKERS", max(1, (os.cpu_count() or 1))))
+        num_workers = max(1, min(num_workers, len(regions)))
 
-            # Create individual variable plots - one plot per variable
-            individual_plots = self._create_individual_variable_plots(
-                results, region, output_dir, show_data, version, formats,
-                hist_scale=hist_scale,
-            )
+        tasks = [
+            (self.config, results, region, output_dir, show_data, version, formats, hist_scale)
+            for region in regions
+        ]
 
-            # Also create grouped plots (kinematic, multiplicity, dnn, region_comparison)
-            output_path = Path(output_dir)
-            grouped_plots = self._create_region_plots_single(
-                results, region, output_path, show_data, version, output_dir
-            )
+        if num_workers > 1 and len(regions) > 1:
+            import multiprocessing as mp
 
-            # Combine both types of plots
-            all_region_plots = {**individual_plots, **grouped_plots}
+            logging.info(f"Creating region plots with {num_workers} worker processes")
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=num_workers) as pool:
+                task_results = pool.map(_plot_one_region_worker, tasks)
+        else:
+            task_results = [_plot_one_region_worker(t) for t in tasks]
+
+        for region, all_region_plots in task_results:
             plot_files[region] = all_region_plots
 
         return plot_files
@@ -3611,7 +3768,16 @@ class PlotManager:
                     seen.add(v)
                     unique.append(v)
             present = set(all_vars)
-            return [v for v in unique if v in present]
+            out: List[str] = []
+            for v in unique:
+                if v in present:
+                    out.append(v)
+                elif v == "ml_score":
+                    # Parametric mass-scan branches (ml_score_mh3_<a>_mh4_<b>) aren't
+                    # literally "ml_score" — expand the whitelist entry to every
+                    # matching scored variable present in this region's candidates.
+                    out.extend(sorted(x for x in all_vars if x.startswith("ml_score_mh3_")))
+            return out
 
         return list(all_vars)
 
@@ -3800,6 +3966,13 @@ class PlotManager:
         """Get a formatted label for a variable name."""
         if var_name in self.variable_labels:
             return self.variable_labels[var_name]
+        if var_name.startswith("ml_score_mh3_"):
+            m = re.match(r"ml_score_mh3_([\d.p]+)_mh4_([\d.p]+)$", var_name)
+            if m:
+                mh3 = m.group(1).replace("p", ".")
+                mh4 = m.group(2).replace("p", ".")
+                base = self.variable_labels.get("ml_score", "DNN score")
+                return f"{base} (MH3={mh3}, MH4={mh4})"
         return var_name.replace('_', ' ').title()
 
     def _create_region_plots_single(self, results: Dict[str, Any], region: str,

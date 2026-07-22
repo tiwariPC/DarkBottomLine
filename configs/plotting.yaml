@@ -37,6 +37,7 @@ common_variables:
   - njets
   - PV_npvsGood
   - PV_npvsGood_noPU
+  - ml_score
 
 # Per-region variable whitelists (region-specific additions to common_variables above).
 # Final plot list = common_variables + entries here for the matched region.

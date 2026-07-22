@@ -7,7 +7,7 @@ import numpy as np
 from typing import Dict, Any, Optional, Union
 import logging
 
-SENTINEL = -9.0
+from darkbottomline.objects import SENTINEL
 
 try:
     import hist

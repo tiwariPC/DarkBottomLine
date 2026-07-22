@@ -38,10 +38,16 @@ def _dphi(phi1, phi2):
 
 
 def _4vec(pt, eta, phi, m):
-    """Build Cartesian 4-vector from (pt, eta, phi, mass)."""
+    """Build Cartesian 4-vector from (pt, eta, phi, mass).
+
+    eta is clipped before sinh() so sentinel-filled inputs (e.g. eta=SENTINEL
+    for a missing jet) can't overflow float — callers mask the result out via
+    the has_Nj flags regardless, this just keeps the intermediate finite.
+    """
+    eta_safe = np.clip(eta, -20.0, 20.0)
     px = pt * np.cos(phi)
     py = pt * np.sin(phi)
-    pz = pt * np.sinh(eta)
+    pz = pt * np.sinh(eta_safe)
     e  = np.sqrt(px**2 + py**2 + pz**2 + np.maximum(m, 0.0)**2)
     return px, py, pz, e
 
@@ -527,10 +533,15 @@ def compute_event_variables(
     out['dPhi_jetMET'] = _dphi_jet_met(objects, met_vars['MET_phi'])
 
     # --- Derived topological variables (same as dnn/feature_engineering.py) ---
+    # SENTINEL-in -> SENTINEL-out: dPhiJet12 is SENTINEL whenever there's no
+    # 2nd jet, so arithmetic on it (e.g. dphi_jmet + dphi_j12 - pi) would
+    # otherwise produce a large-but-finite non-SENTINEL number that downstream
+    # sentinel masking (exact == SENTINEL) can't catch.
     dphi_jmet = out.get('dPhi_jetMET', np.zeros(n_ev, dtype=np.float32))
     dphi_j12  = out.get('dPhiJet12',  np.zeros(n_ev, dtype=np.float32))
-    out['del_plus']  = np.abs(dphi_jmet + dphi_j12 - np.pi).astype(np.float32)
-    out['del_minus'] = (dphi_jmet - dphi_j12).astype(np.float32)
+    _del_valid = (dphi_jmet != SENTINEL) & (dphi_j12 != SENTINEL)
+    out['del_plus']  = np.where(_del_valid, np.abs(dphi_jmet + dphi_j12 - np.pi), SENTINEL).astype(np.float32)
+    out['del_minus'] = np.where(_del_valid, dphi_jmet - dphi_j12, SENTINEL).astype(np.float32)
 
     # --- Leading lepton scalar branches (needed for MT/Mll in CR cuts) ---
     for lep_key, prefix in (('muons', 'muon'), ('electrons', 'electron')):

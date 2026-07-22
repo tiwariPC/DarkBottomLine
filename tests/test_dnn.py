@@ -53,7 +53,7 @@ class TestParametricDNN:
         batch_size = 32
         n_features = 10
         features = torch.randn(batch_size, n_features)
-        masses = torch.randn(batch_size)
+        masses = torch.randn(batch_size, 2)  # (MH3, MH4)
 
         # Forward pass
         output = model(features, masses)
@@ -240,7 +240,7 @@ class TestDNNTrainer:
         n_samples = 50
         features = torch.randn(n_samples, 10)
         labels = torch.randint(0, 2, (n_samples,)).float()
-        masses = torch.randn(n_samples)
+        masses = torch.randn(n_samples, 2)  # (MH3, MH4)
 
         # Evaluate model
         metrics = trainer.evaluate(features, labels, masses)
@@ -289,7 +289,7 @@ class TestDNNTrainer:
         # Create mock data
         n_samples = 20
         features = np.random.randn(n_samples, 10)
-        masses = np.random.uniform(1000, 2000, n_samples)
+        masses = np.random.uniform(1000, 2000, (n_samples, 2))  # (MH3, MH4)
 
         # Make predictions
         predictions = trainer.predict(features, masses)
