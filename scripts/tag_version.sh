@@ -32,12 +32,8 @@ git add "$VERSION_FILE"
 
 BODY_MSG_FILE=$(mktemp)
 trap 'rm -f "$BODY_MSG_FILE"' EXIT
-cat > "$BODY_MSG_FILE" <<EOF
-# Optional commit body — appended below "chore(version): bump to ${GIT_TAG}".
-# Lines starting with '#' are ignored. Save + quit empty to skip.
-EOF
 "${EDITOR:-vi}" "$BODY_MSG_FILE"
-BODY_MSG=$(grep -v '^#' "$BODY_MSG_FILE" | awk 'NF{p=1} p')
+BODY_MSG=$(cat "$BODY_MSG_FILE")
 
 if [[ -n "$BODY_MSG" ]]; then
     git commit -m "chore(version): bump to ${GIT_TAG}" -m "$BODY_MSG"
