@@ -29,16 +29,27 @@ echo "Updated _version.py"
 
 # Commit version bump (after tag — tag stays on feature commit)
 git add "$VERSION_FILE"
-git commit -m "chore(version): bump to ${GIT_TAG}"
+read -rp "Commit message (optional, appended as body — Enter to skip): " BODY_MSG
+if [[ -n "$BODY_MSG" ]]; then
+    git commit -m "chore(version): bump to ${GIT_TAG}" -m "$BODY_MSG"
+else
+    git commit -m "chore(version): bump to ${GIT_TAG}"
+fi
 
 # Push commit + tag + GitHub release
 read -rp "Push to origin and create GitHub release? [y/N] " confirm
 if [[ "$confirm" =~ ^[Yy]$ ]]; then
     git push origin HEAD
     git push origin "$GIT_TAG"
+    RELEASE_NOTES="Release ${GIT_TAG}"
+    if [[ -n "$BODY_MSG" ]]; then
+        RELEASE_NOTES="${RELEASE_NOTES}
+
+${BODY_MSG}"
+    fi
     gh release create "$GIT_TAG" \
         --title "$GIT_TAG" \
-        --notes "Release ${GIT_TAG}" \
+        --notes "$RELEASE_NOTES" \
         --target "$(git rev-parse ${GIT_TAG}^{})"
     echo "GitHub release created: $GIT_TAG"
 else
