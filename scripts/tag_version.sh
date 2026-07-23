@@ -29,17 +29,50 @@ echo "Updated _version.py"
 
 # Commit version bump (after tag — tag stays on feature commit)
 git add "$VERSION_FILE"
-git commit -m "chore(version): bump to ${GIT_TAG}"
+
+BODY_MSG_FILE=$(mktemp)
+trap 'rm -f "$BODY_MSG_FILE"' EXIT
+"${EDITOR:-vi}" "$BODY_MSG_FILE"
+BODY_MSG=$(cat "$BODY_MSG_FILE")
+
+if [[ -n "$BODY_MSG" ]]; then
+    git commit -m "chore(version): bump to ${GIT_TAG}" -m "$BODY_MSG"
+else
+    git commit -m "chore(version): bump to ${GIT_TAG}"
+fi
 
 # Push commit + tag + GitHub release
 read -rp "Push to origin and create GitHub release? [y/N] " confirm
 if [[ "$confirm" =~ ^[Yy]$ ]]; then
     git push origin HEAD
     git push origin "$GIT_TAG"
+
+    # Previous tag (most recent tag before this one) — commit log between it
+    # and this tag's target commit becomes the auto-generated changelog.
+    PREV_TAG=$(git tag --sort=-creatordate | grep -v "^${GIT_TAG}$" | head -1)
+    TARGET_SHA="$(git rev-parse ${GIT_TAG}^{})"
+    if [[ -n "$PREV_TAG" ]]; then
+        CHANGELOG=$(git log "${PREV_TAG}..${TARGET_SHA}" --pretty=format:'- %s' --no-merges)
+    else
+        CHANGELOG=$(git log "${TARGET_SHA}" --pretty=format:'- %s' --no-merges)
+    fi
+
+    RELEASE_NOTES="Release ${GIT_TAG}"
+    if [[ -n "$BODY_MSG" ]]; then
+        RELEASE_NOTES="${RELEASE_NOTES}
+
+${BODY_MSG}"
+    fi
+    if [[ -n "$CHANGELOG" ]]; then
+        RELEASE_NOTES="${RELEASE_NOTES}
+
+## Changes since ${PREV_TAG:-start}
+${CHANGELOG}"
+    fi
     gh release create "$GIT_TAG" \
         --title "$GIT_TAG" \
-        --notes "Release ${GIT_TAG}" \
-        --target "$(git rev-parse ${GIT_TAG}^{})"
+        --notes "$RELEASE_NOTES" \
+        --target "$TARGET_SHA"
     echo "GitHub release created: $GIT_TAG"
 else
     echo "Skipped. Run manually:"

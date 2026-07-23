@@ -26,15 +26,21 @@ def _build_event_cut_masks(
     """Build per-cut masks in the canonical selection order (trigger first)."""
     selection = config["event_selection"]
 
-    # --- Trigger (OR of all trigger types) ---
-    combined_trigger_mask = ak.zeros_like(events["event"], dtype=bool)
-    for trigger_paths in config["triggers"].values():
-        if trigger_paths:
-            combined_trigger_mask = combined_trigger_mask | pass_triggers(events, trigger_paths)
-    trigger_cut = combined_trigger_mask
+    # --- Trigger (OR of MET + EGamma; SingleMuon is efficiency-study only) ---
+    # Fastsim signal (BBDM-2HDMa) has no HLT branches — bypass the trigger
+    # requirement rather than dropping every signal event.
+    if config.get("data", {}).get("is_signal", False):
+        trigger_cut = ak.ones_like(events["event"], dtype=bool)
+    else:
+        combined_trigger_mask = ak.zeros_like(events["event"], dtype=bool)
+        for group in ("MET", "EGamma"):
+            trigger_paths = config["triggers"].get(group, [])
+            if trigger_paths:
+                combined_trigger_mask = combined_trigger_mask | pass_triggers(events, trigger_paths)
+        trigger_cut = combined_trigger_mask
 
-    # --- MET filters ---
-    filter_cut = pass_met_filters(events, config["met_filters"])
+    # --- Noise filters ---
+    filter_cut = pass_met_filters(events, config["noise_filters"])
 
     # Count objects per event
     n_muons = ak.num(objects["muons"], axis=1)
@@ -71,7 +77,9 @@ def _build_event_cut_masks(
     delta_phi_min = selection.get("delta_phi_min")
     if delta_phi_min is not None:
         jets = objects.get("jets", ak.Array([]))
-        met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
+        met_phi = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
+        if met_phi is None:
+            raise KeyError("No MET phi branch found (tried PuppiMET_phi, PFMET_phi, MET_phi)")
         if len(ak.flatten(jets)) > 0:
             dphi = np.abs(jets.phi - met_phi)
             dphi = np.where(dphi > np.pi, 2 * np.pi - dphi, dphi)
@@ -85,7 +93,7 @@ def _build_event_cut_masks(
     # Canonical order — trigger & filters first, then object cuts
     masks = {
         "OR Trigger":       trigger_cut,
-        "MET filters":      filter_cut,
+        "Noise filters":    filter_cut,
         "Recoil":           recoil_cut,
         "N_{#mu}":          muon_cut,
         "N_{e}":            electron_cut,

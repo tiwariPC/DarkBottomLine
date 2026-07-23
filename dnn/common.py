@@ -39,12 +39,17 @@ class DatasetSpec:
 def sanitize_feature_frame(df):
     # Local import to keep this module lightweight
     import numpy as np
+    from darkbottomline.objects import SENTINEL
 
     df = df.copy()
     for c in df.columns:
         a = df[c].to_numpy()
         if a.dtype == bool:
             df[c] = a.astype("int8")
-        # Replace non-finite with sentinel
-        df[c] = df[c].replace([np.inf, -np.inf], np.nan).fillna(-9999.0)
+        # Replace non-finite with the framework's missing-value sentinel
+        # (darkbottomline.objects.SENTINEL == -9999.0), the same value
+        # variables.py already fills in for e.g. Jet3Pt when njets<3 or
+        # costheta_star when njets<2 — so this is a no-op passthrough for
+        # sentinel-filled branches, and only normalizes genuine NaN/inf.
+        df[c] = df[c].replace([np.inf, -np.inf], np.nan).fillna(SENTINEL)
     return df

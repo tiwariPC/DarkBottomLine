@@ -347,7 +347,7 @@ def main():
     ax.grid(alpha=0.3)
 
     fig.tight_layout()
-    fig.savefig(outdir / "dnn_significance.png", dpi=160, bbox_inches="tight")
+    fig.savefig(outdir / "dnn_significance.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
 
     print(f"[OK] Wrote: {outdir / 'dnn_significance.json'}")

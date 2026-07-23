@@ -1,255 +1,270 @@
 """
 Unit tests for objects module.
+
+Events are built with FLAT NanoAOD branches (e.g. ``Muon_pt``), matching how the
+processor reads them. Config keys mirror ``configs/{year}.yaml`` (loud KeyError on
+missing keys — no ``.get`` fallbacks in the module). The select_* mask functions
+take a ``wp`` ("loose" | "tight") working point.
 """
 
 import pytest
 import awkward as ak
 import numpy as np
 from darkbottomline.objects import (
-    select_muons, select_electrons, select_taus, select_jets, select_fatjets,
-    clean_jets_from_leptons, get_bjet_mask, build_objects
+    select_muons, select_electrons, select_taus, select_photons, select_jets,
+    clean_jets_from_leptons, get_bjet_mask, build_objects,
 )
 
 
+MU_CFG = {
+    "pt_min": 30.0, "pt_min_loose": 10.0, "eta_max": 2.4,
+    "iso_wp_loose": 1, "iso_wp_tight": 3,
+}
+EL_CFG = {
+    "pt_min": 32.0, "pt_min_loose": 10.0, "eta_max": 2.5,
+    "id_wp_loose": 2, "id_wp_tight": 4,
+}
+TAU_CFG = {
+    "pt_min": 20.0, "eta_max": 2.3,
+    "id_wp_vsjet": 3, "id_wp_vse": 1, "id_wp_vsmu": 1,
+    "decay_modes": [0, 1, 2, 10, 11],
+}
+PHO_CFG = {"pt_min": 15.0, "eta_max": 2.5, "id_wp_loose": 1}
+JET_CFG = {"pt_min": 30.0, "eta_max": 2.5}
+
+
 class TestObjectSelection:
-    """Test object selection functions."""
+    """Test object selection mask functions (flat-branch input, wp working point)."""
 
-    def test_select_muons(self):
-        """Test muon selection."""
-        # Create mock events
+    def test_select_muons_loose(self):
+        # Event 0: [pass, fail-lowpt, pass]; ev1: [pass, fail-eta]; ev2: [pass]
         events = ak.Array({
-            "Muon": {
-                "pt": [[25.0, 15.0, 30.0], [20.0, 10.0], [35.0]],
-                "eta": [[1.0, 2.0, 0.5], [1.5, 3.0], [0.8]],
-                "tightId": [[1, 0, 1], [1, 0], [1]],
-                "pfIsoId": [[3, 2, 3], [3, 1], [3]]
-            }
+            "Muon_pt":     [[25.0, 8.0, 40.0], [15.0, 20.0], [35.0]],
+            "Muon_eta":    [[1.0, 2.0, 0.5],   [1.5, 3.0],    [0.8]],
+            "Muon_looseId":[[1, 1, 1],         [1, 1],        [1]],
+            "Muon_tightId":[[1, 1, 1],         [1, 1],        [1]],
+            "Muon_pfIsoId":[[3, 3, 3],         [3, 3],        [3]],
         })
+        mask = select_muons(events, MU_CFG, wp="loose")
+        # loose pt_min=10, eta_max=2.4, iso>=1, looseId==1
+        assert ak.to_list(ak.sum(mask, axis=1)) == [2, 1, 1]
 
-        config = {
-            "pt_min": 20.0,
-            "eta_max": 2.4,
-            "id": "tight",
-            "iso": "tight"
-        }
-
-        mask = select_muons(events, config)
-
-        # Check that high pt muons are selected
-        assert ak.sum(mask[0]) == 2  # Two muons pass cuts in first event
-        assert ak.sum(mask[1]) == 1  # One muon passes cuts in second event
-        assert ak.sum(mask[2]) == 1  # One muon passes cuts in third event
-
-    def test_select_electrons(self):
-        """Test electron selection."""
-        # Create mock events
+    def test_select_muons_tight_pt_and_iso(self):
+        # tight raises pt_min to 30 and iso to >=3
         events = ak.Array({
-            "Electron": {
-                "pt": [[25.0, 15.0, 30.0], [20.0, 10.0], [35.0]],
-                "eta": [[1.0, 2.0, 0.5], [1.5, 3.0], [0.8]],
-                "cutBased": [[4, 2, 4], [4, 1], [4]],
-                "pfIsoId": [[3, 2, 3], [3, 1], [3]]
-            }
+            "Muon_pt":     [[25.0, 40.0]],   # 25 fails tight pt(30), 40 passes
+            "Muon_eta":    [[1.0, 0.5]],
+            "Muon_looseId":[[1, 1]],
+            "Muon_tightId":[[1, 1]],
+            "Muon_pfIsoId":[[3, 3]],
         })
+        mask = select_muons(events, MU_CFG, wp="tight")
+        assert ak.to_list(mask) == [[False, True]]
 
-        config = {
-            "pt_min": 20.0,
-            "eta_max": 2.5,
-            "id": "tight",
-            "iso": "tight"
-        }
+    def test_select_muons_id_branch_by_wp(self):
+        # tightId=0 but looseId=1: passes loose, fails tight
+        events = ak.Array({
+            "Muon_pt":     [[40.0]],
+            "Muon_eta":    [[0.5]],
+            "Muon_looseId":[[1]],
+            "Muon_tightId":[[0]],
+            "Muon_pfIsoId":[[3]],
+        })
+        assert ak.to_list(select_muons(events, MU_CFG, wp="loose")) == [[True]]
+        assert ak.to_list(select_muons(events, MU_CFG, wp="tight")) == [[False]]
 
-        mask = select_electrons(events, config)
+    def test_select_electrons_loose(self):
+        events = ak.Array({
+            "Electron_pt":          [[25.0, 8.0, 40.0], [15.0, 20.0], [35.0]],
+            "Electron_eta":         [[1.0, 2.0, 0.5],   [1.0, 3.0],   [0.8]],
+            "Electron_cutBased":    [[2, 2, 2],         [2, 2],       [2]],
+            "Electron_mvaIso_WP80": [[1, 1, 1],         [1, 1],       [1]],
+            "Electron_mvaIso_WP90": [[1, 1, 1],         [1, 1],       [1]],
+        })
+        mask = select_electrons(events, EL_CFG, wp="loose")
+        # loose pt_min=10, eta_max=2.5, cutBased>=2, WP90 (ev1: eta 3.0 fails)
+        assert ak.to_list(ak.sum(mask, axis=1)) == [2, 1, 1]
 
-        # Check that high pt electrons are selected
-        assert ak.sum(mask[0]) == 2  # Two electrons pass cuts in first event
-        assert ak.sum(mask[1]) == 1  # One electron passes cuts in second event
-        assert ak.sum(mask[2]) == 1  # One electron passes cuts in third event
+    def test_select_electrons_gap_veto(self):
+        # |eta| in (1.4442, 1.566) is vetoed
+        events = ak.Array({
+            "Electron_pt":          [[40.0, 40.0]],
+            "Electron_eta":         [[1.5, 0.5]],   # 1.5 in gap → veto
+            "Electron_cutBased":    [[4, 4]],
+            "Electron_mvaIso_WP80": [[1, 1]],
+            "Electron_mvaIso_WP90": [[1, 1]],
+        })
+        assert ak.to_list(select_electrons(events, EL_CFG, wp="tight")) == [[False, True]]
+
+    def test_select_electrons_tight_id_iso(self):
+        # tight needs cutBased>=4 and WP80
+        events = ak.Array({
+            "Electron_pt":          [[40.0, 40.0]],
+            "Electron_eta":         [[0.5, 0.7]],
+            "Electron_cutBased":    [[2, 4]],   # first fails tight id
+            "Electron_mvaIso_WP80": [[1, 1]],
+            "Electron_mvaIso_WP90": [[1, 1]],
+        })
+        assert ak.to_list(select_electrons(events, EL_CFG, wp="tight")) == [[False, True]]
 
     def test_select_taus(self):
-        """Test tau selection."""
-        # Create mock events
         events = ak.Array({
-            "Tau": {
-                "pt": [[25.0, 15.0, 30.0], [20.0, 10.0], [35.0]],
-                "eta": [[1.0, 2.0, 0.5], [1.5, 3.0], [0.8]],
-                "idDeepTau2017v2p1VSjet": [[16, 8, 16], [16, 4], [16]],
-                "decayMode": [[0, 1, 2], [0, 10], [1]]
-            }
+            "Tau_pt":                        [[25.0, 15.0, 30.0], [22.0, 10.0], [35.0]],
+            "Tau_eta":                       [[1.0, 2.0, 0.5],    [1.5, 3.0],   [0.8]],
+            "Tau_idDeepTau2018v2p5VSjet":    [[3, 3, 3],          [3, 3],       [3]],
+            "Tau_idDeepTau2018v2p5VSe":      [[1, 1, 1],          [1, 1],       [1]],
+            "Tau_idDeepTau2018v2p5VSmu":     [[1, 1, 1],          [1, 1],       [1]],
+            "Tau_decayMode":                 [[0, 1, 2],          [0, 10],      [1]],
         })
+        mask = select_taus(events, TAU_CFG, wp="loose")
+        # pt_min=20 (ev0: 25,30 pass; 15 fails), eta_max=2.3 (ev1: 3.0 fails)
+        assert ak.to_list(ak.sum(mask, axis=1)) == [2, 1, 1]
 
-        config = {
-            "pt_min": 20.0,
-            "eta_max": 2.3,
-            "id": "tight",
-            "decay_modes": [0, 1, 2, 10, 11]
-        }
+    def test_select_taus_decay_mode_and_id(self):
+        # decayMode not in allowed list → fail; VSjet below WP → fail
+        events = ak.Array({
+            "Tau_pt":                        [[40.0, 40.0, 40.0]],
+            "Tau_eta":                       [[0.5, 0.5, 0.5]],
+            "Tau_idDeepTau2018v2p5VSjet":    [[3, 2, 3]],   # middle below vsjet WP
+            "Tau_idDeepTau2018v2p5VSe":      [[1, 1, 1]],
+            "Tau_idDeepTau2018v2p5VSmu":     [[1, 1, 1]],
+            "Tau_decayMode":                 [[0, 0, 5]],   # last mode 5 not allowed
+        })
+        assert ak.to_list(select_taus(events, TAU_CFG, wp="loose")) == [[True, False, False]]
 
-        mask = select_taus(events, config)
-
-        # Check that high pt taus are selected
-        assert ak.sum(mask[0]) == 2  # Two taus pass cuts in first event
-        assert ak.sum(mask[1]) == 1  # One tau passes cuts in second event
-        assert ak.sum(mask[2]) == 1  # One tau passes cuts in third event
+    def test_select_photons(self):
+        events = ak.Array({
+            "Photon_pt":           [[20.0, 10.0, 30.0], [16.0, 8.0], [40.0]],
+            "Photon_eta":          [[1.0, 2.0, 0.5],    [1.5, 3.0],  [0.8]],
+            "Photon_cutBased":     [[1, 1, 1],          [1, 1],      [1]],
+            "Photon_electronVeto": [[1, 1, 0],          [1, 1],      [1]],
+        })
+        mask = select_photons(events, PHO_CFG)
+        # pt_min=15, eta_max=2.5, cutBased>=1, electronVeto==1
+        # ev0: 20 passes, 10 fails pt, 30 fails electronVeto → 1
+        assert ak.to_list(ak.sum(mask, axis=1)) == [1, 1, 1]
 
     def test_select_jets(self):
-        """Test jet selection."""
-        # Create mock events
         events = ak.Array({
-            "Jet": {
-                "pt": [[35.0, 25.0, 40.0], [30.0, 20.0], [45.0]],
-                "eta": [[1.0, 2.0, 0.5], [1.5, 3.0], [0.8]],
-                "jetId": [[2, 1, 2], [2, 0], [2]]
-            }
+            "Jet_pt":  [[35.0, 25.0, 40.0], [30.0, 20.0], [45.0]],  # pt_min=30 strict >
+            "Jet_eta": [[1.0, 2.0, 0.5],    [1.5, 3.0],   [0.8]],
         })
+        mask = select_jets(events, JET_CFG)
+        # pt>30 (ev0: 35,40 → 25 fails; ev1: 30 fails strict, 20 fails → 0)
+        assert ak.to_list(ak.sum(mask, axis=1)) == [2, 0, 1]
 
-        config = {
-            "pt_min": 30.0,
-            "eta_max": 2.4,
-            "id": "tight"
-        }
 
-        mask = select_jets(events, config)
-
-        # Check that high pt jets are selected
-        assert ak.sum(mask[0]) == 2  # Two jets pass cuts in first event
-        assert ak.sum(mask[1]) == 1  # One jet passes cuts in second event
-        assert ak.sum(mask[2]) == 1  # One jet passes cuts in third event
-
-    def test_select_fatjets(self):
-        """Test fat jet selection."""
-        # Create mock events
-        events = ak.Array({
-            "FatJet": {
-                "pt": [[250.0, 150.0, 300.0], [200.0, 100.0], [350.0]],
-                "eta": [[1.0, 2.0, 0.5], [1.5, 3.0], [0.8]],
-                "jetId": [[2, 1, 2], [2, 0], [2]]
-            }
-        })
-
-        config = {
-            "pt_min": 200.0,
-            "eta_max": 2.4,
-            "id": "tight"
-        }
-
-        mask = select_fatjets(events, config)
-
-        # Check that high pt fat jets are selected
-        assert ak.sum(mask[0]) == 2  # Two fat jets pass cuts in first event
-        assert ak.sum(mask[1]) == 1  # One fat jet passes cuts in second event
-        assert ak.sum(mask[2]) == 1  # One fat jet passes cuts in third event
+class TestJetCleaningAndBtag:
 
     def test_clean_jets_from_leptons(self):
-        """Test jet cleaning from leptons."""
-        # Create mock jets and leptons
-        jets = ak.Array({
-            "pt": [30.0, 35.0, 40.0],
-            "eta": [1.0, 1.5, 2.0],
-            "phi": [0.0, 1.0, 2.0]
+        # jets: 3 per event; lepton overlaps jet 0 (dR~0)
+        # Jets and leptons are jagged list-of-records (var * {field}), as produced
+        # by build_*_collection / the cleaning-objects concatenate in build_objects.
+        jets = ak.zip({
+            "pt":  [[30.0, 35.0, 40.0]],
+            "eta": [[1.0, 1.5, 2.0]],
+            "phi": [[0.0, 1.0, 2.0]],
         })
-
-        leptons = ak.Array({
-            "pt": [25.0, 30.0],
-            "eta": [1.1, 1.6],
-            "phi": [0.1, 1.1]
+        leptons = ak.zip({
+            "eta": [[1.0]],
+            "phi": [[0.0]],   # overlaps jet 0
         })
-
-        # Test cleaning (simplified - actual implementation would calculate Delta-R)
         mask = clean_jets_from_leptons(jets, leptons, dr_min=0.4)
+        assert ak.to_list(mask) == [[False, True, True]]
 
-        # Should return boolean mask
-        assert len(mask) == len(jets)
-        assert all(isinstance(x, bool) for x in mask)
+    def test_clean_jets_empty_leptons(self):
+        jets = ak.zip({"pt": [[30.0, 40.0]], "eta": [[1.0, 2.0]], "phi": [[0.0, 1.0]]})
+        leptons = ak.zip({"eta": [[]], "phi": [[]]})
+        mask = clean_jets_from_leptons(jets, leptons, dr_min=0.4)
+        assert ak.to_list(mask) == [[True, True]]
 
     def test_get_bjet_mask(self):
-        """Test b-jet tagging."""
-        # Create mock jets
-        jets = ak.Array({
-            "pt": [30.0, 35.0, 40.0],
-            "eta": [1.0, 1.5, 2.0],
-            "btagDeepFlavB": [0.1, 0.5, 0.8],
-            "btagDeepB": [0.05, 0.3, 0.7]
+        jets = ak.Array({"btagScore": [[0.1, 0.5, 0.8]]})
+        mask = get_bjet_mask(jets, {"score": 0.2605})
+        assert ak.to_list(mask) == [[False, True, True]]
+
+
+class TestBuildObjects:
+    """End-to-end object building on flat-branch events with a realistic config."""
+
+    def _events(self):
+        return ak.Array({
+            "Muon_pt":     [[35.0, 12.0], [40.0], [8.0]],
+            "Muon_eta":    [[1.0, 0.5],   [0.8],  [0.3]],
+            "Muon_phi":    [[0.0, 1.0],   [0.5],  [1.5]],
+            "Muon_charge": [[1, -1],      [1],    [-1]],
+            "Muon_looseId":[[1, 1],       [1],    [1]],
+            "Muon_tightId":[[1, 0],       [1],    [1]],
+            "Muon_pfIsoId":[[3, 3],       [3],    [3]],
+            "Electron_pt":          [[40.0], [20.0], [45.0]],
+            "Electron_eta":         [[0.9],  [1.8],  [0.4]],
+            "Electron_phi":         [[0.2],  [0.7],  [1.7]],
+            "Electron_charge":      [[1],    [-1],   [1]],
+            "Electron_cutBased":    [[4],    [2],    [4]],
+            "Electron_mvaIso_WP80": [[1],    [1],    [1]],
+            "Electron_mvaIso_WP90": [[1],    [1],    [1]],
+            "Tau_pt":                     [[35.0], [30.0], [45.0]],
+            "Tau_eta":                    [[1.1],  [1.6],  [0.9]],
+            "Tau_phi":                    [[0.1],  [0.6],  [1.6]],
+            "Tau_idDeepTau2018v2p5VSjet": [[3],    [3],    [3]],
+            "Tau_idDeepTau2018v2p5VSe":   [[1],    [1],    [1]],
+            "Tau_idDeepTau2018v2p5VSmu":  [[1],    [1],    [1]],
+            "Tau_decayMode":              [[0],    [1],    [0]],
+            "Jet_pt":          [[80.0, 45.0], [60.0], [90.0]],
+            "Jet_eta":         [[1.0, 2.0],   [1.5],  [0.8]],
+            "Jet_phi":         [[2.5, 1.8],   [2.0],  [2.9]],
+            "Jet_mass":        [[10.0, 8.0],  [9.0],  [12.0]],
+            "Jet_btagPNetB":   [[0.9, 0.1],   [0.5],  [0.8]],
+            "Jet_hadronFlavour":[[5, 0],      [5],    [5]],
+            "Photon_pt":           [[10.0], [20.0], [8.0]],
+            "Photon_eta":          [[1.0],  [1.5],  [0.8]],
+            "Photon_phi":          [[0.0],  [0.5],  [1.5]],
+            "Photon_cutBased":     [[1],    [1],    [1]],
+            "Photon_electronVeto": [[1],    [1],    [1]],
+            "PuppiMET_pt":  [50.0, 60.0, 70.0],
+            "PuppiMET_phi": [0.5, 1.0, 1.5],
         })
 
-        # Test medium working point
-        config = {"algorithm": "deepJet", "wp": "medium"}
-        mask = get_bjet_mask(jets, config)
-
-        # Should return boolean mask
-        assert len(mask) == len(jets)
-        assert all(isinstance(x, bool) for x in mask)
-
-    def test_build_objects(self):
-        """Test complete object building."""
-        # Create mock events
-        events = ak.Array({
-            "Muon": {
-                "pt": [[25.0, 15.0], [20.0], [35.0]],
-                "eta": [[1.0, 2.0], [1.5], [0.8]],
-                "phi": [[0.0, 1.0], [0.5], [1.5]],
-                "tightId": [[1, 0], [1], [1]],
-                "pfIsoId": [[3, 2], [3], [3]]
-            },
-            "Electron": {
-                "pt": [[30.0, 20.0], [25.0], [40.0]],
-                "eta": [[1.2, 2.1], [1.8], [0.9]],
-                "phi": [[0.2, 1.2], [0.7], [1.7]],
-                "cutBased": [[4, 2], [4], [4]],
-                "pfIsoId": [[3, 2], [3], [3]]
-            },
-            "Tau": {
-                "pt": [[35.0, 25.0], [30.0], [45.0]],
-                "eta": [[1.1, 2.1], [1.6], [0.9]],
-                "phi": [[0.1, 1.1], [0.6], [1.6]],
-                "idDeepTau2017v2p1VSjet": [[16, 8], [16], [16]],
-                "decayMode": [[0, 1], [0], [1]]
-            },
-            "Jet": {
-                "pt": [[40.0, 30.0], [35.0], [50.0]],
-                "eta": [[1.0, 2.0], [1.5], [0.8]],
-                "phi": [[0.0, 1.0], [0.5], [1.5]],
-                "jetId": [[2, 1], [2], [2]],
-                "btagDeepFlavB": [[0.1, 0.5], [0.3], [0.8]],
-                "hadronFlavour": [[5, 0], [5], [5]]
-            },
-            "FatJet": {
-                "pt": [[250.0, 150.0], [200.0], [300.0]],
-                "eta": [[1.0, 2.0], [1.5], [0.8]],
-                "phi": [[0.0, 1.0], [0.5], [1.5]],
-                "jetId": [[2, 1], [2], [2]]
-            }
-        })
-
-        config = {
+    def _config(self):
+        return {
             "objects": {
-                "muons": {"pt_min": 20.0, "eta_max": 2.4, "id": "tight", "iso": "tight"},
-                "electrons": {"pt_min": 20.0, "eta_max": 2.5, "id": "tight", "iso": "tight"},
-                "taus": {"pt_min": 20.0, "eta_max": 2.3, "id": "tight", "decay_modes": [0, 1, 2, 10, 11]},
-                "jets": {"pt_min": 30.0, "eta_max": 2.4, "id": "tight"},
-                "fatjets": {"pt_min": 200.0, "eta_max": 2.4, "id": "tight"}
+                "muons": MU_CFG, "electrons": EL_CFG, "taus": TAU_CFG,
+                "photons": PHO_CFG, "jets": JET_CFG,
             },
-            "btagging": {"algorithm": "deepJet", "wp": "medium"},
-            "cleaning": {"dr_muon_jet": 0.4, "dr_electron_jet": 0.4, "dr_tau_jet": 0.4}
+            "btagging": {"branch": "Jet_btagPNetB", "score": 0.2605},
+            "cleaning": {"dr_jet": 0.4, "dr_photon_lep": 0.4},
         }
 
-        objects = build_objects(events, config)
+    def test_build_objects_keys_and_shapes(self):
+        objects = build_objects(self._events(), self._config())
+        # Collections present
+        for key in ("muons", "electrons", "taus", "photons", "jets", "bjets",
+                    "tight_muons", "tight_electrons", "tight_taus"):
+            assert key in objects, f"missing {key}"
+        # Per-event scalar/derived arrays present with correct length
+        n_ev = 3
+        for key in ("recoil", "recoil_phi", "costheta_star",
+                    "n_z_muons", "n_z_electrons", "mll_mu", "mll_el",
+                    "z_pt_mu", "z_pt_el"):
+            assert key in objects, f"missing {key}"
+            assert len(objects[key]) == n_ev
 
-        # Check that objects are built
-        assert "muons" in objects
-        assert "electrons" in objects
-        assert "taus" in objects
-        assert "jets" in objects
-        assert "fatjets" in objects
-        assert "bjets" in objects
+    def test_build_objects_selection_counts(self):
+        objects = build_objects(self._events(), self._config())
+        # Loose muons: ev0 both pass (35,12 > pt_min_loose 10), ev1 pass, ev2 8<10 fails
+        assert ak.to_list(ak.num(objects["muons"], axis=1)) == [2, 1, 0]
+        # Tight muons: pt>30 & tightId==1 & iso>=3 → ev0 only muon0 (35, tight);
+        # ev1 (40, tight); ev2 none
+        assert ak.to_list(ak.num(objects["tight_muons"], axis=1)) == [1, 1, 0]
+        # is_tight flag carried on loose muons
+        assert "is_tight" in objects["muons"].fields
 
-        # Check that masks are created
-        assert "muon_mask" in objects
-        assert "electron_mask" in objects
-        assert "tau_mask" in objects
-        assert "jet_mask" in objects
-        assert "fatjet_mask" in objects
-        assert "bjet_mask" in objects
+    def test_build_objects_jet_cleaning_and_btag(self):
+        objects = build_objects(self._events(), self._config())
+        # Jets pass pt>30; none overlap leptons (phi separated), so all survive cleaning
+        assert ak.to_list(ak.num(objects["jets"], axis=1)) == [2, 1, 1]
+        # b-jets: btagScore > 0.2605 → ev0 jet0(0.9), ev1(0.5), ev2(0.8)
+        assert ak.to_list(ak.num(objects["bjets"], axis=1)) == [1, 1, 1]
 
 
 if __name__ == "__main__":

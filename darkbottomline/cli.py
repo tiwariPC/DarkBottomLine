@@ -28,7 +28,7 @@ def _default_version() -> str:
 from .processor import DarkBottomLineProcessor
 from .analyzer import DarkBottomLineAnalyzer
 from .dnn_trainer import DNNTrainer
-from .dnn_inference import DNNInference
+from .dnn_inference import DNNInference, _parse_masspoint_label, _mass_branch_name, _resolve_mass_scan
 from .plotting import PlotManager
 from .regions import RegionManager
 from utils.chunk_optimizer import (
@@ -79,6 +79,16 @@ def _get_input_files(input_list: List[str]) -> List[str]:
     return input_list
 
 
+def _is_signal_sample(input_list: List[str]) -> bool:
+    """
+    Detect fastsim signal samples (BBDM-2HDMa) by filename, so trigger
+    requirements can be bypassed (fastsim has no HLT branches).
+    Matches the "2hdma" substring convention used by dnn/phys_weight.py
+    and configs/plotting.yaml's Signal_2HDMa pattern.
+    """
+    return any("2hdma" in entry.lower() for entry in input_list)
+
+
 def run_analysis(args):
     """Run basic analysis."""
     logging.info("Running basic analysis...")
@@ -87,6 +97,7 @@ def run_analysis(args):
     config = load_config(args.config)
     if args.data:
         config.setdefault("data", {})["is_data"] = True
+    config.setdefault("data", {})["is_signal"] = _is_signal_sample(args.input)
 
     # Initialize processor
     processor = DarkBottomLineProcessor(config)
@@ -188,34 +199,40 @@ def _merge_pickle_outputs(files: List[str], output_path: str):
                 logging.error(f"Error removing temporary file {file_path}: {e}")
 
 
-def _add_dnn_scores_to_events(events, model_path: str, config_path: Optional[str], score_branch: str = "ml_score"):
-    """Score all events with trained DNN; return ak.Array with ml_score field added."""
+def _add_dnn_scores_to_events(events, model_path: str, config_path: Optional[str],
+                              score_branch: str = "ml_score",
+                              objects: dict = None, config: dict = None):
+    """Score all events with trained DNN; return ak.Array with ml_score field added.
+
+    When *objects* and *config* are provided, uses the standard variable
+    pipeline (compute_event_variables) so that the DNN sees the same
+    feature values as the region-analysis and plotting code.
+    """
     import awkward as ak
-    from dnn.feature_engineering import build_feature_frame_from_tree, REQUESTED_FEATURES_25
     from dnn.common import sanitize_feature_frame
+    import pandas as _pd
 
     inference = DNNInference(model_path, config_path=config_path)
-    model_info = inference.get_model_info()
-    features = model_info.get("features") or list(REQUESTED_FEATURES_25)
-
-    # Build feature DataFrame from the ak.Array event record
-    # Treat events like a flat tree: extract each feature branch directly
+    features = inference.features
     n = len(events)
-    X_parts = {}
-    for feat in features:
-        if feat in events.fields:
-            X_parts[feat] = np.asarray(ak.to_numpy(events[feat]), dtype="f8")
-        else:
-            X_parts[feat] = np.full(n, -9999.0, dtype="f8")
 
-    import pandas as pd
-    df = pd.DataFrame(X_parts)
-    from dnn.common import sanitize_feature_frame
-    df = sanitize_feature_frame(df)
+    if objects is not None and config is not None:
+        df = _build_dnn_feature_matrix_from_events(events, objects, config, features)
+    else:
+        # Legacy: direct field lookup
+        X_parts = {}
+        for feat in features:
+            if feat in events.fields:
+                X_parts[feat] = np.asarray(ak.to_numpy(events[feat]), dtype="f8")
+            else:
+                X_parts[feat] = np.full(n, -9999.0, dtype="f8")
+        df = _pd.DataFrame(X_parts)
+        df = sanitize_feature_frame(df)
 
     X = df.to_numpy(dtype="f8")
-    masses = np.zeros(n, dtype="f8")
-    scores = inference.predict(X, masses).ravel().astype("float32")
+    # None -> DNNInference defaults to its checkpoint's benchmark masspoint
+    # for parametric models; ignored for non-parametric models.
+    scores = inference.predict(X, None).ravel().astype("float32")
 
     # Append ml_score to events ak.Array
     events_with_score = ak.with_field(events, ak.Array(scores), score_branch)
@@ -223,16 +240,59 @@ def _add_dnn_scores_to_events(events, model_path: str, config_path: Optional[str
     return events_with_score
 
 
-def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args) -> Tuple[np.ndarray, str]:
+def _build_dnn_feature_matrix_from_events(
+    events: "ak.Array",
+    objects: dict,
+    config: dict,
+    features: list,
+) -> "pd.DataFrame":
+    """Build DNN feature matrix using compute_event_variables.
+
+    Uses the same variable computation pipeline as the EVENTSELECTION output
+    (variables.py), ensuring DNN training/inference sees exactly the same
+    features as the plotting and region-analysis code. Feature names must
+    match compute_event_variables() output keys exactly (configs/dnn.yaml
+    features: is the source of truth) — no aliasing.
+    """
+    import pandas as _pd
+    from .variables import compute_event_variables
+    from dnn.common import sanitize_feature_frame
+
+    n = len(events)
+
+    # Compute all flat scalar variables via the standard pipeline
+    all_vars = compute_event_variables(events, objects, config)
+
+    X_dict: dict = {}
+    for feat in features:
+        arr = all_vars.get(feat)
+        if arr is not None:
+            X_dict[feat] = np.asarray(arr, dtype="f8").ravel()
+        else:
+            X_dict[feat] = np.full(n, -9999.0, dtype="f8")
+
+    df = _pd.DataFrame(X_dict)
+    df = sanitize_feature_frame(df)
+    return df
+
+
+def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args,
+                         objects: dict = None, config: dict = None,
+                         y_train: np.ndarray = None,
+                         dnn_plotdir: str = None) -> Tuple[np.ndarray, str]:
     """Train DNN on selected events (in-memory); return (scores, model_path).
 
     Scores array aligns 1:1 with events — same length, float32.
-    All training plots (AUC, ranking, score distributions, loss curves) are
-    written to dnn_outdir/plots/ by train_from_arrays.
+    Model artifacts (dnn_model.pt, scaler.json, features.json, train_metrics.json)
+    written to dnn_outdir (default: data/dnn).
+    Training plots written to dnn_plotdir (default: outputs/dnn).
+
+    When *y_train* is provided, the internal per-file label-building and
+    data-exclusion logic is skipped entirely — the caller guarantees that
+    *events* contains only MC events with correct labels.
     """
     import awkward as ak
     import pandas as pd
-    from dnn.feature_engineering import REQUESTED_FEATURES_25
     from dnn.common import sanitize_feature_frame
     from dnn.make_trees import _is_data, _is_signal_heuristic
 
@@ -241,76 +301,128 @@ def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args) -
     sig_prefix = getattr(args, "signal_prefix", None)
     label_csv_path = getattr(args, "label_csv", None)
 
-    # Build label array from input file heuristics
-    # For in-memory events we need a per-event signal label.
-    # Use the first input file's classification applied to all events
-    # (single-sample mode) or per-file if multiple files loaded separately.
-    # Here events are already concatenated — label from args.signal_prefix/pattern
-    # applied to the first input file name as proxy.
-    input_files = _get_input_files(args.input)
-    if label_csv_path:
-        import csv as _csv
-        label_map = {}
-        with open(label_csv_path, "r", newline="") as fp:
-            for row in _csv.DictReader(fp):
-                label_map[str(row["path"]).strip()] = int(row["label"])
-        # Can't map per-event without per-file info; fall back to file-level
-        y_parts = []
-        for fpath in input_files:
-            import os as _os
-            key = fpath if fpath in label_map else _os.path.basename(fpath)
-            lbl = label_map.get(key, 0)
-            with uproot.open(fpath) as f:
-                y_parts.append(np.full(int(f["Events"].num_entries), lbl, dtype="i4"))
-        y = np.concatenate(y_parts)[:n]
+    # Build label array.  When *y_train* is provided externally (integrated
+    # path with correct per-file→per-event alignment), skip the internal
+    # per-file label-building and data-exclusion logic entirely.
+    if y_train is not None:
+        y = np.asarray(y_train, dtype="i4")
+        keep = np.ones(len(y), dtype=bool)  # caller already excluded data
+        n_data_skipped = 0
+        if np.unique(y).size < 2:
+            logging.warning("Only one class present — skipping DNN training, scores set to 0.5")
+            return np.full(n, 0.5, dtype="float32"), ""
     else:
-        # Build per-file labels then concatenate to match events length
-        y_parts = []
-        for fpath in input_files:
-            is_data = _is_data(fpath)
-            if is_data:
-                sig = 0
-            else:
-                sig = 1 if _is_signal_heuristic(fpath, sig_patterns, sig_prefix) else 0
-            with uproot.open(fpath) as f:
-                cnt = int(f["Events"].num_entries)
-            y_parts.append(np.full(cnt, sig, dtype="i4"))
-        y = np.concatenate(y_parts)[:n]
+        input_files = _get_input_files(args.input)
+        import os as _os
 
-    if np.unique(y).size < 2:
-        logging.warning("Only one class present — skipping DNN training, scores set to 0.5")
-        return np.full(n, 0.5, dtype="float32"), ""
-
-    # Build feature DataFrame from events ak.Array
-    feat_list = list(REQUESTED_FEATURES_25)
-    X_dict = {}
-    for feat in feat_list:
-        if feat in events.fields:
-            X_dict[feat] = np.asarray(ak.to_numpy(events[feat]), dtype="f8")
+        # Phase 1: collect per-file info (entry counts, labels, data flags)
+        file_entries: list = []
+        if label_csv_path:
+            import csv as _csv
+            label_map = {}
+            with open(label_csv_path, "r", newline="") as fp:
+                for row in _csv.DictReader(fp):
+                    label_map[str(row["path"]).strip()] = int(row["label"])
+            for fpath in input_files:
+                key = fpath if fpath in label_map else _os.path.basename(fpath)
+                lbl = label_map.get(key, 0)
+                is_data = _is_data(fpath)
+                with uproot.open(fpath) as f:
+                    cnt = int(f["Events"].num_entries)
+                file_entries.append((cnt, lbl, is_data))
         else:
-            X_dict[feat] = np.full(n, -9999.0, dtype="f8")
-    X_df = pd.DataFrame(X_dict)
+            for fpath in input_files:
+                is_data = _is_data(fpath)
+                if is_data:
+                    sig = -1  # sentinel: will be excluded
+                else:
+                    sig = 1 if _is_signal_heuristic(fpath, sig_patterns, sig_prefix) else 0
+                with uproot.open(fpath) as f:
+                    cnt = int(f["Events"].num_entries)
+                file_entries.append((cnt, sig, is_data))
+
+        # Phase 2: build per-event y and a keep-mask (True = keep for training)
+        y_parts = []
+        keep_parts = []
+        n_data_skipped = 0
+        for cnt, sig, is_data in file_entries:
+            if is_data:
+                y_parts.append(np.full(cnt, -1, dtype="i4"))
+                keep_parts.append(np.zeros(cnt, dtype=bool))
+                n_data_skipped += cnt
+            else:
+                y_parts.append(np.full(cnt, sig, dtype="i4"))
+                keep_parts.append(np.ones(cnt, dtype=bool))
+        y_full = np.concatenate(y_parts)[:n]
+        keep = np.concatenate(keep_parts)[:n]
+
+        if n_data_skipped > 0:
+            logging.info("Excluded %d data events from DNN training (files: %s)",
+                         n_data_skipped,
+                         [f for f in input_files if _is_data(f)])
+
+        # Filter to non-data events only
+        y = y_full[keep]
+        if np.unique(y).size < 2:
+            logging.warning("Only one class present after excluding data — skipping DNN training, scores set to 0.5")
+            return np.full(n, 0.5, dtype="float32"), ""
+
+    # Build full feature matrix from all events (data + MC)
+    n_keep = int(keep.sum())
+    _dnn_yaml = load_config(train_dnn_config)
+    feat_list = _dnn_yaml.get("features")
+    if not feat_list:
+        raise ValueError(
+            f"'{train_dnn_config}' has no features: list — required for DNN training."
+        )
+
+    if objects is not None and config is not None:
+        # Use standard variable-computation pipeline (compute_event_variables)
+        X_full_df = _build_dnn_feature_matrix_from_events(
+            events, objects, config, feat_list
+        )
+        X_dict_full = {c: X_full_df[c].to_numpy(dtype="f8") for c in X_full_df.columns}
+    else:
+        # Fallback: direct field lookup
+        X_dict_full = {}
+        for feat in feat_list:
+            if feat in events.fields:
+                X_dict_full[feat] = np.asarray(ak.to_numpy(events[feat]), dtype="f8")
+            else:
+                X_dict_full[feat] = np.full(n, -9999.0, dtype="f8")
+
+    # Training subset: non-data events only
+    X_dict_train = {feat: arr[keep] for feat, arr in X_dict_full.items()}
+    X_df = pd.DataFrame(X_dict_train)
     X_df = sanitize_feature_frame(X_df)
 
-    # Weights
+    # Weights, filtered to non-data events
     if "full_event_weight" in events.fields:
-        w = np.asarray(ak.to_numpy(events["full_event_weight"]), dtype="f8")
-        w = np.where(np.isfinite(w), np.maximum(w, 0.0), 0.0)
+        w_full = np.asarray(ak.to_numpy(events["full_event_weight"]), dtype="f8")
+        w_full = np.where(np.isfinite(w_full), np.maximum(w_full, 0.0), 0.0)
+        w = w_full[keep]
     else:
-        w = np.ones(n, dtype="f8")
+        w = np.ones(n_keep, dtype="f8")
 
+    _plot_dir = dnn_plotdir if dnn_plotdir is not None else "outputs/dnn"
     trainer = DNNTrainer(train_dnn_config)
     metrics = trainer.train_from_arrays(
         X=X_df, y=y, w=w,
         feature_sources={},
         outdir=dnn_outdir,
-        plot_dir=str(Path(dnn_outdir) / "plots"),
+        plot_dir=_plot_dir,
     )
     model_path = str(Path(dnn_outdir) / "dnn_model.pt")
     logging.info("DNN trained — AUC(val)=%.4f  model=%s", metrics.get("auc_val", float("nan")), model_path)
 
-    # Score all events with the just-trained model
-    scores = trainer.predict(X_df.to_numpy(dtype="f8"), np.zeros(n, dtype="f8")).ravel().astype("float32")
+    # Score ALL events (including data) with the just-trained model
+    # X_full is the feature matrix for every event; data events are scored but not trained on
+    X_full = pd.DataFrame(X_dict_full)
+    X_full = sanitize_feature_frame(X_full)
+    # This inline (per-analyze) training path has no GenModel mass source to
+    # train on, so it always trains/scores non-parametrically regardless of
+    # dnn.yaml's parametric_input — mirrors train_from_arrays(mass=None) above.
+    scores = trainer.predict(X_full.to_numpy(dtype="f8"), None).ravel().astype("float32")
     return scores, model_path
 
 
@@ -330,7 +442,7 @@ def _plot_dnn_score_only(scores: np.ndarray, plot_dir: str) -> None:
     plt.grid(alpha=0.25)
     plt.tight_layout()
     out = Path(plot_dir) / "dnn_score_distribution.png"
-    plt.savefig(out, dpi=160)
+    plt.savefig(out, dpi=300)
     plt.close()
     logging.info("DNN score plot saved to %s", out)
 
@@ -356,10 +468,24 @@ def _run_analyzer_from_eventselection(args):
     cross_sections: Dict[str, float] = {}
     if getattr(args, "xsection_json", None):
         with open(args.xsection_json) as f:
-            cross_sections = json.load(f)
+            _raw_xsec = json.load(f)
+        # Flatten the nested {group: [{full_dataset, xsection, ...}]} JSON to a
+        # {full_dataset: xsec} dict so per-file lookup below works regardless of
+        # year (canonicalized via _find_xsec).
+        from darkbottomline.plotting import PlotManager
+        cross_sections = PlotManager._normalize_cross_sections(_raw_xsec)
 
     dnn_model  = getattr(args, "dnn_model",  None)
     dnn_config = getattr(args, "dnn_config", None)
+
+    # Build the DNN model once (checkpoint + scaler load) instead of per-file —
+    # process_from_eventselection is called once per input file below.
+    dnn_inference = None
+    dnn_mass_scan = None
+    if dnn_model:
+        from darkbottomline.dnn_inference import DNNInference
+        dnn_inference = DNNInference(dnn_model, config_path=dnn_config)
+        dnn_mass_scan = _resolve_mass_scan(getattr(args, "dnn_mass_scan", None), dnn_inference)
 
     raw_inputs = _get_input_files(args.input)
     # Expand any directories to their ROOT files
@@ -379,9 +505,16 @@ def _run_analyzer_from_eventselection(args):
     merged_result: Optional[Dict] = None
     analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
 
+    from darkbottomline.plotting import _find_xsec
+    from dnn.make_trees import _is_data as _fname_is_data, _is_signal_heuristic
+    n_bkg_scored = n_sig_scored = n_data_scored = 0
     for file_path in input_files:
         stem = Path(file_path).stem
-        xsec = cross_sections.get(stem) or cross_sections.get(Path(file_path).name)
+        # Canonicalized lookup so 2022/23 (_2J) and 2024 (Bin-2J-) stems, and the
+        # SMHiggs renames, all resolve to the right xsec.
+        xsec = _find_xsec(stem, cross_sections)
+        if xsec is None:
+            xsec = _find_xsec(stem.replace("_EVENTSELECTION", ""), cross_sections)
         try:
             with uproot.open(str(file_path)) as f:
                 wte = 0.0
@@ -408,12 +541,20 @@ def _run_analyzer_from_eventselection(args):
                 branches=branches,
                 weighted_total_events=effective_wte,
                 is_data=is_data,
-                dnn_model=dnn_model,
-                dnn_config=dnn_config,
+                dnn_inference=dnn_inference,
+                dnn_mass_scan=dnn_mass_scan,
             )
         except Exception as exc:
             logging.error("Region analysis failed for %s: %s", stem, exc, exc_info=True)
             continue
+
+        if dnn_inference is not None:
+            if is_data or _fname_is_data(file_path):
+                n_data_scored += 1
+            elif _is_signal_heuristic(file_path, (), None):
+                n_sig_scored += 1
+            else:
+                n_bkg_scored += 1
 
         # Tag result with xsec for downstream normalisation
         result.setdefault("metadata", {})["xsec"] = xsec
@@ -424,6 +565,13 @@ def _run_analyzer_from_eventselection(args):
         else:
             merged_result = _merge_region_results(merged_result, result)
         logging.debug("Processed %s (wte=%.1f)", stem, effective_wte)
+
+    if dnn_inference is not None:
+        logging.info(
+            "DNN scores added to events (ml_score) for %d background file(s), "
+            "%d signal file(s), %d data file(s)",
+            n_bkg_scored, n_sig_scored, n_data_scored,
+        )
 
     if merged_result is None:
         logging.error("No files processed — nothing to save.")
@@ -550,8 +698,19 @@ def run_analyzer(args):
     dnn_model = getattr(args, "dnn_model", None)
     dnn_config = getattr(args, "dnn_config", None)
     train_dnn_config = getattr(args, "train_dnn", None)
-    dnn_outdir = getattr(args, "dnn_outdir", "outputs_dnn")
+    dnn_outdir = getattr(args, "dnn_outdir", "data/dnn")
+    dnn_plotdir = getattr(args, "dnn_plotdir", "outputs/dnn")
     dnn_only = getattr(args, "dnn_only", False)
+
+    # DNN training requires full event set → fall back to iterative
+    if train_dnn_config and args.executor in ("futures", "dask"):
+        logging.warning(
+            "DNN training requested but Coffea %s executor cannot train. "
+            "Falling back to iterative executor.",
+            args.executor,
+        )
+        args.executor = "iterative"
+    # DNN scoring works per-chunk in Coffea path — no fallback needed
 
     event_selection_only = (mode == "event-selection")
 
@@ -575,6 +734,7 @@ def run_analyzer(args):
     config = load_config(args.config)
     if args.data:
         config.setdefault("data", {})["is_data"] = True
+    config.setdefault("data", {})["is_signal"] = _is_signal_sample(args.input)
 
     try:
         import uproot
@@ -670,7 +830,7 @@ def run_analyzer(args):
 
             # For event_selection_only mode, use a dummy regions_config
             regions_config_for_coffea = args.regions_config if not event_selection_only else None
-            
+
             # Auto-detect output format from event_selection_output extension if not explicitly set
             output_format_to_use = args.output_format
             if args.event_selection_output and output_format_to_use == "pkl":
@@ -679,12 +839,13 @@ def run_analyzer(args):
                     output_format_to_use = 'root'
                 elif args.event_selection_output.endswith('.parquet'):
                     output_format_to_use = 'parquet'
-            
+
             coffea_analyzer = DarkBottomLineAnalyzerCoffeaProcessor(
                 config, regions_config_for_coffea, event_selection_output=args.event_selection_output,
                 event_selection_only=event_selection_only, output_format=output_format_to_use,
                 max_events=args.max_events, total_events=total_events,
-                input_total_events=input_total_events
+                input_total_events=input_total_events,
+                dnn_model=dnn_model, dnn_config=dnn_config,
             )
 
             if args.executor == "futures":
@@ -804,35 +965,185 @@ def run_analyzer(args):
                     logging.info(f"Event selection completed, saved to {args.event_selection_output}")
 
                 elif train_dnn_config:
-                    # Train DNN on selected events → inject ml_score in-memory → optionally region analysis
-                    logging.info("DNN training on %d events...", len(events))
-                    scores, model_path = _train_dnn_on_events(events, train_dnn_config, dnn_outdir, args)
-                    events = ak.with_field(events, ak.Array(scores), "ml_score")
-                    logging.info("ml_score injected in-memory (no disk write)")
+                    # ── Apply preselection + compute MC weights BEFORE DNN training ──
+                    # Physics rationale: DNN must train on the same phase space
+                    # (post-preselection) and with correct event weights
+                    # (generator × pileup × btag SF × …).
+                    from .objects import build_objects
+                    from .selections import _build_event_cut_masks
+                    from dnn.make_trees import _is_data, _is_signal_heuristic
+                    import awkward as _ak
+
+                    n_total = len(events)
+
+                    # Step 0: Build per-file labels + keep-mask for ORIGINAL events
+                    # (before preselection) so the alignment is correct.  We then
+                    # apply the preselection mask to get per-event labels for the
+                    # events that actually enter DNN training.
+                    sig_patterns = tuple(getattr(args, "signal_pattern", None) or ())
+                    sig_prefix = getattr(args, "signal_prefix", None)
+                    y_parts_full = []
+                    keep_parts_full = []
+                    n_data_total = 0
+                    for fpath in input_files:
+                        is_data = _is_data(fpath)
+                        with uproot.open(fpath) as f:
+                            cnt = int(f["Events"].num_entries)
+                        if is_data:
+                            y_parts_full.append(np.full(cnt, -1, dtype="i4"))
+                            keep_parts_full.append(np.zeros(cnt, dtype=bool))
+                            n_data_total += cnt
+                        else:
+                            sig = 1 if _is_signal_heuristic(fpath, sig_patterns, sig_prefix) else 0
+                            y_parts_full.append(np.full(cnt, sig, dtype="i4"))
+                            keep_parts_full.append(np.ones(cnt, dtype=bool))
+                    y_full_orig = np.concatenate(y_parts_full)[:n_total]
+                    keep_full_orig = np.concatenate(keep_parts_full)[:n_total]
+                    if n_data_total > 0:
+                        logging.info(
+                            "Identified %d data events (%d total) — will be excluded from DNN training",
+                            n_data_total, n_total,
+                        )
+
+                    # Step 1: Build physics objects & compute preselection mask
+                    objects_all = build_objects(events, config)
+                    cut_masks, _ = _build_event_cut_masks(events, objects_all, config)
+                    presel_mask = _ak.ones_like(events["event"], dtype=bool)
+                    for m in cut_masks.values():
+                        presel_mask = presel_mask & _ak.fill_none(m, False, axis=0)
+
+                    # Apply preselection to events, objects, and labels
+                    selected_events = events[presel_mask]
+                    selected_objects = {k: v[presel_mask] for k, v in objects_all.items()}
+                    presel_mask_np = np.asarray(_ak.to_numpy(presel_mask), dtype=bool)
+                    y_presel = y_full_orig[presel_mask_np]
+                    keep_presel = keep_full_orig[presel_mask_np]
+                    n_sel = len(selected_events)
+                    logging.info(
+                        "Preselection for DNN training: %d / %d events pass (%.1f%%)",
+                        n_sel, n_total, 100.0 * n_sel / max(n_total, 1),
+                    )
+
+                    if n_sel == 0:
+                        logging.error("No events pass preselection — cannot train DNN")
+                        sys.exit(1)
+
+                    # Step 2: Filter to MC-only events + compute weights
+                    mc_mask = keep_presel  # True = non-data
+                    n_mc = int(mc_mask.sum())
+                    if n_mc == 0:
+                        logging.error("No MC events after preselection — cannot train DNN")
+                        sys.exit(1)
+                    logging.info("MC events for DNN training: %d / %d preselected", n_mc, n_sel)
+
+                    selected_events_mc = selected_events[mc_mask]
+                    selected_objects_mc = {k: v[mc_mask] for k, v in selected_objects.items()}
+                    y_train = y_presel[mc_mask]
+
+                    proc_temp = DarkBottomLineProcessor(config)
+                    if not config.get("data", {}).get("is_data", False):
+                        try:
+                            weight_results = proc_temp.correction_manager.compute_event_weights(
+                                selected_events_mc, selected_objects_mc
+                            )
+                            full_weight = _ak.fill_none(
+                                weight_results["full_event_weight"], 1.0, axis=0
+                            )
+                        except Exception as _w_exc:
+                            logging.warning(
+                                "Weight computation failed, using unit weights: %s", _w_exc
+                            )
+                            full_weight = _ak.ones_like(
+                                selected_events_mc[selected_events_mc.fields[0]]
+                            )
+                    else:
+                        full_weight = _ak.ones_like(
+                            selected_events_mc[selected_events_mc.fields[0]]
+                        )
+                    selected_events_mc = _ak.with_field(
+                        selected_events_mc, full_weight, "full_event_weight"
+                    )
+                    logging.info("MC weights attached to %d training events", n_mc)
+
+                    # Step 3: Train DNN on MC-only preselected + weighted events
+                    logging.info("DNN training on %d MC preselected events...", n_mc)
+                    _scores_train, model_path = _train_dnn_on_events(
+                        selected_events_mc, train_dnn_config, dnn_outdir, args,
+                        objects=selected_objects_mc, config=config,
+                        y_train=y_train,
+                        dnn_plotdir=getattr(args, "dnn_plotdir", "outputs/dnn"),
+                    )
+
+                    # Step 4: Score ALL original events using the saved model
+                    # (training was on preselected; scoring covers the full dataset
+                    #  so ml_score is available for every event entering region analysis)
+                    trainer_scoring = DNNTrainer(train_dnn_config)
+                    trainer_scoring.load_model(model_path)
+
+                    # Use standard variable pipeline for consistent feature values
+                    _dnn_yaml = load_config(train_dnn_config)
+                    feat_list = _dnn_yaml.get("features")
+                    if not feat_list:
+                        raise ValueError(
+                            f"'{train_dnn_config}' has no features: list — required for DNN scoring."
+                        )
+                    X_full_df = _build_dnn_feature_matrix_from_events(
+                        events, objects_all, config, feat_list
+                    )
+                    scores = (
+                        trainer_scoring
+                        .predict(
+                            X_full_df.to_numpy(dtype="f8"),
+                            np.zeros(n_total, dtype="f8"),
+                        )
+                        .ravel()
+                        .astype("float32")
+                    )
+                    events = _ak.with_field(events, _ak.Array(scores), "ml_score")
+                    logging.info(
+                        "ml_score injected for all %d events "
+                        "(model trained on %d preselected events)",
+                        n_total, n_sel,
+                    )
 
                     if dnn_only:
-                        _plot_dnn_score_only(scores, str(Path(dnn_outdir) / "plots"))
-                        logging.info("--dnn-only set: stopping after DNN scoring. Training plots in %s/plots/", dnn_outdir)
+                        _plot_dnn_score_only(scores, dnn_plotdir)
+                        logging.info(
+                            "--dnn-only set: stopping after DNN scoring. "
+                            "Training plots in %s", dnn_plotdir
+                        )
                     else:
-                        results = analyzer.process(events, event_selection_output=args.event_selection_output,
-                                                   event_selection_only=False, output_format=output_format_to_use,
-                                                   total_events=total_events)
+                        results = analyzer.process(
+                            events,
+                            event_selection_output=args.event_selection_output,
+                            event_selection_only=False,
+                            output_format=output_format_to_use,
+                            total_events=total_events,
+                        )
                         if args.output:
                             outdir = os.path.dirname(args.output)
                             if outdir:
                                 os.makedirs(outdir, exist_ok=True)
                             analyzer.accumulator = results
-                            analyzer.save_results(args.output, output_format=args.output_format)
+                            analyzer.save_results(
+                                args.output, output_format=args.output_format
+                            )
 
                 elif dnn_model:
                     # Score with existing model → inject ml_score in-memory → optionally region analysis
                     logging.info("Scoring events with DNN model: %s", dnn_model)
-                    events = _add_dnn_scores_to_events(events, dnn_model, dnn_config)
+                    # Build objects for proper feature-name resolution (MET→MET_pt etc.)
+                    from .objects import build_objects as _build_obj
+                    _obj_for_dnn = _build_obj(events, config)
+                    events = _add_dnn_scores_to_events(
+                        events, dnn_model, dnn_config,
+                        objects=_obj_for_dnn, config=config,
+                    )
                     scores = np.asarray(ak.to_numpy(events["ml_score"]), dtype="f4")
 
                     if dnn_only:
-                        _plot_dnn_score_only(scores, str(Path(dnn_outdir) / "plots"))
-                        logging.info("--dnn-only set: stopping after DNN scoring. Plot in %s/plots/", dnn_outdir)
+                        _plot_dnn_score_only(scores, dnn_plotdir)
+                        logging.info("--dnn-only set: stopping after DNN scoring. Plots in %s", dnn_plotdir)
                     else:
                         results = analyzer.process(events, event_selection_output=args.event_selection_output,
                                                   event_selection_only=False, output_format=output_format_to_use,
@@ -888,74 +1199,66 @@ def make_trees(args):
     )
 
 
-def _load_training_data_from_eventsel(
-    input_files: list,
-    region: str,
-    signal_patterns,
-    signal_prefix,
-    label_csv,
-    weight_branch: str,
-    max_events_per_file,
-) -> tuple:
-    """In-memory conversion of flat Events ROOT files to labelled numpy arrays.
 
-    Returns (X_df, y, w, feature_sources) — same format train_from_root expects
-    after the data-loading phase, bypassing the intermediate ppbbchichi-trees.root.
+
+def _load_one_eventsel_file(task: tuple):
+    """Load + label + weight one Events ROOT file into a feature frame.
+
+    Module-level (picklable) so it can run as a multiprocessing worker — each
+    input file is read and processed completely independently of every other
+    file, so this is dispatched across CPU cores instead of the serial
+    per-file loop in ``_load_training_data_from_eventsel``.
+
+    Returns either ("ok", fpath, sample, df, y_arr, w_arr, mass_arr, src, n)
+    or ("skip", fpath, reason) or ("data", fpath) for a data file to skip silently.
     """
-    import pandas as pd
-    from dnn.make_trees import convert_files
-    import tempfile, os
+    import os
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
-    # Write to a temp file then read back via train_from_root's loader,
-    # OR build arrays directly here without touching disk.
-    # We build directly — no temp file.
-    import csv as _csv
-    import re as _re
+    import uproot
     from dnn.make_trees import _sample_name, _is_data, _is_signal_heuristic
-    from dnn.feature_engineering import build_feature_frame_from_tree, REQUESTED_FEATURES_25
+    from dnn.feature_engineering import build_feature_frame_from_tree
     from dnn.common import sanitize_feature_frame
+    from .plotting import _find_xsec
 
-    sig_patterns = tuple(signal_patterns) if signal_patterns else ()
+    (fpath, feat_list, sig_patterns, signal_prefix, label_map, weight_branch,
+     max_events_per_file, signal_cross_sections, background_cross_sections,
+     lumi, parametric_input, mass_grid_list, seed, file_index) = task
 
-    label_map: dict = {}
-    if label_csv:
-        with open(label_csv, "r", newline="") as fp:
-            reader = _csv.DictReader(fp)
-            for row in reader:
-                label_map[str(row["path"]).strip()] = int(row["label"])
+    sample = _sample_name(fpath)
 
-    X_parts, y_parts, w_parts = [], [], []
-    feature_sources: dict = {}
+    if label_map:
+        key = fpath if fpath in label_map else os.path.basename(fpath)
+        if key not in label_map:
+            return ("error", fpath, f"'{fpath}' not in label-csv")
+        sig_flag = bool(label_map[key] == 1)
+        data_flag = False
+    else:
+        data_flag = _is_data(fpath)
+        sig_flag = False if data_flag else _is_signal_heuristic(fpath, sig_patterns, signal_prefix)
 
-    for fpath in input_files:
-        sample = _sample_name(fpath)
+    if data_flag:
+        return ("data", fpath)
 
-        if label_map:
-            key = fpath if fpath in label_map else os.path.basename(fpath)
-            if key not in label_map:
-                raise KeyError(f"'{fpath}' not in label-csv")
-            sig_flag = bool(label_map[key] == 1)
-            data_flag = False
-        else:
-            data_flag = _is_data(fpath)
-            sig_flag = False if data_flag else _is_signal_heuristic(fpath, sig_patterns, signal_prefix)
+    # Independent RNG per file (seeded deterministically from the run seed
+    # and the file's position in the input list) so parametric mass sampling
+    # stays reproducible across runs without serializing across files.
+    _rng = np.random.default_rng((seed, file_index)) if parametric_input else None
+    _mass_grid_arr = np.asarray(mass_grid_list, dtype="f8") if parametric_input else None
 
-        if data_flag:
-            logging.info("Skipping data file for DNN training: %s", fpath)
-            continue
-
+    try:
         with uproot.open(fpath) as in_f:
             if "Events" not in in_f:
-                raise KeyError(f"No 'Events' tree in {fpath}")
+                return ("skip", fpath, "No Events tree")
             tree = in_f["Events"]
             df, src, _ = build_feature_frame_from_tree(
-                tree, list(REQUESTED_FEATURES_25),
+                tree, feat_list,
                 max_events=max_events_per_file,
             )
             df = sanitize_feature_frame(df)
             n = len(df)
 
-            # weight
             avail = set(tree.keys())
             if weight_branch in avail:
                 w_arr = tree[weight_branch].array(entry_stop=n, library="np").astype("f8")
@@ -965,34 +1268,290 @@ def _load_training_data_from_eventsel(
 
             n = min(n, len(w_arr))
 
-        X_parts.append(df.iloc[:n])
-        y_parts.append(np.full(n, int(sig_flag), dtype="i4"))
-        w_parts.append(w_arr[:n])
+            wte = 0.0
+            if signal_cross_sections or background_cross_sections:
+                for key in ("weighted_total_events", "weighted_total_events;1"):
+                    if key in in_f:
+                        try:
+                            wte = float(in_f[key].values()[0])
+                            break
+                        except Exception:
+                            pass
+
+            if sig_flag and signal_cross_sections:
+                gm_cols = sorted(k for k in avail if str(k).startswith("GenModel_"))
+                if gm_cols:
+                    if wte > 0:
+                        gm_arr = tree.arrays(gm_cols, entry_stop=n, library="np")
+                        mp_scale = np.ones(n, dtype="f8")
+                        for gmc in gm_cols:
+                            mask = gm_arr[gmc][:n].astype(bool)
+                            mp_label = gmc[len("GenModel_"):]
+                            mp_xsec = _find_xsec(mp_label, signal_cross_sections)
+                            if mp_xsec is not None:
+                                mp_scale[mask] = (lumi * mp_xsec * 1000.0) / wte
+                        w_arr = w_arr[:n] * mp_scale
+                    else:
+                        logging.warning(
+                            "GenModel branches found in %s but no weighted_total_events — "
+                            "skipping per-masspoint weighting", Path(fpath).name,
+                        )
+            elif (not sig_flag) and background_cross_sections:
+                bkg_xsec = _find_xsec(sample, background_cross_sections)
+                if bkg_xsec is not None and wte > 0:
+                    bkg_scale = (lumi * bkg_xsec * 1000.0) / wte
+                    w_arr = w_arr[:n] * bkg_scale
+                else:
+                    logging.warning(
+                        "No xsec match or weighted_total_events for background file %s "
+                        "(sample=%s) — using raw weight_branch only", Path(fpath).name, sample,
+                    )
+
+            mass_arr = None
+            if parametric_input:
+                if sig_flag:
+                    gm_cols_mass = sorted(k for k in avail if str(k).startswith("GenModel_"))
+                    mass_arr = np.full((n, 2), np.nan, dtype="f8")
+                    if gm_cols_mass:
+                        gm_arr_mass = tree.arrays(gm_cols_mass, entry_stop=n, library="np")
+                        for gmc in gm_cols_mass:
+                            parsed = _parse_masspoint_label(gmc[len("GenModel_"):])
+                            if parsed is None:
+                                continue
+                            mask = gm_arr_mass[gmc][:n].astype(bool)
+                            mass_arr[mask] = parsed
+                    n_unlabeled = int(np.isnan(mass_arr).any(axis=1).sum())
+                    if n_unlabeled:
+                        idx = _rng.integers(0, len(_mass_grid_arr), size=n_unlabeled)
+                        mass_arr[np.isnan(mass_arr).any(axis=1)] = _mass_grid_arr[idx]
+                        logging.warning(
+                            "%d/%d signal events in %s had no matching GenModel masspoint — "
+                            "assigned a random grid mass instead", n_unlabeled, n, Path(fpath).name,
+                        )
+                else:
+                    idx = _rng.integers(0, len(_mass_grid_arr), size=n)
+                    mass_arr = _mass_grid_arr[idx]
+    except Exception as _exc:
+        return ("error", fpath, str(_exc)[:120])
+
+    return ("ok", fpath, sample, df.iloc[:n], int(sig_flag), w_arr[:n], mass_arr, src, n)
+
+
+def _load_training_data_from_eventsel(
+    input_files: list,
+    region: str,
+    signal_patterns,
+    signal_prefix,
+    label_csv,
+    weight_branch: str,
+    max_events_per_file,
+    signal_cross_sections: Optional[Dict[str, float]] = None,
+    background_cross_sections: Optional[Dict[str, float]] = None,
+    lumi: float = 1.0,
+    features: Optional[List[str]] = None,
+    parametric_input: bool = False,
+    mass_grid: Optional[List[Tuple[float, float]]] = None,
+    seed: int = 7,
+) -> tuple:
+    """In-memory conversion of flat Events ROOT files to labelled numpy arrays.
+
+    Returns (X_df, y, w, feature_sources) — same format train_from_root expects
+    after the data-loading phase, bypassing the intermediate ppbbchichi-trees.root.
+
+    When *signal_cross_sections* is given, signal files with GenModel_* masspoint
+    branches get their per-event weight additionally scaled by
+    (lumi * masspoint_xsec * 1000 / weighted_total_events), mirroring the
+    per-masspoint scaling already used for signal stacked plots
+    (plotting.py _create_region_from_events_plots).
+
+    When *background_cross_sections* is given, background files get their
+    per-event weight scaled by (lumi * file_xsec * 1000 / weighted_total_events),
+    so different background processes contribute in proportion to their true
+    physical yield rather than their raw MC event count.
+
+    Without either, behavior is unchanged: every event keeps the plain
+    weight_branch value.
+
+    When *parametric_input* is true, an extra (N, 2) numpy array of (MH3, MH4)
+    values is returned as the 5th tuple element: signal events get their true
+    masspoint (parsed from the GenModel_* branch that is set for that event),
+    background events get a masspoint drawn uniformly at random (with
+    replacement, seeded by *seed*) from *mass_grid*. When false, the 5th
+    element is None.
+    """
+    import pandas as pd
+    import os
+    import csv as _csv
+
+    if not features:
+        raise ValueError(
+            "No features provided — configs/dnn.yaml must have a features: list."
+        )
+    feat_list = list(features)
+    sig_patterns = tuple(signal_patterns) if signal_patterns else ()
+
+    if parametric_input and not mass_grid:
+        raise ValueError(
+            "parametric_input is true but no mass_grid was provided — "
+            "pass --xsection-signal-json so the (MH3, MH4) grid can be derived."
+        )
+
+    label_map: dict = {}
+    if label_csv:
+        with open(label_csv, "r", newline="") as fp:
+            reader = _csv.DictReader(fp)
+            for row in reader:
+                label_map[str(row["path"]).strip()] = int(row["label"])
+
+    X_parts, y_parts, w_parts = [], [], []
+    mass_parts: list = []
+    feature_sources: dict = {}
+    skipped_files: list = []  # (filepath, reason)
+
+    # Each input file is read and processed completely independently — parallelize
+    # across CPU cores via multiprocessing (uproot read + feature-frame build is
+    # CPU/IO-bound, so a thread pool would just serialize on the GIL for the
+    # numpy/pandas-heavy parts). Override with DNN_LOAD_WORKERS.
+    tasks = [
+        (
+            fpath, feat_list, sig_patterns, signal_prefix, label_map, weight_branch,
+            max_events_per_file, signal_cross_sections, background_cross_sections,
+            lumi, parametric_input, mass_grid, seed, idx,
+        )
+        for idx, fpath in enumerate(input_files)
+    ]
+    num_workers = int(os.environ.get("DNN_LOAD_WORKERS", max(1, (os.cpu_count() or 1))))
+    num_workers = max(1, min(num_workers, len(tasks)))
+
+    if num_workers > 1 and len(tasks) > 1:
+        import multiprocessing as mp
+
+        logging.info(f"Loading {len(tasks)} input file(s) with {num_workers} worker processes")
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=num_workers) as pool:
+            load_results = pool.map(_load_one_eventsel_file, tasks)
+    else:
+        load_results = [_load_one_eventsel_file(t) for t in tasks]
+
+    for result in load_results:
+        kind = result[0]
+        if kind == "data":
+            logging.info("Skipping data file for DNN training: %s", result[1])
+            continue
+        if kind == "skip":
+            _, fpath, reason = result
+            logging.warning("%s in %s — skipping", reason, fpath)
+            skipped_files.append((fpath, reason))
+            continue
+        if kind == "error":
+            _, fpath, reason = result
+            if "not in label-csv" in reason:
+                raise KeyError(reason)
+            logging.warning("Failed to read %s — skipping (%s)", fpath, reason)
+            skipped_files.append((fpath, reason))
+            continue
+
+        _, fpath, sample, df, sig_flag_int, w_arr, mass_arr, src, n = result
+        X_parts.append(df)
+        y_parts.append(np.full(n, sig_flag_int, dtype="i4"))
+        w_parts.append(w_arr)
+        if parametric_input:
+            mass_parts.append(mass_arr)
         for feat in df.columns:
             if feat not in feature_sources:
                 feature_sources[feat] = src.get(feat, "unknown")
 
-        logging.info("Loaded %s: n=%d signal=%d", sample, n, int(sig_flag))
+        logging.info("Loaded %s: n=%d signal=%d", sample, n, sig_flag_int)
 
     if not X_parts:
+        logging.error("No training events loaded — check input files and signal/background flags.")
+        if skipped_files:
+            logging.error("Skipped files summary (%d total):", len(skipped_files))
+            for fpath, reason in skipped_files:
+                logging.error("  SKIPPED: %s", fpath)
+                logging.error("    Reason: %s", reason)
         raise ValueError("No training events loaded — check input files and signal/background flags.")
+
+    # Report skipped files
+    if skipped_files:
+        logging.warning("=" * 60)
+        logging.warning("SKIPPED FILES SUMMARY (%d total):", len(skipped_files))
+        for fpath, reason in skipped_files:
+            logging.warning("  SKIP: %s", fpath)
+            logging.warning("        %s", reason)
+        logging.warning("=" * 60)
 
     import pandas as pd
     X = pd.concat(X_parts, axis=0, ignore_index=True)
     y = np.concatenate(y_parts)
     w = np.concatenate(w_parts)
-    return X, y, w, feature_sources
+    mass = np.concatenate(mass_parts, axis=0) if parametric_input else None
+    return X, y, w, feature_sources, mass
 
 
 def train_dnn(args):
     """Train DNN from event-selection ROOT files (no intermediate file needed)."""
+    import os
+    import json
+
     trainer = DNNTrainer(args.config)
 
-    input_files = _get_input_files(args.input)
+    raw_inputs = _get_input_files(args.input)
+    input_files = []
+    for p in raw_inputs:
+        if os.path.isdir(p):
+            input_files.extend(sorted(str(f) for f in Path(p).iterdir() if f.suffix == ".root"))
+        else:
+            input_files.append(p)
     logging.info("Training DNN from %d input file(s)", len(input_files))
 
+    # Signal cross sections for GenModel per-masspoint event weighting (optional).
+    signal_cross_sections: Dict[str, float] = {}
+    xsec_signal_json = getattr(args, "xsection_signal_json", None)
+    if xsec_signal_json:
+        with open(xsec_signal_json) as f:
+            _sig_raw = json.load(f)
+        for _model, _entries in _sig_raw.items():
+            if isinstance(_entries, dict):
+                for _k, _v in _entries.items():
+                    if _k.startswith("_") or not isinstance(_v, (int, float)):
+                        continue
+                    signal_cross_sections[_k] = float(_v)
+
+    # Background cross sections for per-file lumi*xsec/wte event weighting (optional).
+    background_cross_sections: Dict[str, float] = {}
+    xsec_json = getattr(args, "xsection_json", None)
+    if xsec_json:
+        from .plotting import PlotManager
+        with open(xsec_json) as f:
+            _bkg_raw = json.load(f)
+        background_cross_sections = PlotManager._normalize_cross_sections(_bkg_raw)
+
+    # Lumi: training is year-independent by default (lumi=1.0) unless dnn.yaml's
+    # training.use_lumi is true and --config-year is given.
+    lumi = 1.0
+    if trainer.training_config.get("use_lumi", False) and getattr(args, "config_year", None):
+        _year_cfg = load_config(args.config_year)
+        lumi = float(_year_cfg.get("lumi", _year_cfg.get("luminosity", 1.0)))
+
+    # Parametric-DNN: derive the (MH3, MH4) mass grid from the signal xsec
+    # masspoint labels, needed to sample background masses and to record the
+    # grid in the checkpoint.
+    parametric_input = bool(trainer.model_config.get("parametric_input", False))
+    mass_grid = None
+    if parametric_input:
+        mass_grid = sorted({
+            parsed for label in signal_cross_sections
+            if (parsed := _parse_masspoint_label(label)) is not None
+        })
+        if not mass_grid:
+            raise ValueError(
+                "model.parametric_input is true in dnn.yaml but no (MH3, MH4) "
+                "masspoints could be parsed — pass --xsection-signal-json."
+            )
+
     # Load feature matrix directly from flat Events trees — no ppbbchichi-trees.root written
-    X, y, w, feature_sources = _load_training_data_from_eventsel(
+    X, y, w, feature_sources, mass = _load_training_data_from_eventsel(
         input_files=input_files,
         region=getattr(args, "region", "preselection"),
         signal_patterns=(args.signal_pattern or None),
@@ -1000,6 +1559,13 @@ def train_dnn(args):
         label_csv=args.label_csv,
         weight_branch=getattr(args, "weight_branch", "full_event_weight"),
         max_events_per_file=args.max_events_per_sample,
+        signal_cross_sections=signal_cross_sections or None,
+        background_cross_sections=background_cross_sections or None,
+        lumi=lumi,
+        features=trainer.config.get("features") or None,
+        parametric_input=parametric_input,
+        mass_grid=mass_grid,
+        seed=int(trainer.training_config.get("seed", 7)),
     )
 
     metrics = trainer.train_from_arrays(
@@ -1009,6 +1575,7 @@ def train_dnn(args):
         feature_sources=feature_sources,
         outdir=args.outdir,
         plot_dir=args.plot_dir,
+        mass=mass,
     )
 
     logging.info(
@@ -1024,15 +1591,21 @@ def apply_dnn(args):
     Reads each flat Events ROOT file, applies the trained model, and writes
     a new branch (default: ml_score) back to the file — or to a new output
     ROOT file when --output-dir is given.
+
+    For a parametric model, by default every event is scored once at a single
+    benchmark masspoint (the checkpoint's mass_grid[0]). --dnn-mass-scan
+    requests scoring at multiple grid points instead, writing one branch per
+    point named "<score_branch>_mh3_<a>_mh4_<b>".
     """
     import pandas as pd
-    from dnn.feature_engineering import build_feature_frame_from_tree, REQUESTED_FEATURES_25
+    from dnn.feature_engineering import build_feature_frame_from_tree
     from dnn.common import sanitize_feature_frame
 
     inference = DNNInference(args.model, config_path=args.config)
-    model_info = inference.get_model_info()
-    features = model_info.get("features") or list(REQUESTED_FEATURES_25)
+    features = inference.features
     score_branch = args.score_branch
+
+    mass_scan = _resolve_mass_scan(getattr(args, "dnn_mass_scan", None), inference)
 
     input_files = _get_input_files(args.input)
     output_dir = Path(args.output_dir) if args.output_dir else None
@@ -1049,13 +1622,21 @@ def apply_dnn(args):
             df = sanitize_feature_frame(df)
             n = len(df)
             X = df.to_numpy(dtype="f8")
-            masses = np.zeros(n, dtype="f8")
-            scores = inference.predict(X, masses).ravel()
+
+            if mass_scan is None:
+                scores = inference.predict(X, None).ravel()
+                score_branches = {score_branch: scores.astype("f4")}
+            else:
+                score_branches = {}
+                for mh3, mh4 in mass_scan:
+                    masses = np.tile(np.asarray([mh3, mh4], dtype="f8"), (n, 1))
+                    scores = inference.predict(X, masses).ravel()
+                    score_branches[_mass_branch_name(score_branch, mh3, mh4)] = scores.astype("f4")
 
             # Collect all existing branches
             arrays = tree.arrays(library="np")
 
-        arrays[score_branch] = scores.astype("f4")
+        arrays.update(score_branches)
 
         if output_dir:
             out_path = output_dir / Path(fpath).name
@@ -1065,7 +1646,7 @@ def apply_dnn(args):
         with uproot.recreate(str(out_path)) as out_f:
             out_f["Events"] = arrays
 
-        logging.info("Scored %s: n=%d → %s (branch: %s)", Path(fpath).name, n, out_path, score_branch)
+        logging.info("Scored %s: n=%d → %s (branches: %s)", Path(fpath).name, n, out_path, list(score_branches))
 
 
 def make_plots(args):
@@ -1323,13 +1904,37 @@ def make_event_plots(args):
                     _ds = _e.get("full_dataset") or _e.get("dataset")
                     _xsec = _e.get("xsection")
                     _yr = str(_e.get("year", ""))
-                    if _ds and _xsec is not None:
+                    if _ds is None or _xsec is None:
+                        continue
+                    # full_dataset may be a single name or a list of per-era
+                    # dataset-name variants — register each variant as a key.
+                    _names = _ds if isinstance(_ds, (list, tuple)) else [_ds]
+                    for _name in _names:
+                        if not _name:
+                            continue
                         # prefer matching year; always overwrite so last match wins
-                        if not year_str or _yr == year_str or _ds not in cross_sections:
-                            cross_sections[_ds] = float(_xsec)
+                        if not year_str or _yr == year_str or _name not in cross_sections:
+                            cross_sections[_name] = float(_xsec)
             elif isinstance(_entries, (int, float)):
                 # already flat: {stem: xsec}
                 cross_sections[_cat] = float(_entries)
+
+    # Signal cross sections: {model: {masspoint: xsec}} — flatten all models into cross_sections
+    if getattr(args, "xsection_signal_json", None):
+        with open(args.xsection_signal_json) as f:
+            _sig_raw = json.load(f)
+        for _model, _entries in _sig_raw.items():
+            if isinstance(_entries, dict):
+                for _k, _v in _entries.items():
+                    if _k.startswith("_"):
+                        continue  # skip _comment etc.
+                    if isinstance(_v, (int, float)):
+                        cross_sections[_k] = float(_v)
+            elif isinstance(_entries, (int, float)):
+                cross_sections[_model] = float(_entries)
+        logging.info("Loaded signal cross sections from %s (%d masspoints)",
+                     args.xsection_signal_json,
+                     sum(1 for k in cross_sections if k.startswith("MH")))
 
     version = args.version
     if not version:
@@ -1352,6 +1957,12 @@ def make_event_plots(args):
         regions_config=getattr(args, "regions_config", None),
         weight_systematic=getattr(args, "weight_systematic", None),
         show_data=getattr(args, "show_data", False),
+        signal_scale=float(getattr(args, "signal_scale", 1.0) or 1.0),
+        make_syst_plots=getattr(args, "make_syst_plots", False),
+        apply_dnn=getattr(args, "apply_dnn", False),
+        dnn_model=getattr(args, "dnn_model", None),
+        dnn_config=getattr(args, "dnn_config", None),
+        dnn_mass_scan=getattr(args, "dnn_mass_scan", None),
     )
     logging.info(f"analyze-regions: {len(out_files)} plot(s) written to {args.output_dir}")
 
@@ -1512,6 +2123,12 @@ Examples:
                                help="Collision data: apply golden JSON lumi mask, skip MC weights")
     analyze_parser.add_argument("--xsection-json", default=None, metavar="JSON",
                                help="JSON mapping filename stem → cross-section in pb (region-analysis mode)")
+    analyze_parser.add_argument("--xsection-signal-json", default=None, metavar="JSON",
+                               help="JSON with signal cross sections: {model: {masspoint: xsec_pb}} e.g. data/cross-section/xsection_signal.json")
+    analyze_parser.add_argument("--signal-scale", type=float, default=1.0, metavar="N",
+                               help="Multiply all signal histograms by N for shape visibility (shown as ×N in legend, default: 1)")
+    analyze_parser.add_argument("--make-syst-plots", action="store_true", default=False,
+                               help="Produce systematic comparison plots (central+up+down per uncertainty) in outputs/plots/{version}/systematics/")
     # Plotting flags
     analyze_parser.add_argument("--make-region-plots", action="store_true", default=False,
                                help="Produce stacked region plots (pdf/png/txt/root) — region-analysis and full modes")
@@ -1535,6 +2152,11 @@ Examples:
                                help="Weight branch override for plots (e.g. weight_pileupUP)")
     # DNN integration flags
     analyze_parser.add_argument(
+        "--apply-dnn", action="store_true",
+        help="Score events with --dnn-model/--dnn-config in the stacked-plot "
+             "(--make-region-plots) path and add ml_score as a plotted variable.",
+    )
+    analyze_parser.add_argument(
         "--dnn-model", default=None,
         help="Path to trained DNN checkpoint (.pt). Scores events before region analysis.",
     )
@@ -1543,12 +2165,25 @@ Examples:
         help="DNN config YAML (e.g. configs/dnn.yaml).",
     )
     analyze_parser.add_argument(
+        "--dnn-mass-scan", default=None,
+        help="Parametric models only. Omit (default) to score once at the "
+             "checkpoint's benchmark masspoint (mass_grid[0]). Pass 'all' to "
+             "score at every grid point (produces one ml_score_mh3_<a>_mh4_<b> "
+             "branch and one full set of region plots per masspoint), or a "
+             "comma list of MH3_<a>_MH4_<b>_Mchi_<c> labels to scan a subset. "
+             "Ignored for non-parametric models.",
+    )
+    analyze_parser.add_argument(
         "--train-dnn", default=None,
         help="DNN config YAML path: train DNN on event-selection output before region analysis.",
     )
     analyze_parser.add_argument(
-        "--dnn-outdir", default="outputs_dnn",
-        help="Output directory for DNN model + metrics (default: outputs_dnn)",
+        "--dnn-outdir", default="data/dnn",
+        help="Output directory for DNN model artifacts: dnn_model.pt, scaler.json, etc. (default: data/dnn)",
+    )
+    analyze_parser.add_argument(
+        "--dnn-plotdir", default="outputs/dnn",
+        help="Output directory for DNN training plots (default: outputs/dnn)",
     )
     analyze_parser.add_argument(
         "--dnn-only", action="store_true",
@@ -1612,14 +2247,15 @@ Examples:
         "train-dnn",
         help="Train DNN classifier from event-selection ROOT output files",
     )
-    train_dnn_parser.add_argument("--config", required=True, help="DNN configuration YAML (configs/dnn.yaml)")
+    train_dnn_parser.add_argument("--dnn-config", dest="config", required=True,
+                                   help="DNN configuration YAML (configs/dnn.yaml)")
     train_dnn_parser.add_argument(
         "--input", nargs="+", required=True,
-        help="Event-selection ROOT files (one per sample), or a .txt file listing paths",
+        help="Event-selection ROOT files (one per sample), a folder of them, or a .txt file listing paths",
     )
     train_dnn_parser.add_argument("--region", default="preselection", help="Region label (default: preselection)")
-    train_dnn_parser.add_argument("--outdir", default="outputs_dnn", help="Output directory for model + metrics (default: outputs_dnn)")
-    train_dnn_parser.add_argument("--plot-dir", default="outputs_dnn/plots", help="Output directory for plots (default: outputs_dnn/plots)")
+    train_dnn_parser.add_argument("--outdir", default="data/dnn", help="Output directory for model + metrics (default: data/dnn)")
+    train_dnn_parser.add_argument("--plot-dir", default="outputs/dnn", help="Output directory for plots (default: outputs/dnn)")
     train_dnn_parser.add_argument(
         "--signal-pattern", action="append", default=None, dest="signal_pattern",
         help="Regex to identify signal files (repeatable). Default: keyword heuristic",
@@ -1639,6 +2275,22 @@ Examples:
     train_dnn_parser.add_argument(
         "--max-events-per-sample", type=int, default=200000,
         help="Cap events loaded per sample (default: 200000)",
+    )
+    train_dnn_parser.add_argument(
+        "--xsection-signal-json", default=None,
+        help="Signal cross-section JSON (data/cross-section/xsection_signal.json) for "
+             "GenModel per-masspoint event weighting. Omit to keep uniform per-file weight.",
+    )
+    train_dnn_parser.add_argument(
+        "--xsection-json", default=None,
+        help="Background cross-section JSON (data/cross-section/xsection_background_run3.json) "
+             "for per-file lumi*xsec/weighted_total_events event weighting. "
+             "Omit to keep raw weight_branch only.",
+    )
+    train_dnn_parser.add_argument(
+        "--config-year", default=None,
+        help="Optional year config (e.g. configs/2024.yaml) to source lumi from. "
+             "Only used when dnn.yaml training.use_lumi is true; otherwise lumi=1.0.",
     )
     train_dnn_parser.set_defaults(func=train_dnn)
 
@@ -1666,6 +2318,13 @@ Examples:
     apply_dnn_parser.add_argument(
         "--score-branch", default="ml_score",
         help="Name of the new score branch (default: ml_score)",
+    )
+    apply_dnn_parser.add_argument(
+        "--dnn-mass-scan", default=None,
+        help="Parametric models only. Omit (default) to score once at the "
+             "checkpoint's benchmark masspoint (mass_grid[0]). Pass 'all' to "
+             "score at every grid point, or a comma list of MH3_<a>_MH4_<b>_Mchi_<c> "
+             "labels to score at specific points. Ignored for non-parametric models.",
     )
     apply_dnn_parser.set_defaults(func=apply_dnn)
 

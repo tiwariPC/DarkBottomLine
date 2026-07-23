@@ -33,8 +33,8 @@ triggers:
    SingleMuon: ["HLT_IsoMu24", "HLT_IsoMu27"]
    EGamma: ["HLT_Ele30_WPTight_Gsf", "HLT_Photon200"]
 
-# MET filters
-met_filters:
+# Noise filters
+noise_filters:
    - "Flag_goodVertices"
    - "Flag_globalSuperTightHalo2016Filter"
    - "Flag_EcalDeadCellTriggerPrimitiveFilter"
@@ -60,20 +60,18 @@ objects:
       pt_min: 32.0
       pt_min_loose: 10.0
       eta_max: 2.5
-      id_loose: "loose"
-      iso_loose: "loose"
-      id_tight: "tight"
-      iso_tight: "tight"
+      # loose = cutBased >= id_wp_loose  AND mvaIso_WP90
+      # tight = cutBased >= id_wp_tight  AND mvaIso_WP80
       id_wp_loose: 2     # cutBased >= 2 = loose
       id_wp_tight: 4     # cutBased >= 4 = tight
 
    taus:
       pt_min: 20.0
       eta_max: 2.3
-      id_loose: "loose"
-      id_tight: "tight"
-      id_wp_loose: 4     # deepTau VSjet >= 4 = loose
-      id_wp_tight: 16    # deepTau VSjet >= 16 = tight
+      # Tau is a veto object (no tight WP). DeepTau2018v2p5 WPs:
+      id_wp_vsjet: 3     # VSjet >= 3  = VLoose
+      id_wp_vse: 1       # VSe   >= 1  = VVVLoose
+      id_wp_vsmu: 1      # VSmu  >= 1  = VLoose
       decay_modes: [0, 1, 2, 10, 11]
 
    jets:
@@ -84,8 +82,8 @@ objects:
    photons:
       pt_min: 15.0
       eta_max: 2.5
-      id: "loose"
-      id_wp: 1           # cutBased >= 1 = loose
+      # Veto object: ID = cutBased loose only
+      id_wp_loose: 1     # cutBased >= 1 = loose
 
    fatjets:
       pt_min: 200.0
@@ -94,11 +92,13 @@ objects:
 
 # B-tagging working points
 btagging:
-   wp: "medium"   # loose, medium, tight
-   algorithm: "deepJet"   # deepJet, deepCSV
-   score_loose: 0.0490    # Run3 2022 deepJet WPs (BTV POG)
-   score_medium: 0.2783
-   score_tight: 0.7100
+   algorithm: "PNet"       # PNet, deepJet, deepCSV
+   branch: "Jet_btagPNetB"  # NanoAOD branch name
+   score: 0.2605    # Run3 2022EE PNet medium WP (BTV POG)
+   # B-tag SF (correctionlib). shape = continuous SF: correction {sf_name}_shape,
+   # evaluate(systematic, flavor, abseta, pt, discriminant).
+   sf_name: "particleNet"  # base correction name in btagging.json.gz
+   sf_type: "shape"        # Summer22EE ships particleNet_shape
 
 # Event selection
 event_selection:
@@ -117,3 +117,4 @@ event_selection:
 # Cleaning parameters
 cleaning:
    dr_jet: 0.4
+   dr_photon_lep: 0.4   # photon veto: dR cleaning vs loose electrons+muons (Run 2 parity)

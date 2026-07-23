@@ -9,6 +9,8 @@ import yaml
 from typing import Dict, Any, List, Optional, Union
 import logging
 
+from .objects import SENTINEL
+
 warnings.filterwarnings("ignore", message="invalid value encountered in sqrt",
                         category=RuntimeWarning)
 
@@ -134,7 +136,7 @@ class Region:
 
             mask = mask & ak.fill_none(cut_mask, False, axis=0)
             n_pass = int(ak.sum(mask))
-            cutflow[f"After {var}"] = n_pass
+            cutflow[var] = n_pass
             after_cuts.append(f"{var}: {n_pass}")
 
         if after_cuts:
@@ -201,7 +203,7 @@ class Region:
             elif operator == "!=": cut_mask = var_value != value
             else: continue
             mask = mask & ak.fill_none(cut_mask, False, axis=0)
-            yields[f"After {var}"] = _w_sum(mask)
+            yields[var] = _w_sum(mask)
         return yields
 
     def _zeros_like_events(self, events: ak.Array, n_ev: int, dtype=float) -> ak.Array:
@@ -231,7 +233,7 @@ class Region:
         # Special variables
         if var == "MET":
             # Raw MET (no lepton correction) — used for W CR MET > 100
-            met_pt = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
+            met_pt = next((events[v] for v in ("PuppiMET_pt", "PFMET_pt", "MET_pt") if v in events.fields), None)
             return ak.fill_none(met_pt, 0.0)
         if var == "Recoil":
             # Global recoil = |-(MET_vec + sum pT(loose leptons))|, precomputed in build_objects
@@ -248,22 +250,58 @@ class Region:
             # Flat-branch fallback: n_bjets scalar per event
             if "n_bjets" in events.fields:
                 return events["n_bjets"]
-            return ak.zeros(n_ev, dtype=np.int64)
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "Njets":
             if "jets" in objects:
                 return self._safe_num_axis1(objects["jets"], n_ev)
-            for _fname in ("Njets_PassID", "n_jets"):
+            for _fname in ("njets", "n_jets"):
                 if _fname in events.fields:
                     return events[_fname]
-            return ak.zeros(n_ev, dtype=np.int64)
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "NjetsMin":
             # Lower bound on jet multiplicity — same variable as Njets, distinct key for clarity
             if "jets" in objects:
                 return self._safe_num_axis1(objects["jets"], n_ev)
-            for _fname in ("Njets_PassID", "n_jets"):
+            for _fname in ("njets", "n_jets"):
                 if _fname in events.fields:
                     return events[_fname]
-            return ak.zeros(n_ev, dtype=np.int64)
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
+        if var in ("LeadingBjet", "SubleadingBjet", "Bjet1bCond", "Bjet2bCond"):
+            # Positional b-tag flags. LeadingBjet/SubleadingBjet: is the pt-leading
+            # (subleading) jet b-tagged. Bjet1bCond/Bjet2bCond: composite category
+            # condition merging the b-count with the positional requirement into a
+            # single region cut (one cutflow step):
+            #   Bjet1bCond = (Nbjets==1) & (lead jet b-tagged)
+            #   Bjet2bCond = (Nbjets==2) & (lead & sublead jets b-tagged)
+            _flat = {
+                "LeadingBjet": "is_lead_bjet", "SubleadingBjet": "is_sublead_bjet",
+                "Bjet1bCond": "Bjet1bCond", "Bjet2bCond": "Bjet2bCond",
+            }[var]
+            # Flat-branch path (EVENTSELECTION.root): use precomputed int flag.
+            if _flat in events.fields:
+                return ak.values_astype(events[_flat], np.int64)
+            # Objects path: recompute from jet btagScore vs WP.
+            jets = objects.get("jets", ak.Array([]))
+            if len(ak.flatten(jets)) == 0 or "btag_score" not in objects:
+                return ak.Array(np.zeros(n_ev, dtype=np.int64))
+            try:
+                wp = objects["btag_score"]
+                def _pos_b(idx):
+                    b = ak.pad_none(jets.btagScore, idx + 1, clip=True)[:, idx]
+                    return ak.fill_none(b, SENTINEL) > wp
+                if var == "LeadingBjet":
+                    flag = _pos_b(0)
+                elif var == "SubleadingBjet":
+                    flag = _pos_b(1)
+                else:
+                    nb = self._safe_num_axis1(objects.get("bjets", ak.Array([])), n_ev)
+                    if var == "Bjet1bCond":
+                        flag = (nb == 1) & _pos_b(0)
+                    else:
+                        flag = (nb == 2) & _pos_b(0) & _pos_b(1)
+                return ak.values_astype(ak.fill_none(flag, False, axis=0), np.int64)
+            except (Exception, BaseException):
+                return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "Jet1Pt":
             jets = objects.get("jets", ak.Array([]))
             if len(ak.flatten(jets)) == 0:
@@ -279,22 +317,35 @@ class Region:
                 n_taus = self._safe_num_axis1(objects.get("tight_taus", ak.Array([])), n_ev)
                 return n_muons + n_electrons + n_taus
             # Flat-branch fallback
-            _nm = events["n_muons"] if "n_muons" in events.fields else ak.zeros(n_ev, dtype=np.int64)
-            _ne = events["n_electrons"] if "n_electrons" in events.fields else ak.zeros(n_ev, dtype=np.int64)
-            _nt = events["n_taus"] if "n_taus" in events.fields else ak.zeros(n_ev, dtype=np.int64)
+            _nm = events["n_muons"] if "n_muons" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64))
+            _ne = events["n_electrons"] if "n_electrons" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64))
+            _nt = events["n_taus"] if "n_taus" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64))
             return _nm + _ne + _nt
         if var == "Nmuons":
             if "tight_muons" in objects:
                 return self._safe_num_axis1(objects["tight_muons"], n_ev)
             if "n_muons" in events.fields:
                 return events["n_muons"]
-            return ak.zeros(n_ev, dtype=np.int64)
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "Nelectrons":
             if "tight_electrons" in objects:
                 return self._safe_num_axis1(objects["tight_electrons"], n_ev)
             if "n_electrons" in events.fields:
                 return events["n_electrons"]
-            return ak.zeros(n_ev, dtype=np.int64)
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
+        if var == "NmuonsTight":
+            # W/Top CR signal lepton: tight ID + pt>pt_min (Run 2: tightId && pt>30)
+            if "tight_muons" in objects:
+                return self._safe_num_axis1(objects["tight_muons"], n_ev)
+            if "n_tight_muons" in events.fields:
+                return events["n_tight_muons"]
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
+        if var == "NelectronsTight":
+            if "tight_electrons" in objects:
+                return self._safe_num_axis1(objects["tight_electrons"], n_ev)
+            if "n_tight_electrons" in events.fields:
+                return events["n_tight_electrons"]
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "NmuonsZ":
             if "n_z_muons" in objects:
                 return objects["n_z_muons"]
@@ -320,16 +371,16 @@ class Region:
                 return self._safe_num_axis1(objects["tight_taus"], n_ev)
             if "n_taus" in events.fields:
                 return events["n_taus"]
-            return ak.zeros(n_ev, dtype=np.int64)
+            return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var == "NAdditionalJets":
             if "jets" in objects or "bjets" in objects:
                 n_jets = self._safe_num_axis1(objects.get("jets", ak.Array([])), n_ev)
                 n_bjets = self._safe_num_axis1(objects.get("bjets", ak.Array([])), n_ev)
                 return n_jets - n_bjets
             # Flat-branch fallback
-            _nj = events["Njets_PassID"] if "Njets_PassID" in events.fields else (
-                events["n_jets"] if "n_jets" in events.fields else ak.zeros(n_ev, dtype=np.int64))
-            _nb = events["n_bjets"] if "n_bjets" in events.fields else ak.zeros(n_ev, dtype=np.int64)
+            _nj = events["njets"] if "njets" in events.fields else (
+                events["n_jets"] if "n_jets" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64)))
+            _nb = events["n_bjets"] if "n_bjets" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64))
             return _nj - _nb
         if var == "MT":
             # Flat-branch fallback — event-selected files store precomputed mt
@@ -337,64 +388,12 @@ class Region:
                 for _fname in ("mt", "MT", "w_mt"):
                     if _fname in events.fields:
                         return ak.fill_none(events[_fname], 0.0)
-                # Compute from scalar leading-lepton branches + MET
-                met_pt_f  = events["PFMET_pt"]  if "PFMET_pt"  in events.fields else None
-                met_phi_f = events["PFMET_phi"] if "PFMET_phi" in events.fields else None
-                if met_pt_f is not None and met_phi_f is not None:
-                    for pt_f, phi_f in (
-                        ("muon_lep1_pt",     "muon_lep1_phi"),
-                        ("electron_lep1_pt", "electron_lep1_phi"),
-                        ("muon_pt",          "muon_phi"),      # jagged fallback
-                        ("electron_pt",      "electron_phi"),  # jagged fallback
-                    ):
-                        if pt_f in events.fields and phi_f in events.fields:
-                            try:
-                                lpt  = events[pt_f]
-                                lphi = events[phi_f]
-                                # jagged: take leading element; scalar: use directly
-                                if hasattr(lpt, 'ndim') and lpt.ndim == 1:
-                                    l1pt, l1phi = lpt, lphi
-                                else:
-                                    has1 = ak.num(lpt) >= 1
-                                    l1pt  = ak.where(has1, lpt[:, 0],  0.0)
-                                    l1phi = ak.where(has1, lphi[:, 0], 0.0)
-                                valid = l1pt > 0
-                                dphi = abs(l1phi - met_phi_f)
-                                dphi = ak.where(dphi > np.pi, 2 * np.pi - dphi, dphi)
-                                mt_val = ak.where(valid, np.sqrt(2 * l1pt * met_pt_f * (1 - np.cos(dphi))), 0.0)
-                                return ak.fill_none(mt_val, 0.0, axis=0)
-                            except Exception:
-                                pass
-            # Transverse mass (tight pt>30 leptons for CR)
-            met_pt = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
-            met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
-
-            muons = objects.get("tight_muons", ak.Array([]))
-            electrons = objects.get("tight_electrons", ak.Array([]))
-
-            mt = ak.zeros_like(met_pt)
-            try:
-                # Muon MT (argsort axis=1 can fail on depth-1)
-                has_muons = ak.num(muons) > 0
-                leading_muon = ak.firsts(muons[ak.argsort(muons.pt, ascending=False, axis=1)])
-                muon_pt = leading_muon.pt
-                muon_phi = leading_muon.phi
-                delta_phi_mu = abs(muon_phi - met_phi)
-                delta_phi_mu = ak.where(delta_phi_mu > np.pi, 2 * np.pi - delta_phi_mu, delta_phi_mu)
-                mt_mu = np.sqrt(2 * muon_pt * met_pt * (1 - np.cos(delta_phi_mu)))
-                mt = ak.where(has_muons, mt_mu, mt)
-
-                # Electron MT for events without muons
-                has_electrons = ak.num(electrons) > 0
-                leading_electron = ak.firsts(electrons[ak.argsort(electrons.pt, ascending=False, axis=1)])
-                ele_pt = leading_electron.pt
-                ele_phi = leading_electron.phi
-                delta_phi_el = abs(ele_phi - met_phi)
-                delta_phi_el = ak.where(delta_phi_el > np.pi, 2 * np.pi - delta_phi_el, delta_phi_el)
-                mt_el = np.sqrt(2 * ele_pt * met_pt * (1 - np.cos(delta_phi_el)))
-                mt = ak.where(~has_muons & has_electrons, mt_el, mt)
-            except (Exception, BaseException):
-                pass
+            # Transverse mass: precomputed in build_objects (mt_mu / mt_el)
+            n_tight_mu = self._safe_num_axis1(objects.get("tight_muons"), n_ev)
+            n_tight_el = self._safe_num_axis1(objects.get("tight_electrons"), n_ev)
+            mt_mu = objects.get("mt_mu", self._zeros_like_events(events, n_ev, dtype=float))
+            mt_el = objects.get("mt_el", self._zeros_like_events(events, n_ev, dtype=float))
+            mt = ak.where(n_tight_mu > 0, mt_mu, ak.where(n_tight_el > 0, mt_el, 0.0))
             return ak.fill_none(mt, 0.0, axis=0)
         if var in ("Mll", "MllMin", "MllMax"):
             # Flat-branch path: reading from EVENTSELECTION.root (objects={})
@@ -402,46 +401,6 @@ class Region:
                 for _fname in ("mll", "Mll", "z_mass"):
                     if _fname in events.fields:
                         return ak.fill_none(ak.values_astype(events[_fname], float), 0.0)
-                # Pick lepton flavor using n_z_electrons/n_z_muons flat branches
-                # to avoid computing Mll from the wrong lepton pair.
-                nzm_flat = events["n_z_muons"]     if "n_z_muons"     in events.fields else None
-                nze_flat = events["n_z_electrons"] if "n_z_electrons" in events.fields else None
-
-                def _mll_from_branches(l1pt_f, l1eta_f, l1phi_f, l2pt_f, l2eta_f, l2phi_f):
-                    if not all(f in events.fields for f in (l1pt_f, l1eta_f, l1phi_f, l2pt_f, l2eta_f, l2phi_f)):
-                        return None
-                    try:
-                        l1pt  = events[l1pt_f];  l1eta = events[l1eta_f]; l1phi = events[l1phi_f]
-                        l2pt  = events[l2pt_f];  l2eta = events[l2eta_f]; l2phi = events[l2phi_f]
-                        has2  = (l1pt > 0) & (l2pt > 0)
-                        dphi  = abs(l1phi - l2phi)
-                        dphi  = ak.where(dphi > np.pi, 2 * np.pi - dphi, dphi)
-                        deta  = l1eta - l2eta
-                        mll   = ak.where(
-                            has2,
-                            np.sqrt(2 * l1pt * l2pt * (np.cosh(deta) - np.cos(dphi))),
-                            0.0,
-                        )
-                        return ak.fill_none(mll, 0.0, axis=0)
-                    except Exception:
-                        return None
-
-                mu_fields  = ("muon_lep1_pt",     "muon_lep1_eta",     "muon_lep1_phi",
-                              "muon_lep2_pt",     "muon_lep2_eta",     "muon_lep2_phi")
-                el_fields  = ("electron_lep1_pt", "electron_lep1_eta", "electron_lep1_phi",
-                              "electron_lep2_pt", "electron_lep2_eta", "electron_lep2_phi")
-
-                # Prefer the flavor matching the Z candidate in each event
-                mll_mu = _mll_from_branches(*mu_fields)
-                mll_el = _mll_from_branches(*el_fields)
-
-                if mll_mu is not None and mll_el is not None and nzm_flat is not None and nze_flat is not None:
-                    mll = ak.where(nzm_flat == 2, mll_mu, ak.where(nze_flat == 2, mll_el, 0.0))
-                    return ak.fill_none(mll, 0.0, axis=0)
-                elif mll_mu is not None and (nzm_flat is None or nze_flat is None):
-                    return mll_mu
-                elif mll_el is not None:
-                    return mll_el
             # Z candidate mass: muon pair if NmuonsZ==2 else electron pair if NelectronsZ==2
             n_z_mu = objects.get("n_z_muons", self._zeros_like_events(events, n_ev, dtype=int))
             n_z_el = objects.get("n_z_electrons", self._zeros_like_events(events, n_ev, dtype=int))
@@ -457,26 +416,26 @@ class Region:
                 except (Exception, BaseException):
                     return np.zeros(n_ev, dtype=np.float64)
         if var == "Zpt":
-            # pT of dilepton system from scalar lep1/lep2 branches
-            for (l1pt_f, l1phi_f, l2pt_f, l2phi_f) in (
-                ("muon_lep1_pt",     "muon_lep1_phi",     "muon_lep2_pt",     "muon_lep2_phi"),
-                ("electron_lep1_pt", "electron_lep1_phi", "electron_lep2_pt", "electron_lep2_phi"),
-            ):
-                if all(f in events.fields for f in (l1pt_f, l1phi_f, l2pt_f, l2phi_f)):
-                    try:
-                        l1pt  = events[l1pt_f];  l1phi = events[l1phi_f]
-                        l2pt  = events[l2pt_f];  l2phi = events[l2phi_f]
-                        has2  = (l1pt > 0) & (l2pt > 0)
-                        px    = l1pt * np.cos(l1phi) + l2pt * np.cos(l2phi)
-                        py    = l1pt * np.sin(l1phi) + l2pt * np.sin(l2phi)
-                        zpt   = ak.where(has2, np.sqrt(px**2 + py**2), 0.0)
-                        return ak.fill_none(zpt, 0.0, axis=0)
-                    except Exception:
-                        pass
+            # pT of the Z candidate dilepton system, computed in build_z_candidates
+            # from the same candidate leptons as Mll.
+            # Flat-branch path (reading EVENTSELECTION.root): use the Zpt branch.
+            if "Zpt" in events.fields:
+                return ak.fill_none(ak.values_astype(events["Zpt"], float), 0.0)
+            # Objects path: merge muon/electron candidate pT by Z-candidate flavor.
+            z_pt_mu = objects.get("z_pt_mu")
+            z_pt_el = objects.get("z_pt_el")
+            if z_pt_mu is not None and z_pt_el is not None:
+                n_z_mu = objects.get("n_z_muons", self._zeros_like_events(events, n_ev, dtype=int))
+                n_z_el = objects.get("n_z_electrons", self._zeros_like_events(events, n_ev, dtype=int))
+                zpt = ak.where(n_z_mu == 2, z_pt_mu, ak.where(n_z_el == 2, z_pt_el, 0.0))
+                try:
+                    return ak.fill_none(zpt, 0.0, axis=0)
+                except (Exception, BaseException):
+                    return np.zeros(n_ev, dtype=np.float64)
             return np.zeros(n_ev, dtype=np.float64)
         if var == "DeltaPhi":
             jets = objects.get("jets", ak.Array([]))
-            met_phi = events["PFMET_phi"] if "PFMET_phi" in events.fields else events["MET_phi"]
+            met_phi = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
 
             # Check if jets array is empty or has no structure
             if len(ak.flatten(jets)) == 0 or len(jets) == 0:
@@ -506,7 +465,7 @@ class Region:
                 return self._zeros_like_events(events, n_ev, dtype=float)
         if var == "metQuality":
             # MET Quality = (pfMET - caloMET) / Recoil
-            pf_met = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
+            pf_met = next((events[v] for v in ("PuppiMET_pt", "PFMET_pt", "MET_pt") if v in events.fields), None)
             calo_met = events.get("CaloMET_pt", pf_met)  # Fallback to pfMET if caloMET not available
             recoil = self._get_variable_value(events, objects, "Recoil")
 

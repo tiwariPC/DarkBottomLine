@@ -1,0 +1,372 @@
+{
+  "root": "<in-memory>",
+  "region": "preselection",
+  "requested_features": [
+    "costheta_star",
+    "JetHT",
+    "Jet1BTagScore",
+    "dRJet12",
+    "dPhiJet12",
+    "Jet1Pt",
+    "Jet2BTagScore",
+    "Jet2Eta",
+    "Jet2Pt",
+    "Jet3BTagScore",
+    "Jet3Eta",
+    "Jet3Pt",
+    "eta_Jet1Jet2",
+    "M_Jet1Jet2",
+    "dPhi_jetMET",
+    "dEtaJet12",
+    "MET_significance",
+    "pT_Jet1Jet2",
+    "ratioJet1PtMET",
+    "ratioPtJet21",
+    "del_plus",
+    "Jet1Eta",
+    "del_minus",
+    "MET_phi",
+    "Jet1Phi",
+    "Jet2Phi",
+    "phi_Jet1Jet2",
+    "Recoil",
+    "njets",
+    "n_bjets",
+    "RecoilPhi",
+    "dPhiJet13",
+    "M_Jet1Jet3"
+  ],
+  "features": [
+    "costheta_star",
+    "JetHT",
+    "Jet1BTagScore",
+    "dRJet12",
+    "dPhiJet12",
+    "Jet1Pt",
+    "Jet2BTagScore",
+    "Jet2Eta",
+    "Jet2Pt",
+    "Jet3BTagScore",
+    "Jet3Eta",
+    "Jet3Pt",
+    "eta_Jet1Jet2",
+    "M_Jet1Jet2",
+    "dPhi_jetMET",
+    "dEtaJet12",
+    "MET_significance",
+    "pT_Jet1Jet2",
+    "ratioJet1PtMET",
+    "ratioPtJet21",
+    "del_plus",
+    "Jet1Eta",
+    "del_minus",
+    "MET_phi",
+    "Jet1Phi",
+    "Jet2Phi",
+    "phi_Jet1Jet2",
+    "Recoil",
+    "njets",
+    "n_bjets",
+    "RecoilPhi",
+    "dPhiJet13",
+    "M_Jet1Jet3"
+  ],
+  "feature_sources": {
+    "costheta_star": "branch:costheta_star",
+    "JetHT": "branch:JetHT",
+    "Jet1BTagScore": "branch:Jet1BTagScore",
+    "dRJet12": "branch:dRJet12",
+    "dPhiJet12": "branch:dPhiJet12",
+    "Jet1Pt": "branch:Jet1Pt",
+    "Jet2BTagScore": "branch:Jet2BTagScore",
+    "Jet2Eta": "branch:Jet2Eta",
+    "Jet2Pt": "branch:Jet2Pt",
+    "Jet3BTagScore": "branch:Jet3BTagScore",
+    "Jet3Eta": "branch:Jet3Eta",
+    "Jet3Pt": "branch:Jet3Pt",
+    "eta_Jet1Jet2": "branch:eta_Jet1Jet2",
+    "M_Jet1Jet2": "branch:M_Jet1Jet2",
+    "dPhi_jetMET": "branch:dPhi_jetMET",
+    "dEtaJet12": "branch:dEtaJet12",
+    "MET_significance": "branch:MET_significance",
+    "pT_Jet1Jet2": "branch:pT_Jet1Jet2",
+    "ratioJet1PtMET": "branch:ratioJet1PtMET",
+    "ratioPtJet21": "branch:ratioPtJet21",
+    "del_plus": "branch:del_plus",
+    "Jet1Eta": "branch:Jet1Eta",
+    "del_minus": "branch:del_minus",
+    "MET_phi": "branch:MET_phi",
+    "Jet1Phi": "branch:Jet1Phi",
+    "Jet2Phi": "branch:Jet2Phi",
+    "phi_Jet1Jet2": "branch:phi_Jet1Jet2",
+    "Recoil": "branch:Recoil",
+    "njets": "branch:njets",
+    "n_bjets": "branch:n_bjets",
+    "RecoilPhi": "branch:RecoilPhi",
+    "dPhiJet13": "branch:dPhiJet13",
+    "M_Jet1Jet3": "branch:M_Jet1Jet3"
+  },
+  "top_k_significance": 0,
+  "topology_decorrelation_weight": 0.0,
+  "topology_decorrelation_features": [
+    "M_Jet1Jet2",
+    "dRJet12"
+  ],
+  "balance_classes": true,
+  "class_balance_factors": {
+    "background": 0.5001860174576145,
+    "signal": 1344.4598799276623
+  },
+  "used_samples": {},
+  "model_spec": {
+    "n_inputs": 33,
+    "hidden_layers": [
+      128,
+      64,
+      32
+    ],
+    "dropout": 0.2,
+    "parametric": false,
+    "mass_grid": null
+  },
+  "auc_train": 0.9864592296983684,
+  "auc_val": 0.9795838320633703,
+  "auc_test": 0.9796983565969382,
+  "n_train": 735902,
+  "n_val": 294361,
+  "n_test": 441542,
+  "seed": 7,
+  "top_feature_dnn_scores": [
+    {
+      "feature": "costheta_star",
+      "source": "branch:costheta_star",
+      "feature_asimov_z": 0.11530017675944013,
+      "dnn_auc_train": 0.5455053427046184,
+      "dnn_auc_test": 0.5425652859161135
+    },
+    {
+      "feature": "JetHT",
+      "source": "branch:JetHT",
+      "feature_asimov_z": 0.12607838539077465,
+      "dnn_auc_train": 0.5909404071326078,
+      "dnn_auc_test": 0.5899011730755609
+    },
+    {
+      "feature": "Jet1BTagScore",
+      "source": "branch:Jet1BTagScore",
+      "feature_asimov_z": 0.36800170984502556,
+      "dnn_auc_train": 0.9051959993538111,
+      "dnn_auc_test": 0.9058331053010757
+    },
+    {
+      "feature": "dRJet12",
+      "source": "branch:dRJet12",
+      "feature_asimov_z": 0.11649251307831346,
+      "dnn_auc_train": 0.5554989142866202,
+      "dnn_auc_test": 0.550057298835556
+    },
+    {
+      "feature": "dPhiJet12",
+      "source": "branch:dPhiJet12",
+      "feature_asimov_z": 0.11622740940932075,
+      "dnn_auc_train": 0.5512452232111098,
+      "dnn_auc_test": 0.5456887528858642
+    },
+    {
+      "feature": "Jet1Pt",
+      "source": "branch:Jet1Pt",
+      "feature_asimov_z": 0.12072860889980477,
+      "dnn_auc_train": 0.5294055083339673,
+      "dnn_auc_test": 0.5264219739644416
+    },
+    {
+      "feature": "Jet2BTagScore",
+      "source": "branch:Jet2BTagScore",
+      "feature_asimov_z": 0.19299472462693534,
+      "dnn_auc_train": 0.7364642790892115,
+      "dnn_auc_test": 0.7288874100745347
+    },
+    {
+      "feature": "Jet2Eta",
+      "source": "branch:Jet2Eta",
+      "feature_asimov_z": 0.113246843738515,
+      "dnn_auc_train": 0.5219199147660217,
+      "dnn_auc_test": 0.518466312440367
+    },
+    {
+      "feature": "Jet2Pt",
+      "source": "branch:Jet2Pt",
+      "feature_asimov_z": 0.12278457999466454,
+      "dnn_auc_train": 0.5999481388128127,
+      "dnn_auc_test": 0.5894298787143375
+    },
+    {
+      "feature": "Jet3BTagScore",
+      "source": "branch:Jet3BTagScore",
+      "feature_asimov_z": 0.13353040430369165,
+      "dnn_auc_train": 0.5858457525100017,
+      "dnn_auc_test": 0.5819359876912397
+    },
+    {
+      "feature": "Jet3Eta",
+      "source": "branch:Jet3Eta",
+      "feature_asimov_z": 0.10025694818822105,
+      "dnn_auc_train": 0.5581057264281687,
+      "dnn_auc_test": 0.5564810229362838
+    },
+    {
+      "feature": "Jet3Pt",
+      "source": "branch:Jet3Pt",
+      "feature_asimov_z": 0.10524908845699091,
+      "dnn_auc_train": 0.541725229187004,
+      "dnn_auc_test": 0.5466122593550905
+    },
+    {
+      "feature": "eta_Jet1Jet2",
+      "source": "branch:eta_Jet1Jet2",
+      "feature_asimov_z": 0.11381392642254914,
+      "dnn_auc_train": 0.5147886146479062,
+      "dnn_auc_test": 0.519766046098925
+    },
+    {
+      "feature": "M_Jet1Jet2",
+      "source": "branch:M_Jet1Jet2",
+      "feature_asimov_z": 0.11950366204021334,
+      "dnn_auc_train": 0.5833785994819467,
+      "dnn_auc_test": 0.5745694565825161
+    },
+    {
+      "feature": "dPhi_jetMET",
+      "source": "branch:dPhi_jetMET",
+      "feature_asimov_z": 0.12046176155518308,
+      "dnn_auc_train": 0.5400304838051775,
+      "dnn_auc_test": 0.5374366048759962
+    },
+    {
+      "feature": "dEtaJet12",
+      "source": "branch:dEtaJet12",
+      "feature_asimov_z": 0.11529164328348418,
+      "dnn_auc_train": 0.5442276086126075,
+      "dnn_auc_test": 0.5412717166555967
+    },
+    {
+      "feature": "MET_significance",
+      "source": "branch:MET_significance",
+      "feature_asimov_z": 0.1672147324163746,
+      "dnn_auc_train": 0.7875988042471419,
+      "dnn_auc_test": 0.7836757922285746
+    },
+    {
+      "feature": "pT_Jet1Jet2",
+      "source": "branch:pT_Jet1Jet2",
+      "feature_asimov_z": 0.11470108303049581,
+      "dnn_auc_train": 0.5263062224137626,
+      "dnn_auc_test": 0.5167259825011898
+    },
+    {
+      "feature": "ratioJet1PtMET",
+      "source": "branch:ratioJet1PtMET",
+      "feature_asimov_z": 0.14500907678585384,
+      "dnn_auc_train": 0.6999013835028209,
+      "dnn_auc_test": 0.702487842776324
+    },
+    {
+      "feature": "ratioPtJet21",
+      "source": "branch:ratioPtJet21",
+      "feature_asimov_z": 0.1178081282984174,
+      "dnn_auc_train": 0.5735698142579995,
+      "dnn_auc_test": 0.5723106488464831
+    },
+    {
+      "feature": "del_plus",
+      "source": "branch:del_plus",
+      "feature_asimov_z": 0.1144210212138735,
+      "dnn_auc_train": 0.52223583448081,
+      "dnn_auc_test": 0.5173018653839114
+    },
+    {
+      "feature": "Jet1Eta",
+      "source": "branch:Jet1Eta",
+      "feature_asimov_z": 0.1208635699946648,
+      "dnn_auc_train": 0.5279064502722447,
+      "dnn_auc_test": 0.5190284256146399
+    },
+    {
+      "feature": "del_minus",
+      "source": "branch:del_minus",
+      "feature_asimov_z": 0.1163827193421381,
+      "dnn_auc_train": 0.5538638707332896,
+      "dnn_auc_test": 0.552301780623145
+    },
+    {
+      "feature": "MET_phi",
+      "source": "branch:MET_phi",
+      "feature_asimov_z": 0.1192644867289204,
+      "dnn_auc_train": 0.50807082338876,
+      "dnn_auc_test": 0.5050797593600718
+    },
+    {
+      "feature": "Jet1Phi",
+      "source": "branch:Jet1Phi",
+      "feature_asimov_z": 0.11948267099037148,
+      "dnn_auc_train": 0.5054385984045675,
+      "dnn_auc_test": 0.5051863296026159
+    },
+    {
+      "feature": "Jet2Phi",
+      "source": "branch:Jet2Phi",
+      "feature_asimov_z": 0.11378376676878439,
+      "dnn_auc_train": 0.4983891495088939,
+      "dnn_auc_test": 0.5131903291598756
+    },
+    {
+      "feature": "phi_Jet1Jet2",
+      "source": "branch:phi_Jet1Jet2",
+      "feature_asimov_z": 0.11335904487050343,
+      "dnn_auc_train": 0.5117075624282291,
+      "dnn_auc_test": 0.516977994959727
+    },
+    {
+      "feature": "Recoil",
+      "source": "branch:Recoil",
+      "feature_asimov_z": 0.12017840759550386,
+      "dnn_auc_train": 0.5233260741853086,
+      "dnn_auc_test": 0.5226174593341597
+    },
+    {
+      "feature": "njets",
+      "source": "branch:njets",
+      "feature_asimov_z": 0.12378709439270101,
+      "dnn_auc_train": 0.5578590930584604,
+      "dnn_auc_test": 0.5631680457244127
+    },
+    {
+      "feature": "n_bjets",
+      "source": "branch:n_bjets",
+      "feature_asimov_z": 0.31628709094261953,
+      "dnn_auc_train": 0.9129810899632166,
+      "dnn_auc_test": 0.9105277002092814
+    },
+    {
+      "feature": "RecoilPhi",
+      "source": "branch:RecoilPhi",
+      "feature_asimov_z": 0.11931454341578719,
+      "dnn_auc_train": 0.5011951531108196,
+      "dnn_auc_test": 0.5072268245918382
+    },
+    {
+      "feature": "dPhiJet13",
+      "source": "branch:dPhiJet13",
+      "feature_asimov_z": 0.10153014276191571,
+      "dnn_auc_train": 0.5564606800463097,
+      "dnn_auc_test": 0.5596381315507809
+    },
+    {
+      "feature": "M_Jet1Jet3",
+      "source": "branch:M_Jet1Jet3",
+      "feature_asimov_z": 0.10501266868646479,
+      "dnn_auc_train": 0.539473376693199,
+      "dnn_auc_test": 0.5339718727806746
+    }
+  ]
+}

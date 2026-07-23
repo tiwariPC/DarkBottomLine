@@ -6,7 +6,7 @@ regions:
     description: "Signal region, 1 b-tag category (paper: 1 b-tag, up to 1 additional jet)"
     trigger: "met"
     cuts:
-      Nbjets: "==1"
+      Bjet1bCond: "==1"       # Nbjets==1 & pt-leading jet is the b-tagged one
       Njets: "<=2"
       Nleptons: "==0"
 
@@ -14,7 +14,7 @@ regions:
     description: "Signal region, 2 b-tag category (paper: 2 b-tags, up to 1 additional jet)"
     trigger: "met"
     cuts:
-      Nbjets: "==2"
+      Bjet2bCond: "==1"       # Nbjets==2 & pt-leading+subleading jets are the b-tagged ones
       Njets: "<=3"
       NjetsMin: ">=2"
       Nleptons: "==0"
@@ -23,82 +23,92 @@ regions:
     description: "W+jets control region in 1b category (muon)"
     trigger: "met"
     cuts:
-      Nbjets: "==1"
+      # order: btag → jet-mult → lepton-count → kinematics
+      Bjet1bCond: "==1"       # Nbjets==1 & pt-leading jet is the b-tagged one
+      NAdditionalJets: "==0"
       Nmuons: "==1"
+      NmuonsTight: "==1"      # signal lepton tight ID + pt>30 (Run 2 parity)
       Nelectrons: "==0"
       MET: ">100"
       MT: "<160"
-      NAdditionalJets: "==0"
   "1b:CR_Wenu":
     description: "W+jets control region in 1b category (electron)"
     trigger: "ele"
     cuts:
-      Nbjets: "==1"
+      # order: btag → jet-mult → lepton-count → kinematics
+      Bjet1bCond: "==1"       # Nbjets==1 & pt-leading jet is the b-tagged one
+      NAdditionalJets: "==0"
       Nelectrons: "==1"
+      NelectronsTight: "==1"  # signal lepton tight ID + pt>32 (Run 2 parity)
       Nmuons: "==0"
       MET: ">100"
       MT: "<160"
-      NAdditionalJets: "==0"
   "2b:CR_Topmunu":
     description: "Top control region in 2b category (muon)"
     trigger: "met"
     cuts:
-      Nbjets: "==2"
+      # order: btag → jet-mult → lepton-count → kinematics
+      Bjet2bCond: "==1"       # Nbjets==2 & pt-leading+subleading jets are the b-tagged ones
+      NAdditionalJets: ">=1"
       Nmuons: "==1"
+      NmuonsTight: "==1"      # signal lepton tight ID + pt>30 (Run 2 parity)
       Nelectrons: "==0"
       MT: "<160"
-      NAdditionalJets: ">=1"
-      Njets: ">=3"
   "2b:CR_Topenu":
     description: "Top control region in 2b category (electron)"
     trigger: "ele"
     cuts:
-      Nbjets: "==2"
+      # order: btag → jet-mult → lepton-count → kinematics
+      Bjet2bCond: "==1"       # Nbjets==2 & pt-leading+subleading jets are the b-tagged ones
+      NAdditionalJets: ">=1"
       Nelectrons: "==1"
+      NelectronsTight: "==1"  # signal lepton tight ID + pt>32 (Run 2 parity)
       Nmuons: "==0"
       MT: "<160"
-      NAdditionalJets: ">=1"
-      Njets: ">=3"
 
   "1b:CR_Zmumu":
     description: "Z+jets CR (1b) muon: 2 OS muons, leading tight pt>30, subleading loose pt>10"
     trigger: "met"
     cuts:
+      # order: jet-mult → lepton-count → kinematics (no b-tag in Z CR)
+      Njets: "<=2"
       NmuonsZ: "==2"
       NelectronsZ: "==0"
       MllMin: ">70"
       MllMax: "<110"
-      Njets: "<=2"
   "1b:CR_Zee":
     description: "Z+jets CR (1b) electron: 2 OS electrons, leading tight pt>30, subleading loose pt>10"
     trigger: "ele"
     cuts:
+      # order: jet-mult → lepton-count → kinematics (no b-tag in Z CR)
+      Njets: "<=2"
       NelectronsZ: "==2"
       NmuonsZ: "==0"
       MllMin: ">70"
       MllMax: "<110"
-      Njets: "<=2"
 
   "2b:CR_Zmumu":
     description: "Z+jets CR (2b) muon: 2 OS muons, leading tight pt>30, subleading loose pt>10"
     trigger: "met"
     cuts:
+      # order: jet-mult → lepton-count → kinematics (no b-tag in Z CR)
+      Njets: "<=3"
+      NjetsMin: ">=2"
       NmuonsZ: "==2"
       NelectronsZ: "==0"
       MllMin: ">70"
       MllMax: "<110"
-      Njets: "<=3"
-      NjetsMin: ">=2"
   "2b:CR_Zee":
     description: "Z+jets CR (2b) electron: 2 OS electrons, leading tight pt>30, subleading loose pt>10"
     trigger: "ele"
     cuts:
+      # order: jet-mult → lepton-count → kinematics (no b-tag in Z CR)
+      Njets: "<=3"
+      NjetsMin: ">=2"
       NelectronsZ: "==2"
       NmuonsZ: "==0"
       MllMin: ">70"
       MllMax: "<110"
-      Njets: "<=3"
-      NjetsMin: ">=2"
 
 # Global region settings
 settings:

@@ -4,6 +4,7 @@ Data/MC plotting module for DarkBottomLine framework.
 
 import copy
 import math
+import re
 from collections import Counter
 import matplotlib
 matplotlib.use('Agg')  # Use non-interactive backend for batch mode
@@ -36,7 +37,38 @@ from utils.plot_utils import (
 # Sentinel & histogram utilities (used by create_stacked_plots)
 # ---------------------------------------------------------------------------
 
-_SENTINEL = -9.0
+from .objects import SENTINEL as _SENTINEL
+
+# Pseudo-variables: plotted like a normal variable but sourced from a different
+# branch and/or weighted by a different weight branch. Used for cross-check plots
+# that reuse an existing quantity with an alternate event weight.
+#   _VAR_VALUE_ALIAS   : plot-variable name -> branch name to read values from
+#   _VAR_WEIGHT_OVERRIDE: plot-variable name -> weight branch to use (instead of
+#                         full_event_weight / the active systematic weight)
+# PV_npvsGood_noPU = PV_npvsGood weighted WITHOUT the pileup reweight (all other
+# SFs kept), via the weight_noPileup branch. Data/MC pileup validation: reweighted
+# MC (PV_npvsGood) and un-reweighted MC (PV_npvsGood_noPU) each compared to data.
+_VAR_VALUE_ALIAS: Dict[str, str] = {
+    "PV_npvsGood_noPU": "PV_npvsGood",
+}
+_VAR_WEIGHT_OVERRIDE: Dict[str, str] = {
+    "PV_npvsGood_noPU": "weight_noPileup",
+}
+
+
+def _value_branch(var: str) -> str:
+    """Branch to read plot values from (identity unless var is a pseudo-variable)."""
+    return _VAR_VALUE_ALIAS.get(var, var)
+
+
+def _bins_key(var: str) -> str:
+    """Config key for binning (pseudo-variables share their source var's bins)."""
+    return _VAR_VALUE_ALIAS.get(var, var)
+
+
+def _weight_branch_for(var: str, default_weight: str) -> str:
+    """Weight branch for this variable (override for pseudo-variables)."""
+    return _VAR_WEIGHT_OVERRIDE.get(var, default_weight)
 
 
 def _is_number(v: Any) -> bool:
@@ -82,25 +114,71 @@ def _should_load_key(key: str, variables: Optional[List[str]]) -> bool:
     return False
 
 
+# Some datasets were fully renamed between the 2022/2023 and 2024 campaigns
+# (not a simple token swap). Map each old core name to the canonical (2024 /
+# xsec-JSON) core so all years resolve to the same cross-section key.
+# Longer / more specific keys first — applied by substring, first match wins.
+_DATASET_ALIASES = [
+    # SM Higgs
+    ("ggZH_Hto2B_Zto2L_M-125",     "GluGluZH-Zto2L-Hto2B_Par-M-125"),
+    ("ggZH_Hto2B_Zto2Nu_M-125",    "GluGluZH-Zto2Nu-Hto2B_Par-M-125"),
+    ("WminusH_Hto2B_WtoLNu_M-125", "WminusH-WtoLNu-Hto2B_Par-M-125"),
+    ("WplusH_Hto2B_WtoLNu_M-125",  "WplusH-WtoLNu-Hto2B_Par-M-125"),
+    ("ZH_Hto2B_Zto2L_M-125",       "ZH-Zto2L-Hto2B_Par-M-125"),
+    ("ZH_Hto2B_Zto2Nu_M-125",      "ZH-Zto2Nu-Hto2B_Par-M-125"),
+    ("GluGluHto2B_M-125",          "GluGluH-Hto2B_Par-M-125"),
+    ("VBFHto2B_M-125",             "VBFH-Hto2B_Par-M-125"),
+    ("ttHto2B_M-125",              "TTH-Hto2B_Par-M-125"),
+    # Single top t-channel: 2022/23 "TBbarQ_t-channel_4FS" (underscore, no toLNu)
+    # → canonical 2024 "TBbarQtoLNu-t-channel-4FS".
+    ("TBbarQ_t-channel_4FS", "TBbarQtoLNu-t-channel-4FS"),
+    ("TbarBQ_t-channel_4FS", "TbarBQtoLNu-t-channel-4FS"),
+]
+
+
 def _clean_sample_name(name: str) -> str:
-    """Strip common suffixes (generator, tune, hadd, etc.) to get the core sample ID."""
+    """Canonicalize a dataset name to its cross-section-JSON core form.
+
+    Collapses the year-specific naming variants (V+jets jet-bin token, DY
+    dash/underscore, SM Higgs renames) and strips generator/tune/era suffixes so
+    that the 2022/2022EE/2023 and 2024 forms of a process — and the xsec JSON
+    ``full_dataset`` — all map to one identical string. Idempotent.
+    """
     # Ordered: longer/more specific first to avoid partial false matches
     suffixes = [
         "_EVENTSELECTION", "_hadd",
         "_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
         "_TuneCP5_13p6TeV_madgraphMLM-pythia8",
+        "_TuneCP5_13p6TeV_powhegMINLO-pythia8",
+        "_TuneCP5_13p6TeV_powheg-minlo-pythia8",
         "_TuneCP5_13p6TeV_powheg-pythia8",
         "_TuneCP5_13TeV_amcatnloFXFX-pythia8",
         "_TuneCP5_13TeV_madgraphMLM-pythia8",
         "_TuneCP5_13TeV_powheg-pythia8",
         "_TuneCUETP8M1_13TeV_amcatnloFXFX-pythia8",
         "_TuneCUETP8M1_13TeV_madgraphMLM-pythia8",
+        "_dipoleRecoilOn_TuneCP5_13p6TeV",
         "_TuneCP5_13p6TeV", "_TuneCP5_13TeV", "_TuneCUETP8M1_13TeV",
         "_13p6TeV", "_13TeV",
         "_nanoAOD", "_NANOAOD",
-        "_Run3Summer22", "_Run3Summer22EE", "_Run3Summer23",
+        "_Run3Summer22EE", "_Run3Summer22", "_Run3Summer23BPix",
+        "_Run3Summer23", "_RunIII2024Summer24",
     ]
     result = name
+    # 1. Old→canonical dataset renames (substring, most specific first)
+    for old, canon in _DATASET_ALIASES:
+        if old in result:
+            result = result.replace(old, canon)
+            break
+    # 2. V+jets jet-bin token → canonical (no bin token). Handles the 2024
+    #    "_Bin-2J-" prefix form and the 2022/2023 "_2J" infix/suffix form.
+    result = result.replace("_Bin-2J-", "_").replace("_Bin-2J", "")
+    result = result.replace("_2J_", "_")
+    if result.endswith("_2J"):
+        result = result[:-len("_2J")]
+    # 3. DY dash/underscore: canonical JSON form uses MLL-50-PTLL (dash)
+    result = result.replace("MLL-50_PTLL", "MLL-50-PTLL")
+    # 4. Strip generator/tune/energy/era suffixes
     for suffix in suffixes:
         if suffix in result:
             result = result[:result.index(suffix)]
@@ -296,6 +374,42 @@ def _get_legend_label(name: str) -> str:
     return cfg["label"] if cfg else name
 
 
+def _plot_stacked_variable_worker(args: tuple) -> tuple:
+    """Draw + save one (region, variable) stacked plot. Module-level so it's
+    picklable as a multiprocessing worker target — each call's inputs are
+    plain arrays/scalars already aggregated by the caller, independent of
+    every other (region, variable) task."""
+    (config, kwargs, region, var) = args
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
+    pm = PlotManager(config)
+    files = pm._plot_stacked_variable(**kwargs)
+    return region, var, files
+
+
+def _plot_one_region_worker(args: tuple) -> tuple:
+    """Produce all plots (individual-variable + grouped) for a single region.
+    Module-level (picklable) multiprocessing worker target — reconstructs a
+    fresh PlotManager from config in each process rather than sharing a live
+    instance, since PlotManager mutates self mid-call (_regions_config_path
+    etc.) and matplotlib figures aren't picklable across process boundaries."""
+    (config, results, region, output_dir, show_data, version, formats, hist_scale) = args
+    # Avoid N worker processes each spawning their own BLAS thread pool.
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
+    pm = PlotManager(config)
+    individual_plots = pm._create_individual_variable_plots(
+        results, region, output_dir, show_data, version, formats,
+        hist_scale=hist_scale,
+    )
+    grouped_plots = pm._create_region_plots_single(
+        results, region, Path(output_dir), show_data, version, output_dir
+    )
+    return region, {**individual_plots, **grouped_plots}
+
+
 class PlotManager:
     """
     Manager for creating data/MC plots with region comparisons.
@@ -348,6 +462,16 @@ class PlotManager:
         self.unc_hatch        = self.config.get("uncertainty_hatch",     "////")
         self.unc_alpha        = self.config.get("uncertainty_alpha",     0.8)
         self.unc_label        = self.config.get("uncertainty_label",     "Stat. unc.")
+        self.cms_label        = self.config.get("cms_label",             "Work in progress")
+        self.com_energy       = float(self.config.get("com_energy",      13.6))
+        self.ratio_ylim       = tuple(self.config.get("ratio_ylim",      [0.0, 2.0]))
+        self.data_markersize  = float(self.config.get("data_markersize", 5.5))
+        self.data_elinewidth  = float(self.config.get("data_elinewidth", 1.2))
+        self.data_color       = self.config.get("data_color",            "black")
+        self.signal_linewidth = float(self.config.get("signal_linewidth", 2.0))
+        self.signal_colors    = list(self.config.get("signal_colors",
+                                    ["#000000", "#e31a1c", "#1f78b4", "#33a02c", "#ff7f00", "#6a3d9a"]))
+        self.legend_ncol      = int(self.config.get("legend_ncol",       2))
 
         # Variables that should NOT use log scale (multiplicity plots, etc.)
         self.no_log_scale_vars = self.config.get("no_log_scale_vars", [
@@ -355,11 +479,15 @@ class PlotManager:
             'n_pv', 'pu_npv'
         ])
 
+        # Per-variable x-axis title overrides — falls back to raw variable name.
+        self.variable_labels: Dict[str, str] = dict(self.config.get("variable_labels", {}))
+
         # Region-specific exclusions — kept for backward-compat but no longer used by default path
         self.region_exclusions = self.config.get("region_exclusions", {})
 
         # Variables common to every region — prepended to each region's specific list.
         self.common_variables: List[str] = list(self.config.get("common_variables", []))
+        self.systematic_variables: List[str] = list(self.config.get("systematic_variables", []))
 
         # Per-region variable additions (region-specific on top of common_variables).
         # Final plot list = common_variables + region_variables[region].
@@ -420,13 +548,19 @@ class PlotManager:
         # suffix fallback for MET-like branches
         name = variable.lower()
         if any(name.endswith(p) or p in name for p in self._met_suffix_patterns):
-            met_spec = self._variable_bins_cfg.get("PFMET_pt")
+            met_spec = self._variable_bins_cfg.get("MET_pt") or self._variable_bins_cfg.get("PFMET_pt")
             if met_spec:
                 return np.array(met_spec["edges"], dtype=float)
         if "ctsvalue" in name:
             cts_spec = self._variable_bins_cfg.get("costheta_star")
             if cts_spec:
                 return np.array(cts_spec["edges"], dtype=float)
+        if name.startswith("ml_score_mh3_"):
+            ml_spec = self._variable_bins_cfg.get("ml_score")
+            if ml_spec:
+                if "edges" in ml_spec:
+                    return np.array(ml_spec["edges"], dtype=float)
+                return np.linspace(float(ml_spec["low"]), float(ml_spec["high"]), int(ml_spec["n"]))
         return None
 
     def create_stacked_plot_from_files(
@@ -1011,8 +1145,14 @@ class PlotManager:
         region: str = "event_selection",
         version: str = "",
         save_root: bool = False,
+        signal_rows: Optional[List[Tuple[str, np.ndarray]]] = None,
     ) -> List[str]:
-        """Draw CMS-style stacked histogram with ratio panel and save in 5 formats."""
+        """Draw CMS-style stacked histogram with ratio panel and save in 5 formats.
+
+        signal_rows: list of (label, hv) — pre-scaled per-masspoint histograms.
+          PNG/PDF: first 3 drawn as dashed lines.
+          ROOT: all written as individual TH1s.
+        """
         if not _HAS_MPLHEP:
             logging.warning("mplhep not available — skipping stacked plot for %s", variable)
             return []
@@ -1072,6 +1212,16 @@ class PlotManager:
             linewidth=0.0, alpha=self.unc_alpha, zorder=5,
         )
 
+        # Signal overlays — draw first 3 as dashed lines (PNG/PDF only; all go to ROOT)
+        if signal_rows:
+            for _si, (_slabel, _shv) in enumerate(signal_rows[:3]):
+                _sc = self.signal_colors[_si % len(self.signal_colors)]
+                ax.stairs(
+                    _shv, bins, baseline=0,
+                    fill=False, linewidth=self.signal_linewidth, linestyle="--", color=_sc,
+                    label=_slabel, zorder=8,
+                )
+
         if data_ndarray is not None:
             half_width = 0.5 * (bins[1:] - bins[:-1])
             mask = data_ndarray > 0
@@ -1079,9 +1229,9 @@ class PlotManager:
                 ax.errorbar(
                     centers[mask], data_ndarray[mask],
                     xerr=half_width[mask], yerr=np.sqrt(data_ndarray[mask]),
-                    fmt="o", color="black", markerfacecolor="black",
-                    markeredgecolor="black", markersize=5.5,
-                    elinewidth=1.2, capsize=0, label="Data", zorder=10,
+                    fmt="o", color=self.data_color, markerfacecolor=self.data_color,
+                    markeredgecolor=self.data_color, markersize=self.data_markersize,
+                    elinewidth=self.data_elinewidth, capsize=0, label="Data", zorder=10,
                 )
 
         use_log = variable not in self.no_log_scale_vars
@@ -1091,18 +1241,13 @@ class PlotManager:
             data_max = float(np.max(data_ndarray)) if data_ndarray is not None and data_ndarray.size else 0.0
             ax.set_ylim(0.1, max(stacked_max, data_max, 1e-3) * 1000.0)
 
-        nonzero_mc = np.where(cumulative > 0)[0]
-        x_lo = float(bins[nonzero_mc[0]]) if nonzero_mc.size else float(bins[0])
-        x_hi = float(bins[nonzero_mc[-1] + 1]) if nonzero_mc.size else float(bins[-1])
-        if data_ndarray is not None:
-            nz_d = np.where(data_ndarray > 0)[0]
-            if nz_d.size:
-                x_lo = min(x_lo, float(bins[nz_d[0]]))
-                x_hi = max(x_hi, float(bins[nz_d[-1] + 1]))
+        # Always use full bin range from config — never auto-trim to nonzero data range
+        x_lo = float(bins[0])
+        x_hi = float(bins[-1])
         ax.set_xlim(x_lo, x_hi)
         ax.set_ylabel("Events / bin", fontsize=self.fontsize_axis, labelpad=6)
         if not show_ratio:
-            ax.set_xlabel(variable, fontsize=self.fontsize_axis)
+            ax.set_xlabel(self.variable_labels.get(variable, variable), fontsize=self.fontsize_axis)
         ax.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]))
         ax.grid(False)
 
@@ -1121,7 +1266,7 @@ class PlotManager:
                 out=np.zeros_like(pred, dtype=float), where=pred > 0,
             )
             ratio_mask = np.isfinite(data_ratio)
-            ax_ratio.axhline(1.0, color="black", linestyle="-", linewidth=1.2)
+            ax_ratio.axhline(1.0, color=self.data_color, linestyle="-", linewidth=1.2)
             ratio_lo = np.append(1.0 - pred_rel_err, (1.0 - pred_rel_err)[-1])
             ratio_hi = np.append(1.0 + pred_rel_err, (1.0 + pred_rel_err)[-1])
             ax_ratio.fill_between(
@@ -1134,24 +1279,24 @@ class PlotManager:
                 ax_ratio.errorbar(
                     centers[ratio_mask], data_ratio[ratio_mask],
                     xerr=half_width[ratio_mask], yerr=data_ratio_err[ratio_mask],
-                    fmt="o", color="black", markerfacecolor="black",
-                    markeredgecolor="black", markersize=5.5,
-                    elinewidth=1.0, capsize=0, zorder=10,
+                    fmt="o", color=self.data_color, markerfacecolor=self.data_color,
+                    markeredgecolor=self.data_color, markersize=self.data_markersize,
+                    elinewidth=self.data_elinewidth, capsize=0, zorder=10,
                 )
             ax_ratio.legend(loc="upper right", fontsize=self.fontsize_legend, frameon=False)
             ax_ratio.set_ylabel("Data / MC", fontsize=self.fontsize_axis, labelpad=6)
-            ax_ratio.set_xlabel(variable, fontsize=self.fontsize_axis, labelpad=8)
-            ax_ratio.set_ylim(0, 2.0)
+            ax_ratio.set_xlabel(self.variable_labels.get(variable, variable), fontsize=self.fontsize_axis, labelpad=8)
+            ax_ratio.set_ylim(self.ratio_ylim[0], self.ratio_ylim[1])
             ax_ratio.set_xlim(x_lo, x_hi)
             ax_ratio.xaxis.set_major_locator(matplotlib.ticker.MaxNLocator(nbins=8, steps=[1, 2, 5, 10]))
             ax_ratio.yaxis.set_major_locator(matplotlib.ticker.FixedLocator([0, 0.5, 1.0, 1.5, 2.0]))
             ax_ratio.grid(False)
 
         hep.cms.label(
-            llabel="Work in progress",
+            llabel=self.cms_label,
             data=data_ndarray is not None,
             lumi=round(luminosity, 2),
-            com=13.6,
+            com=self.com_energy,
             loc=0,
             ax=ax,
         )
@@ -1190,7 +1335,7 @@ class PlotManager:
             ax.legend(
                 handles, labels_leg,
                 loc="upper right", bbox_to_anchor=(0.97, 0.97),
-                ncol=2, frameon=False, borderaxespad=0.0,
+                ncol=self.legend_ncol, frameon=False, borderaxespad=0.0,
                 handlelength=1.5, columnspacing=1.0,
                 handletextpad=0.5, fontsize=self.fontsize_legend,
             )
@@ -1220,6 +1365,11 @@ class PlotManager:
                 rf["TotalBkg"] = (mc_total.astype(float), bins.astype(float))
                 if data_ndarray is not None:
                     rf["data_obs"] = (data_ndarray.astype(float), bins.astype(float))
+                # All signal masspoints as individual TH1s (not stacked)
+                if signal_rows:
+                    for _slabel, _shv in signal_rows:
+                        _safe_key = _slabel.replace(" ", "_").replace("(", "").replace(")", "").replace(",", "_").replace("=", "_")
+                        rf[f"sig_{_safe_key}"] = (_shv.astype(float), bins.astype(float))
             saved['root'] = str(root_out)
         except Exception as _re:
             logging.warning("ROOT write failed for %s/%s: %s", region, variable, _re)
@@ -1264,6 +1414,12 @@ class PlotManager:
         regions_config: Optional[str] = None,
         weight_systematic: Optional[str] = None,
         show_data: bool = False,
+        signal_scale: float = 1.0,
+        make_syst_plots: bool = False,
+        apply_dnn: bool = False,
+        dnn_model: Optional[str] = None,
+        dnn_config: Optional[str] = None,
+        dnn_mass_scan: Optional[str] = None,
     ) -> List[str]:
         """Create stacked MC+data plots.
 
@@ -1323,6 +1479,7 @@ class PlotManager:
             created.extend(self._create_region_from_events_plots(
                 input_folder=input_folder,
                 process_groups=process_groups,
+                signal_groups=signal_groups,
                 data_groups=data_groups,
                 output_dir=output_dir,
                 luminosity=luminosity,
@@ -1334,6 +1491,12 @@ class PlotManager:
                 regions_config=regions_config,
                 weight_systematic=getattr(self, "_weight_systematic", None),
                 show_data=show_data,
+                signal_scale=signal_scale,
+                make_syst_plots=make_syst_plots,
+                apply_dnn=apply_dnn,
+                dnn_model=dnn_model,
+                dnn_config=dnn_config,
+                dnn_mass_scan=dnn_mass_scan,
             ))
         return created
 
@@ -1369,7 +1532,14 @@ class PlotManager:
                     continue
                 _xs_f = float(_xs)
                 _fd = _entry.get("full_dataset")
-                if _fd:
+                # full_dataset may be a single name (str) or a list of
+                # per-era dataset-name variants — register every one so a
+                # match on any variant resolves to this process's xsec.
+                if isinstance(_fd, (list, tuple)):
+                    for _name in _fd:
+                        if _name:
+                            _flat_xs[str(_name)] = _xs_f
+                elif _fd:
                     _flat_xs[str(_fd)] = _xs_f
                 _proc = _entry.get("process")
                 if _proc:
@@ -1391,12 +1561,18 @@ class PlotManager:
         )
         resolved: List[Path] = []
         matched_paths: set = set()
+        # Match on canonicalized forms so a pattern written in canonical form
+        # matches a file named in any year's convention (2J / Bin-2J / SMHiggs
+        # rename). Data patterns (JetMET-Run, EGamma-Run) are untouched by
+        # _clean_sample_name so they keep matching as before.
+        canon_names = {p: _clean_sample_name(p.name) for p in all_files}
         for pattern in patterns:
+            pat_canon = _clean_sample_name(pattern)
             pattern_hits = 0
             for p in all_files:
                 if p in matched_paths:
                     continue
-                if pattern in p.name:
+                if pat_canon in canon_names[p]:
                     resolved.append(p)
                     matched_paths.add(p)
                     pattern_hits += 1
@@ -1780,6 +1956,7 @@ class PlotManager:
 
         created: List[str] = []
         skipped_region_var = []
+        plot_tasks: List[tuple] = []
         logging.info("Regions to process: %d (%s)", len(all_regions), ', '.join(all_regions[:5]) + ('...' if len(all_regions) > 5 else ''))
         for region in all_regions:
             all_vars_set: set = set()
@@ -1839,18 +2016,37 @@ class PlotManager:
 
                 data_hist = _data_hist_for_region(region, var)
                 data_sum = float(np.sum(data_hist)) if data_hist is not None else 0
-                logging.info("Plotting %s/%s: bins=%d, bkg_rows=%d, total_mc=%.3f, data_sum=%.1f, procs=%s",
+                logging.info("Queuing %s/%s: bins=%d, bkg_rows=%d, total_mc=%.3f, data_sum=%.1f, procs=%s",
                              region, var, len(bins_ref) - 1, len(bkg_rows),
                              float(np.sum(total_mc)), data_sum, ', '.join(procs_with_data))
 
-                files = self._plot_stacked_variable(
+                plot_kwargs = dict(
                     variable=var, bins=bins_ref,
                     background_rows=bkg_rows, data_ndarray=data_hist,
                     output_dir=output_dir, luminosity=luminosity, year=year,
                     region=region, version=version, save_root=save_root,
                 )
-                created.extend(files)
-                logging.info("Created region plot: %s / %s -> %d files", region, var, len(files))
+                plot_tasks.append((self.config, plot_kwargs, region, var))
+
+        # Each (region, var) draw+save is independent — parallelize across
+        # CPU cores via multiprocessing (matplotlib draw + numpy hist math is
+        # CPU-bound, so threading would just serialize on the GIL).
+        num_workers = int(os.environ.get("PLOT_NUM_WORKERS", max(1, (os.cpu_count() or 1))))
+        num_workers = max(1, min(num_workers, len(plot_tasks)))
+
+        if num_workers > 1 and len(plot_tasks) > 1:
+            import multiprocessing as mp
+
+            logging.info(f"Plotting {len(plot_tasks)} region/variable combos with {num_workers} worker processes")
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=num_workers) as pool:
+                task_results = pool.map(_plot_stacked_variable_worker, plot_tasks)
+        else:
+            task_results = [_plot_stacked_variable_worker(t) for t in plot_tasks]
+
+        for region, var, files in task_results:
+            created.extend(files)
+            logging.info("Created region plot: %s / %s -> %d files", region, var, len(files))
 
         if skipped_region_var:
             logging.warning("Skipped %d region/var combos: %s",
@@ -1864,6 +2060,7 @@ class PlotManager:
         self,
         input_folder: str,
         process_groups: Dict[str, List[str]],
+        signal_groups: Optional[Dict[str, List[str]]],
         data_groups: Dict[str, List[str]],
         output_dir: str,
         luminosity: float,
@@ -1875,6 +2072,12 @@ class PlotManager:
         regions_config: Optional[str],
         weight_systematic: Optional[str],
         show_data: bool = False,
+        signal_scale: float = 1.0,
+        make_syst_plots: bool = False,
+        apply_dnn: bool = False,
+        dnn_model: Optional[str] = None,
+        dnn_config: Optional[str] = None,
+        dnn_mass_scan: Optional[str] = None,
     ) -> List[str]:
         """Load event-selected ROOT/PKL files, apply region cuts in-memory, produce stacked region plots.
 
@@ -1900,6 +2103,42 @@ class PlotManager:
         target_regions: List[str] = regions or all_region_names
 
         weight_branch = weight_systematic or "full_event_weight"
+
+        # ---- DNN scoring setup (shared model instance across all files) ----
+        _dnn_inference = None
+        _dnn_mass_scan_resolved: Optional[List[Tuple[float, float]]] = None
+        if apply_dnn and dnn_model:
+            from .dnn_inference import DNNInference, _mass_branch_name, _resolve_mass_scan
+
+            _dnn_inference = DNNInference(dnn_model, config_path=dnn_config)
+            _dnn_mass_scan_resolved = _resolve_mass_scan(dnn_mass_scan, _dnn_inference)
+            logging.info("DNN scoring enabled for region-from-events plots: model=%s, mass_scan=%s",
+                        dnn_model, _dnn_mass_scan_resolved)
+
+        def _score_tree_with_dnn(tree) -> Dict[str, np.ndarray]:
+            """Score an uproot Events tree with the shared DNN model; returns {branch: scores}.
+
+            Uses build_feature_frame_from_tree (via DNNInference.extract_features) so
+            raw-branch aliasing (MET -> MET_pt, METPhi -> MET_phi, ...) and derived
+            features (e.g. rJet1PtMET = Jet1Pt/MET) are resolved identically to
+            training and the apply-dnn CLI command, instead of a flat name lookup.
+
+            None mass_scan (default) -> single {"ml_score": ...} at the benchmark
+            masspoint (masses=None lets DNNInference default to mass_grid[0] for
+            parametric models; no-op for non-parametric models). Otherwise one
+            {"ml_score_mh3_<a>_mh4_<b>": ...} per scanned point.
+            """
+            X = _dnn_inference.extract_features(tree)
+            n = X.shape[0]
+            if _dnn_mass_scan_resolved is None:
+                scores = _dnn_inference.predict(X, None).ravel()
+                return {"ml_score": scores.astype("f4")}
+            out: Dict[str, np.ndarray] = {}
+            for mh3, mh4 in _dnn_mass_scan_resolved:
+                masses = np.tile(np.asarray([mh3, mh4], dtype="f8"), (n, 1))
+                scores = _dnn_inference.predict(X, masses).ravel()
+                out[_mass_branch_name("ml_score", mh3, mh4)] = scores.astype("f4")
+            return out
 
         # ---- helpers ----
 
@@ -1941,8 +2180,29 @@ class PlotManager:
                     tree = f["Events"]
                     branches: dict = {}
                     skipped_branches = []
+                    _always_load_prefixes = (
+                        "weight_", "full_event_weight", "pass_met_trigger",
+                        "pass_ele_trigger", "GenModel_", "event", "run",
+                        # object counts for region cuts
+                        "n_bjets", "njets", "n_muons", "n_electrons", "n_taus",
+                        "n_z_muons", "n_z_electrons",
+                        # reco primary vertices (source for PV_npvsGood[_noPU] data/MC plots)
+                        "PV_npvsGood", "PV_npvs",
+                        # MET branches for MT, Mll, Recoil cuts
+                        "MET_pt", "MET_phi", "PuppiMET_pt", "PuppiMET_phi",
+                        "Recoil", "Recoil_JES", "Recoil_JER",
+                        # lepton kinematics for MT / Z mass cuts
+                        "muon_lep1_pt", "muon_lep1_phi", "muon_lep1_eta",
+                        "muon_lep2_pt", "muon_lep2_phi", "muon_lep2_eta",
+                        "electron_lep1_pt", "electron_lep1_phi", "electron_lep1_eta",
+                        "electron_lep2_pt", "electron_lep2_phi", "electron_lep2_eta",
+                        "mll", "Mll",
+                    )
                     for bname in tree.keys():
-                        if variables is not None and not _should_load_key(str(bname), variables):
+                        _bname = str(bname)
+                        _always = any(_bname.startswith(p) or _bname == p
+                                      for p in _always_load_prefixes)
+                        if variables is not None and not _always and not _should_load_key(_bname, variables):
                             continue
                         try:
                             branches[bname] = tree[bname].array(library="np")
@@ -1969,6 +2229,11 @@ class PlotManager:
                             ', '.join(f"{n}({r[:40]})" for n, r in skipped_branches[:5])
                             + ('...' if len(skipped_branches) > 5 else '')
                         )
+                    if _dnn_inference is not None and branches:
+                        try:
+                            branches.update(_score_tree_with_dnn(tree))
+                        except Exception as _dnn_err:
+                            logging.warning("DNN scoring failed for %s: %s", path.name, _dnn_err)
                     return {"branches": branches, "wte": wte}
             except Exception as exc:
                 logging.warning("Could not load %s: %s", path.name, exc)
@@ -1985,6 +2250,11 @@ class PlotManager:
                     if isinstance(v, (np.ndarray, list)):
                         branches[k] = np.asarray(v)
                 wte = float(d.get("weighted_total_events", 0.0))
+                if _dnn_inference is not None and branches:
+                    logging.warning(
+                        "DNN scoring requested but %s is a PKL file (no Events tree available "
+                        "for alias/derived-feature resolution) — ml_score not added", path.name
+                    )
                 return {"branches": branches, "wte": wte}
             except Exception as exc:
                 logging.warning("Could not load %s: %s", path.name, exc)
@@ -2067,9 +2337,51 @@ class PlotManager:
             logging.warning("region-from-events: no background files loaded — nothing to plot")
             return []
 
+        # ---- load signal files (GenModel multi-masspoint) ----
+        # Signal files have GenModel_* branches. Detect them from signal_groups patterns.
+        # Each GenModel_* branch is one masspoint; events with flag==1 belong to that masspoint.
+        # {masspoint_label: {"hv": np.ndarray per var (built lazily), "wte": float, "xsec": float|None}}
+        # We store raw events+mask per masspoint for per-variable histogramming later.
+        # sig_file_entries: list of {"branches": dict, "wte": float, "xsec": float|None, "genmodel_cols": [str]}
+        sig_file_entries: List[Dict[str, Any]] = []
+        if signal_groups:
+            logging.info("=== Loading signal files for region-from-events ===")
+            for sig_label, sig_patterns in signal_groups.items():
+                paths = self._resolve_group_files(input_folder, sig_patterns)
+                for p in paths:
+                    # Load all branches for signal (need GenModel_* regardless of variable whitelist)
+                    loaded = _load_file(p, variables=None)
+                    if loaded is None:
+                        logging.warning("[Signal:%s] failed to load %s", sig_label, p.name)
+                        continue
+                    gm_cols = sorted(k for k in loaded["branches"] if k.startswith("GenModel_"))
+                    if not gm_cols:
+                        logging.info("[Signal:%s] %s has no GenModel_ branches — treated as single masspoint", sig_label, p.name)
+                        gm_cols = []
+                    _stem = p.stem.replace("_EVENTSELECTION", "")
+                    xsec = _find_xsec(p.stem, cross_sections) or _find_xsec(_stem, cross_sections) or _find_xsec(p.name, cross_sections)
+                    sig_file_entries.append({
+                        "branches": loaded["branches"],
+                        "wte": loaded["wte"],
+                        "xsec": xsec,
+                        "genmodel_cols": gm_cols,
+                        "file_label": sig_label,
+                    })
+                    if gm_cols:
+                        logging.info("[Signal:%s] loaded %s: wte=%.1f, masspoints=%d "
+                                     "(per-masspoint xsec resolved individually below)",
+                                     sig_label, p.name, loaded["wte"], len(gm_cols))
+                    else:
+                        logging.info("[Signal:%s] loaded %s: wte=%.1f, xsec=%s "
+                                     "(single masspoint, file-level xsec)",
+                                     sig_label, p.name, loaded["wte"],
+                                     "%.4g pb" % xsec if xsec is not None else "None")
+        logging.info("Signal files loaded: %d", len(sig_file_entries))
+
         # ---- per-region processing ----
         created: List[str] = []
         skipped_region_var = []
+        events_plot_tasks: List[tuple] = []
         logging.info("Regions to process: %d (%s)", len(target_regions),
                      ', '.join(target_regions[:5]) + ('...' if len(target_regions) > 5 else ''))
 
@@ -2098,6 +2410,14 @@ class PlotManager:
             _whitelist = (self.common_variables
                           + list(self.region_variables.get(region_name) or
                                  next((v for k, v in self.region_variables.items() if k in region_name), []) or []))
+            if _dnn_mass_scan_resolved is not None:
+                # Mass-scan mode: "ml_score" was never written as a branch (only
+                # ml_score_mh3_<a>_mh4_<b> variants were) and regions.py's generic
+                # fallback would otherwise silently return an all-zeros array for
+                # it (treating it as a legitimate-but-missing derived variable) —
+                # drop the literal whitelist entry so only the real scan branches
+                # (already in candidate_vars) get expanded/plotted.
+                _whitelist = [v for v in _whitelist if v != "ml_score"]
             candidate_vars = list(dict.fromkeys(list(candidate_vars) + _whitelist))
             var_list = self._get_allowed_variables_for_region(region_name, candidate_vars)
             logging.info("Region '%s': candidate_vars=%d, after filtering=%d",
@@ -2160,7 +2480,7 @@ class PlotManager:
                             continue
                         mask_np = _cached["mask_np"]
                         events_ak = _cached["events_ak"]
-                        vals_raw = br.get(var)
+                        vals_raw = br.get(_value_branch(var))
                         if vals_raw is None:
                             # Try computing derived variable (mt, z_mass, z_pt, etc.)
                             # that isn't stored as a flat branch but is derivable from
@@ -2171,7 +2491,7 @@ class PlotManager:
                                 "z_pt":   "Zpt",
                                 "mll":    "Mll",
                             }
-                            _canon = _var_map.get(var, var)
+                            _canon = _var_map.get(_value_branch(var), _value_branch(var))
                             try:
                                 _derived = region_obj._get_variable_value(events_ak, objects={}, var=_canon)
                                 if _derived is not None:
@@ -2179,9 +2499,9 @@ class PlotManager:
                                         _arr = _derived.astype(float)
                                     else:
                                         _arr = np.asarray(_ak.to_numpy(
-                                            _ak.fill_none(_ak.Array(_derived), -9.0)
+                                            _ak.fill_none(_ak.Array(_derived), _SENTINEL)
                                             if not isinstance(_derived, _ak.Array)
-                                            else _ak.fill_none(_derived, -9.0)
+                                            else _ak.fill_none(_derived, _SENTINEL)
                                         ), dtype=float)
                                     if _arr.ndim == 1 and len(_arr) == len(mask_np):
                                         vals_raw = _arr
@@ -2201,7 +2521,7 @@ class PlotManager:
                         if vals.size == 0:
                             continue
 
-                        w_arr = br.get(weight_branch)
+                        w_arr = br.get(_weight_branch_for(var, weight_branch))
                         if w_arr is not None:
                             w = np.asarray(w_arr, dtype=float)[mask_np][sentinel_mask]
                         else:
@@ -2215,11 +2535,11 @@ class PlotManager:
                             all_vals_for_bins = []
                             for ee in bkg_entries.values():
                                 for e2 in ee:
-                                    v2 = e2["branches"].get(var, np.array([]))
+                                    v2 = e2["branches"].get(_value_branch(var), np.array([]))
                                     if isinstance(v2, np.ndarray) and v2.dtype != object:
-                                        all_vals_for_bins.append(_apply_variable_plot_filter(var, v2))
+                                        all_vals_for_bins.append(_apply_variable_plot_filter(_bins_key(var), v2))
                             bins_ref = _make_bins(all_vals_for_bins, self._build_bins_from_config,
-                                                  var, self._n_bins_default)
+                                                  _bins_key(var), self._n_bins_default)
                             if bins_ref is None or len(bins_ref) < 2:
                                 break
 
@@ -2274,16 +2594,16 @@ class PlotManager:
                                 continue
                             mask_d_np = _dcached["mask_np"]
                             _devents_ak = _dcached["events_ak"]
-                            _dvals_raw = br.get(var)
+                            _dvals_raw = br.get(_value_branch(var))
                             if _dvals_raw is None:
                                 _var_map = {"mt": "MT", "z_mass": "Mll", "z_pt": "Zpt", "mll": "Mll"}
-                                _canon = _var_map.get(var, var)
+                                _canon = _var_map.get(_value_branch(var), _value_branch(var))
                                 try:
                                     _derived = region_obj._get_variable_value(_devents_ak, objects={}, var=_canon)
                                     if _derived is not None:
                                         _dvals_raw = np.asarray(_ak.to_numpy(
                                             _ak.fill_none(_derived if isinstance(_derived, _ak.Array)
-                                                          else _ak.Array(_derived), -9.0)
+                                                          else _ak.Array(_derived), _SENTINEL)
                                         ), dtype=float)
                                         if _dvals_raw.ndim != 1 or len(_dvals_raw) != len(mask_d_np):
                                             _dvals_raw = None
@@ -2299,21 +2619,305 @@ class PlotManager:
                     if data_hist is not None:
                         logging.debug("  %s/%s: data sum=%.1f", region_name, var, float(np.sum(data_hist)))
 
+                # ---- signal histograms per masspoint ----
+                # SR only — signal must never be drawn in CR plots.
+                sig_rows_for_plot: List[Tuple[str, np.ndarray]] = []
+                if _is_sr and sig_file_entries and bins_ref is not None:
+                    for _sfe in sig_file_entries:
+                        _sbr  = _sfe["branches"]
+                        _swte = _sfe["wte"]
+                        _sxsec = _sfe["xsec"]
+                        _gm_cols = _sfe["genmodel_cols"]
+
+                        # Build ak.Array + region mask for this signal file (cache per file×region)
+                        _sfeid = id(_sfe)
+                        if _sfeid not in _entry_cache:
+                            try:
+                                _sak_dict = {}
+                                for _k, _v in _sbr.items():
+                                    if not isinstance(_v, np.ndarray) or _v.ndim != 1:
+                                        continue
+                                    if _v.dtype == object:
+                                        try:
+                                            _sak_dict[_k] = _ak.Array(list(_v))
+                                        except Exception:
+                                            pass
+                                    else:
+                                        _sak_dict[_k] = _v
+                                _sev_ak = _ak.Array(_sak_dict)
+                                _smsk = region_obj.apply_cuts(_sev_ak, objects={})
+                                _entry_cache[_sfeid] = {"mask_np": np.asarray(_smsk, dtype=bool),
+                                                        "events_ak": _sev_ak, "skip": False}
+                            except Exception as _se:
+                                logging.warning("Signal region mask failed for %s: %s", region_name, _se)
+                                _entry_cache[_sfeid] = {"skip": True}
+
+                        _scached = _entry_cache.get(_sfeid, {"skip": True})
+                        if _scached.get("skip"):
+                            continue
+                        _smask_np = _scached["mask_np"]
+
+                        _svals_raw = _sbr.get(var)
+                        if _svals_raw is None or not isinstance(_svals_raw, np.ndarray) or _svals_raw.dtype == object:
+                            continue
+
+                        _sscale_base = ((luminosity * _sxsec * 1000.0) / _swte
+                                        if _sxsec is not None and _swte > 0
+                                        else (luminosity / _swte if _swte > 0 else 1.0))
+
+                        if _gm_cols:
+                            # One histogram per GenModel masspoint
+                            for _gmc in _gm_cols:
+                                _gm_arr = _sbr.get(_gmc)
+                                if _gm_arr is None:
+                                    continue
+                                # mask: passed region AND this masspoint flag == 1
+                                _mp_mask = _smask_np & (_gm_arr.astype(bool))
+                                _svals = _apply_variable_plot_filter(
+                                    var, np.asarray(_svals_raw, dtype=float)[_mp_mask])
+                                if _svals.size == 0:
+                                    continue
+                                # xsec lookup by masspoint label (strip GenModel_ prefix)
+                                _mp_label = _gmc[len("GenModel_"):]
+                                _mp_xsec = _find_xsec(_mp_label, cross_sections)
+                                _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _swte
+                                             if _mp_xsec is not None and _swte > 0
+                                             else _sscale_base)
+                                _sw = np.ones(_svals.size, dtype=float)
+                                _sw_arr = _sbr.get(weight_branch)
+                                if _sw_arr is not None:
+                                    _sw = np.asarray(_sw_arr, dtype=float)[_mp_mask][
+                                        _apply_variable_plot_filter(var, np.asarray(_svals_raw, dtype=float)[_mp_mask], return_mask=True)
+                                    ]
+                                _shv, _ = np.histogram(_clip_overflow(_svals, bins_ref),
+                                                       bins=bins_ref, weights=_sw * _mp_scale)
+                                # Format label with LaTeX: MH3→m_A, MH4→m_a, Mchi→m_χ
+                                _tex_map = {"MH3": r"$m_A$", "MH4": r"$m_a$", "Mchi": r"$m_\chi$"}
+                                _parts = _mp_label.split("_")
+                                _pairs = []
+                                _i = 0
+                                while _i < len(_parts) - 1:
+                                    _key = _parts[_i]
+                                    _val = _parts[_i + 1]
+                                    if _key in _tex_map:
+                                        _pairs.append(f"{_tex_map[_key]}={_val}")
+                                        _i += 2
+                                    else:
+                                        # multi-word key e.g. "MH3" split across underscores — skip
+                                        _i += 1
+                                _pretty = " ".join(_pairs) if _pairs else _mp_label
+                                _scale_prefix = f"×{signal_scale:g} " if signal_scale != 1.0 else ""
+                                sig_rows_for_plot.append((f"{_scale_prefix}{_pretty}", _shv * signal_scale))
+                        else:
+                            # Single-masspoint signal file
+                            _svals = _apply_variable_plot_filter(
+                                var, np.asarray(_svals_raw, dtype=float)[_smask_np])
+                            if _svals.size > 0:
+                                _shv, _ = np.histogram(_clip_overflow(_svals, bins_ref),
+                                                       bins=bins_ref, weights=np.ones(_svals.size) * _sscale_base)
+                                _scale_suffix = f" ×{signal_scale:g}" if signal_scale != 1.0 else ""
+                                sig_rows_for_plot.append((f"{_sfe['file_label']}{_scale_suffix}", _shv * signal_scale))
+
                 syst_label = f" [{weight_systematic}]" if weight_systematic else ""
-                logging.info("Plotting %s/%s%s: bins=%d, bkg_rows=%d, total_mc=%.3f, data=%s",
+                logging.info("Plotting %s/%s%s: bins=%d, bkg_rows=%d, total_mc=%.3f, data=%s, signal_masspoints=%d",
                              region_name, var, syst_label, len(bins_ref) - 1, len(bkg_rows),
                              float(np.sum(total_mc)),
-                             "blinded" if (_is_sr and not show_data) else (f"sum={float(np.sum(data_hist)):.1f}" if data_hist is not None else "none"))
+                             "blinded" if (_is_sr and not show_data) else (f"sum={float(np.sum(data_hist)):.1f}" if data_hist is not None else "none"),
+                             len(sig_rows_for_plot))
 
-                files = self._plot_stacked_variable(
+                plot_kwargs = dict(
                     variable=var, bins=bins_ref,
                     background_rows=bkg_rows, data_ndarray=data_hist,
                     output_dir=output_dir, luminosity=luminosity, year=year,
                     region=region_name, version=version, save_root=False,
+                    signal_rows=sig_rows_for_plot if sig_rows_for_plot else None,
                 )
-                created.extend(files)
-                logging.info("Created region-from-events plot: %s / %s%s -> %d files",
-                             region_name, var, syst_label, len(files))
+                events_plot_tasks.append((self.config, plot_kwargs, region_name, f"{var}{syst_label}"))
+
+        # ---- systematic ROOT files (weight systs + kinematic JES/JER) ----
+        # Nominal (region, var) draw+save calls are independent of each other —
+        # aggregation above needed the live _entry_cache/awkward arrays (main
+        # process only), but by this point each task carries just plain
+        # arrays/scalars, so dispatch the draw+save step across CPU cores.
+        num_workers = int(os.environ.get("PLOT_NUM_WORKERS", max(1, (os.cpu_count() or 1))))
+        num_workers = max(1, min(num_workers, len(events_plot_tasks)))
+
+        if num_workers > 1 and len(events_plot_tasks) > 1:
+            import multiprocessing as mp
+
+            logging.info(f"Plotting {len(events_plot_tasks)} region/variable combos with {num_workers} worker processes")
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=num_workers) as pool:
+                events_task_results = pool.map(_plot_stacked_variable_worker, events_plot_tasks)
+        else:
+            events_task_results = [_plot_stacked_variable_worker(t) for t in events_plot_tasks]
+
+        for region_name, var_label, files in events_task_results:
+            created.extend(files)
+            logging.info("Created region-from-events plot: %s / %s -> %d files",
+                         region_name, var_label, len(files))
+
+        if self.systematic_variables and not weight_systematic:
+            try:
+                import uproot as _up_syst
+                # Weight systematics: same events/mask, different weight branch
+                _weight_systs = [
+                    "weight_pileupUP", "weight_pileupDOWN",
+                    "weight_btagUP", "weight_btagDOWN",
+                    "weight_muonUP", "weight_muonDOWN",
+                    "weight_electronUP", "weight_electronDOWN",
+                    "weight_electronHLTUP", "weight_electronHLTDOWN",
+                    "weight_metHLTUP", "weight_metHLTDOWN",
+                    "weight_JECUP", "weight_JECDOWN",
+                    "weight_pdfUP", "weight_pdfDOWN",
+                    "weight_scaleUP", "weight_scaleDOWN",
+                ]
+                # Kinematic systematics: shifted recoil branches (JES/JER)
+                _kin_systs = {
+                    "JESUP":   "Recoil_JESUp",
+                    "JESDOWN": "Recoil_JESDown",
+                    "JERUP":   "Recoil_JERUp",
+                    "JERDOWN": "Recoil_JERDown",
+                }
+                for region_name in target_regions:
+                    region_obj = region_manager.regions.get(region_name)
+                    if region_obj is None:
+                        continue
+                    region_info_s = self._parse_region_name(region_name)
+                    cat_s = region_info_s["category"]
+                    rdir_s = region_info_s["region_dir"]
+                    root_dir = Path(output_dir) / "plots" / version / "root"
+                    root_dir.mkdir(parents=True, exist_ok=True)
+                    _all_region_branches: set = set()
+                    for entries in bkg_entries.values():
+                        for e in entries:
+                            _all_region_branches.update(e["branches"].keys())
+                    syst_vars = [v for v in self.systematic_variables if v in _all_region_branches]
+
+                    # Build fresh region masks for this region (don't rely on _entry_cache
+                    # which only covers the last region from the nominal variable loop)
+                    _syst_cache: Dict[int, Dict] = _build_entry_cache(bkg_entries.items())
+
+                    for svar in syst_vars:
+                        # Determine bins from nominal (already computed above — recompute here)
+                        all_vals_syst: List[np.ndarray] = []
+                        for proc_label, entries in bkg_entries.items():
+                            for e in entries:
+                                cached = _syst_cache.get(id(e), {"skip": True})
+                                if cached.get("skip"):
+                                    continue
+                                br = e["branches"]
+                                raw_v = br.get(svar)
+                                if raw_v is not None and isinstance(raw_v, np.ndarray) and raw_v.ndim == 1:
+                                    mask_np = cached.get("mask_np")
+                                    if mask_np is not None:
+                                        v_f = _apply_variable_plot_filter(svar, np.asarray(raw_v, dtype=float)[mask_np])
+                                        if v_f.size > 0:
+                                            all_vals_syst.append(v_f)
+                        bins_syst = _make_bins(all_vals_syst, self._build_bins_from_config, svar, self._n_bins_default)
+                        if bins_syst is None or len(bins_syst) < 2:
+                            continue
+
+                        # --- Weight systematics ---
+                        for wsyst in _weight_systs:
+                            syst_rows: List = []
+                            any_branch = False
+                            for proc_label, entries in bkg_entries.items():
+                                group_hv = None
+                                for e in entries:
+                                    cached = _syst_cache.get(id(e), {"skip": True})
+                                    if cached.get("skip"):
+                                        continue
+                                    br = e["branches"]
+                                    w_arr = br.get(wsyst)  # varied weight
+                                    if w_arr is None:
+                                        continue
+                                    any_branch = True
+                                    scale = ((luminosity * e["xsec"] * 1000.0) / e["wte"]
+                                             if e["xsec"] is not None and e["wte"] > 0 else 1.0)
+                                    mask_np = cached.get("mask_np")
+                                    if mask_np is None:
+                                        continue
+                                    raw_v = br.get(svar)
+                                    if raw_v is None or not isinstance(raw_v, np.ndarray) or raw_v.ndim != 1:
+                                        continue
+                                    vals_masked = np.asarray(raw_v, dtype=float)[mask_np]
+                                    sent_mask = _apply_variable_plot_filter(svar, vals_masked, return_mask=True)
+                                    vals = vals_masked[sent_mask]
+                                    w = np.asarray(w_arr, dtype=float)[mask_np][sent_mask]
+                                    hv, _ = np.histogram(_clip_overflow(vals, bins_syst), bins=bins_syst, weights=w * scale)
+                                    group_hv = hv if group_hv is None else group_hv + hv
+                                if group_hv is not None:
+                                    syst_rows.append((proc_label, group_hv))
+                            if not any_branch or not syst_rows:
+                                continue
+                            total_bkg = sum(h for _, h in syst_rows)
+                            root_stem = f"hist_{cat_s}_{rdir_s}_{svar}_{wsyst}_log"
+                            rpath = root_dir / f"{root_stem}.root"
+                            with _up_syst.recreate(str(rpath)) as rf:
+                                for label, hv in syst_rows:
+                                    rf[label] = (hv.astype(float), bins_syst.astype(float))
+                                rf["TotalBkg"] = (total_bkg.astype(float), bins_syst.astype(float))
+                            created.append(str(rpath))
+                            logging.debug("Syst ROOT: %s", rpath.name)
+
+                        # --- Kinematic systematics (JES/JER shifted Recoil) ---
+                        if svar == "Recoil":
+                            for syst_name, kin_branch in _kin_systs.items():
+                                syst_rows_k: List = []
+                                any_kin = False
+                                for proc_label, entries in bkg_entries.items():
+                                    group_hv = None
+                                    for e in entries:
+                                        cached = _syst_cache.get(id(e), {"skip": True})
+                                        if cached.get("skip"):
+                                            continue
+                                        br = e["branches"]
+                                        kin_v = br.get(kin_branch)
+                                        if kin_v is None:
+                                            continue
+                                        any_kin = True
+                                        scale = ((luminosity * e["xsec"] * 1000.0) / e["wte"]
+                                                 if e["xsec"] is not None and e["wte"] > 0 else 1.0)
+                                        mask_np = cached.get("mask_np")
+                                        if mask_np is None:
+                                            continue
+                                        w_arr = br.get("full_event_weight")
+                                        w = np.asarray(w_arr, dtype=float)[mask_np] if w_arr is not None else np.ones(int(mask_np.sum()))
+                                        # Re-apply recoil threshold with shifted value
+                                        kin_vals = np.asarray(kin_v, dtype=float)[mask_np]
+                                        recoil_min = region_obj.config.get("event_selection", {}).get("recoil_min", 0.0) if hasattr(region_obj, 'config') else 0.0
+                                        kin_mask = kin_vals > recoil_min
+                                        vals = _apply_variable_plot_filter(svar, kin_vals[kin_mask])
+                                        w = w[kin_mask]
+                                        hv, _ = np.histogram(_clip_overflow(vals, bins_syst), bins=bins_syst, weights=w * scale)
+                                        group_hv = hv if group_hv is None else group_hv + hv
+                                    if group_hv is not None:
+                                        syst_rows_k.append((proc_label, group_hv))
+                                if not any_kin or not syst_rows_k:
+                                    continue
+                                total_bkg_k = sum(h for _, h in syst_rows_k)
+                                root_stem_k = f"hist_{cat_s}_{rdir_s}_{svar}_{syst_name}_log"
+                                rpath_k = root_dir / f"{root_stem_k}.root"
+                                with _up_syst.recreate(str(rpath_k)) as rf:
+                                    for label, hv in syst_rows_k:
+                                        rf[label] = (hv.astype(float), bins_syst.astype(float))
+                                    rf["TotalBkg"] = (total_bkg_k.astype(float), bins_syst.astype(float))
+                                created.append(str(rpath_k))
+                                logging.debug("Syst ROOT (kin): %s", rpath_k.name)
+
+            except Exception as _syst_exc:
+                logging.error("Systematic ROOT file generation failed: %s", _syst_exc, exc_info=True)
+
+        # ---- systematic comparison plots (central + up + down per uncertainty) ----
+        if make_syst_plots and self.systematic_variables and not weight_systematic:
+            try:
+                created.extend(self._plot_systematics(
+                    output_dir=output_dir, version=version, luminosity=luminosity,
+                    target_regions=target_regions,
+                ))
+            except Exception as _sp_exc:
+                logging.error("Systematic plots failed: %s", _sp_exc, exc_info=True)
 
         # ---- per-region cutflow plots ----
         if evtsel_cutflow_per_proc:
@@ -2432,22 +3036,195 @@ class PlotManager:
         logging.info("Region-from-events plots complete: %d plots created", len(created))
         return created
 
+    def _plot_systematics(
+        self,
+        output_dir: str,
+        version: str,
+        luminosity: float,
+        target_regions: List[str],
+    ) -> List[str]:
+        """For each region × syst variable × UP/DOWN pair: plot central + up + down TotalBkg.
+
+        Reads already-written syst ROOT files. Output same dirs as normal plots.
+        Each plot: main panel (3 lines: central/up/down) + ratio panel (up/down / central).
+        """
+        import uproot as _up
+        import re as _re
+
+        root_dir = Path(output_dir) / "plots" / version / "root"
+        created: List[str] = []
+
+        if not root_dir.exists():
+            return created
+
+        # Discover all syst ROOT files: hist_{cat}_{rdir}_{svar}_{wsyst}_log.root
+        _pat = _re.compile(r"hist_(.+?)_(.+?)_(.+?)_(weight_\w+|JES\w+|JER\w+)_log\.root$")
+        syst_files: Dict[str, Dict] = {}  # key=(region_stem, svar, syst_base) → {up: path, down: path}
+        for rf in root_dir.glob("*.root"):
+            m = _pat.match(rf.name)
+            if not m:
+                continue
+            cat, rdir, svar, wsyst = m.group(1), m.group(2), m.group(3), m.group(4)
+            region_stem = f"{cat}_{rdir}"
+            # Identify UP/DOWN
+            if wsyst.endswith("UP") or wsyst.endswith("Up"):
+                syst_base = wsyst[:-2] if wsyst.endswith("UP") else wsyst[:-2]
+                direction = "up"
+            elif wsyst.endswith("DOWN") or wsyst.endswith("Down"):
+                syst_base = wsyst[:-4] if wsyst.endswith("DOWN") else wsyst[:-4]
+                direction = "down"
+            else:
+                continue
+            key = (region_stem, svar, syst_base)
+            syst_files.setdefault(key, {})[direction] = rf
+
+        # Nominal files: hist_{cat}_{rdir}_{svar}_log.root
+        _nom_pat = _re.compile(r"hist_(.+?)_(.+?)_(.+?)_log\.root$")
+        nom_files: Dict[Tuple, Path] = {}
+        for rf in root_dir.glob("*.root"):
+            m = _nom_pat.match(rf.name)
+            if not m:
+                continue
+            cat, rdir, svar = m.group(1), m.group(2), m.group(3)
+            # Skip syst files (svar would contain 'weight_' etc.)
+            if any(x in svar for x in ("weight_", "JES", "JER", "JESUP", "JESDOWN", "JERUP", "JERDOWN")):
+                continue
+            nom_files[(f"{cat}_{rdir}", svar)] = rf
+
+        if not _HAS_MPLHEP:
+            logging.warning("mplhep not available — skipping systematic plots")
+            return created
+
+        import matplotlib.ticker as _ticker
+
+        for (region_stem, svar, syst_base), directions in syst_files.items():
+            if "up" not in directions or "down" not in directions:
+                continue  # need both
+            nom_path = nom_files.get((region_stem, svar))
+            if nom_path is None:
+                continue
+
+            # Parse region for output dir
+            region_info = self._parse_region_name(region_stem.replace("_", ":", 1))
+            cat = region_info["category"]
+            rdir = region_info["region_dir"]
+
+            try:
+                with _up.open(str(nom_path)) as f_nom, \
+                     _up.open(str(directions["up"])) as f_up, \
+                     _up.open(str(directions["down"])) as f_dn:
+                    if "TotalBkg" not in f_nom or "TotalBkg" not in f_up or "TotalBkg" not in f_dn:
+                        continue
+                    h_nom = f_nom["TotalBkg"]
+                    h_up  = f_up["TotalBkg"]
+                    h_dn  = f_dn["TotalBkg"]
+                    bins = np.array(h_nom.axes[0].edges())
+                    v_nom = h_nom.values().astype(float)
+                    v_up  = h_up.values().astype(float)
+                    v_dn  = h_dn.values().astype(float)
+            except Exception as _e:
+                logging.warning("Syst plot load failed %s/%s: %s", region_stem, syst_base, _e)
+                continue
+
+            if v_nom.sum() == 0:
+                continue
+
+            # Pretty syst name
+            _syst_pretty = syst_base.replace("weight_", "").replace("_", " ").strip()
+
+            # ---- figure ----
+            fig, (ax, ax_r) = plt.subplots(
+                2, 1, figsize=self.figsize,
+                gridspec_kw={"height_ratios": [self.main_height, self.ratio_height], "hspace": self.subplots_hspace},
+            )
+            fig.subplots_adjust(top=self.subplots_top, bottom=self.subplots_bottom,
+                                left=self.subplots_left, right=self.subplots_right)
+
+            # All three as lines (no fill)
+            _c0 = self.signal_colors[0] if self.signal_colors else "#000000"
+            _c1 = self.signal_colors[1] if len(self.signal_colors) > 1 else "#e31a1c"
+            _c2 = self.signal_colors[2] if len(self.signal_colors) > 2 else "#1f78b4"
+            ax.stairs(v_nom, bins, fill=False, linewidth=self.signal_linewidth, linestyle="-",  color=_c0, label="Central")
+            ax.stairs(v_up,  bins, fill=False, linewidth=self.signal_linewidth, linestyle="--", color=_c1, label=f"{_syst_pretty} UP")
+            ax.stairs(v_dn,  bins, fill=False, linewidth=self.signal_linewidth, linestyle=":",  color=_c2, label=f"{_syst_pretty} DOWN")
+
+            ax.set_yscale("log")
+            _ymax = max(v_nom.max(), v_up.max(), v_dn.max())
+            ax.set_ylim(0.1, _ymax * 1000.0)
+            ax.set_ylabel("Events / bin", fontsize=self.fontsize_axis, labelpad=6)
+            ax.grid(False)
+            _region_pretty = _pretty_region_label(region_stem.replace("_", ":", 1))
+            if _region_pretty:
+                ax.text(0.05, 0.88, _region_pretty, transform=ax.transAxes,
+                        ha="left", va="top", fontsize=self.fontsize_legend, fontweight="bold",
+                        bbox=dict(boxstyle="square,pad=0.1", facecolor="none", edgecolor="none"))
+            hep.cms.label(llabel=self.cms_label, data=False, lumi=round(luminosity, 2),
+                          com=self.com_energy, loc=0, ax=ax)
+            ax.legend(loc="upper right", fontsize=self.fontsize_legend, frameon=False, ncol=1)
+
+            # Ratio: up/central, down/central
+            safe_nom = np.where(v_nom > 0, v_nom, np.nan)
+            r_up = v_up / safe_nom
+            r_dn = v_dn / safe_nom
+            ax_r.axhline(1.0, color=self.data_color, linewidth=1.2)
+            _sc_up = self.signal_colors[1] if len(self.signal_colors) > 1 else "#e31a1c"
+            _sc_dn = self.signal_colors[2] if len(self.signal_colors) > 2 else "#1f78b4"
+            ax_r.stairs(r_up, bins, fill=False, linewidth=self.signal_linewidth, linestyle="--", color=_sc_up)
+            ax_r.stairs(r_dn, bins, fill=False, linewidth=self.signal_linewidth, linestyle=":",  color=_sc_dn)
+            ax_r.set_ylim(0.5, 1.5)
+            ax_r.set_ylabel("Var / Nom", fontsize=self.fontsize_axis, labelpad=6)
+            ax_r.set_xlabel(self.variable_labels.get(svar, svar), fontsize=self.fontsize_axis, labelpad=8)
+            ax_r.yaxis.set_major_locator(_ticker.FixedLocator([0.5, 0.75, 1.0, 1.25, 1.5]))
+            ax_r.grid(False)
+            _x_lim_lo = float(bins[np.where(v_nom > 0)[0][0]]) if np.any(v_nom > 0) else float(bins[0])
+            _x_lim_hi = float(bins[np.where(v_nom > 0)[0][-1] + 1]) if np.any(v_nom > 0) else float(bins[-1])
+            ax.set_xlim(_x_lim_lo, _x_lim_hi)
+            ax_r.set_xlim(_x_lim_lo, _x_lim_hi)
+
+            # Save PNG + PDF in same dirs as normal region plots
+            _syst_stem = f"{cat}_{rdir}_{svar}_{syst_base}"
+            for fmt in ("png", "pdf"):
+                _out_dir = Path(output_dir) / "plots" / version / fmt / "region_analysis" / f"{cat}_{rdir}"
+                _out_dir.mkdir(parents=True, exist_ok=True)
+                _out = _out_dir / f"{_syst_stem}.{fmt}"
+                fig.savefig(str(_out), dpi=self.dpi, bbox_inches="tight")
+                created.append(str(_out))
+            plt.close(fig)
+
+        logging.info("Systematic plots: %d files written", len(created))
+        return created
+
     @staticmethod
     def _root_to_mpl_label(label: str) -> str:
-        """Convert ROOT LaTeX (N_{#mu}, #tau Veto) to matplotlib math."""
+        """Convert ROOT LaTeX (N_{#mu}, #tau Veto, p_{T}^{Jet1}) to matplotlib math."""
         import re as _re
         _greek = {
             '#mu': r'\mu', '#tau': r'\tau', '#gamma': r'\gamma',
             '#nu': r'\nu', '#phi': r'\phi', '#eta': r'\eta',
-            '#Delta': r'\Delta',
+            '#Delta': r'\Delta', '#alpha': r'\alpha', '#beta': r'\beta',
         }
+        # Also handle plain label aliases
+        _aliases = {
+            'OR Trigger':  r'OR Trigger',
+            'MET Trigger': r'MET Trigger',
+            'ELE Trigger': r'EGamma Trigger',
+            'Noise filters': 'Noise filters',
+        }
+        if label in _aliases:
+            return _aliases[label]
         s = label
         for root_sym, mpl_sym in _greek.items():
             s = s.replace(root_sym, mpl_sym)
-        def _wrap(m):
-            tok = m.group(0)
-            return f'${tok}$' if any(c in tok for c in ('^', '_', '\\')) else tok
-        return _re.sub(r'\S+', _wrap, s)
+        # Wrap math tokens: any token containing ^, _, or \ in $...$
+        # Split on spaces preserving non-math words
+        parts = s.split(' ')
+        result = []
+        for p in parts:
+            if any(c in p for c in ('^', '_', '\\')):
+                result.append(f'${p}$')
+            else:
+                result.append(p)
+        return ' '.join(result)
 
     def _plot_cutflow(
         self,
@@ -2546,9 +3323,9 @@ class PlotManager:
                     x[mask], _dc[mask],
                     xerr=np.full(mask.sum(), 0.4),
                     yerr=np.sqrt(_dc[mask]),
-                    fmt="o", color="black",
-                    markerfacecolor="black", markeredgecolor="black",
-                    markersize=5.5, elinewidth=1.2, capsize=0,
+                    fmt="o", color=self.data_color,
+                    markerfacecolor=self.data_color, markeredgecolor=self.data_color,
+                    markersize=self.data_markersize, elinewidth=self.data_elinewidth, capsize=0,
                     label="Data", zorder=10,
                 )
 
@@ -2561,8 +3338,8 @@ class PlotManager:
         ax1.set_ylim(ymin, 10 ** (np.ceil(np.log10(ymax)) + 2))
         ax1.grid(False)
 
-        hep.cms.label(llabel="Work in progress", data=has_data,
-                      lumi=round(luminosity, 2), com=13.6, loc=0, ax=ax1)
+        hep.cms.label(llabel=self.cms_label, data=has_data,
+                      lumi=round(luminosity, 2), com=self.com_energy, loc=0, ax=ax1)
 
         _region_pretty = _pretty_region_label(region_name)
         if _region_pretty:
@@ -2579,9 +3356,9 @@ class PlotManager:
         handles, leg_labels = ax1.get_legend_handles_labels()
         if handles:
             ax1.legend(handles, leg_labels, loc="upper right",
-                       bbox_to_anchor=(0.97, 0.97), ncol=2, frameon=False,
+                       bbox_to_anchor=(0.97, 0.97), ncol=self.legend_ncol, frameon=False,
                        handlelength=1.5, columnspacing=1.0,
-                       handletextpad=0.5, fontsize=20)
+                       handletextpad=0.5, fontsize=self.fontsize_legend)
 
         # ---- bottom panel: Data / MC ----
         mc_total = cumulative
@@ -2600,13 +3377,13 @@ class PlotManager:
                     x[ratio_mask], ratio[ratio_mask],
                     xerr=np.full(ratio_mask.sum(), 0.4),
                     yerr=ratio_err[ratio_mask],
-                    fmt="o", color="black",
-                    markerfacecolor="black", markeredgecolor="black",
-                    markersize=5.0, elinewidth=1.2, capsize=0, zorder=10,
+                    fmt="o", color=self.data_color,
+                    markerfacecolor=self.data_color, markeredgecolor=self.data_color,
+                    markersize=self.data_markersize, elinewidth=self.data_elinewidth, capsize=0, zorder=10,
                 )
         else:
             ax2.axhline(1.0, color="#999999", linestyle="--", linewidth=1.0)
-        ax2.axhline(1.0, color="black", linestyle="-", linewidth=1.2)
+        ax2.axhline(1.0, color=self.data_color, linestyle="-", linewidth=1.2)
         if n_evtsel > 0 and _all_region:
             ax2.axvline(n_evtsel - 0.5, color="black", linestyle="--",
                         linewidth=1.0, alpha=0.5)
@@ -2849,23 +3626,30 @@ class PlotManager:
             hist_scale = 1.0
             logging.warning("weighted_total_events=0 in metadata — histograms shown unnormalised")
 
-        for region in regions:
-            logging.info(f"Creating plots for region {region}")
+        # Each region's plots (individual-variable + grouped) are independent
+        # of every other region's — read-only config, own histogram slice,
+        # own output files. Parallelize across CPU cores via multiprocessing
+        # (not threading: matplotlib draw + hist fill are CPU-bound, GIL would
+        # serialize them under threads). Override with PLOT_NUM_WORKERS env.
+        num_workers = int(os.environ.get("PLOT_NUM_WORKERS", max(1, (os.cpu_count() or 1))))
+        num_workers = max(1, min(num_workers, len(regions)))
 
-            # Create individual variable plots - one plot per variable
-            individual_plots = self._create_individual_variable_plots(
-                results, region, output_dir, show_data, version, formats,
-                hist_scale=hist_scale,
-            )
+        tasks = [
+            (self.config, results, region, output_dir, show_data, version, formats, hist_scale)
+            for region in regions
+        ]
 
-            # Also create grouped plots (kinematic, multiplicity, dnn, region_comparison)
-            output_path = Path(output_dir)
-            grouped_plots = self._create_region_plots_single(
-                results, region, output_path, show_data, version, output_dir
-            )
+        if num_workers > 1 and len(regions) > 1:
+            import multiprocessing as mp
 
-            # Combine both types of plots
-            all_region_plots = {**individual_plots, **grouped_plots}
+            logging.info(f"Creating region plots with {num_workers} worker processes")
+            ctx = mp.get_context("spawn")
+            with ctx.Pool(processes=num_workers) as pool:
+                task_results = pool.map(_plot_one_region_worker, tasks)
+        else:
+            task_results = [_plot_one_region_worker(t) for t in tasks]
+
+        for region, all_region_plots in task_results:
             plot_files[region] = all_region_plots
 
         return plot_files
@@ -2984,7 +3768,16 @@ class PlotManager:
                     seen.add(v)
                     unique.append(v)
             present = set(all_vars)
-            return [v for v in unique if v in present]
+            out: List[str] = []
+            for v in unique:
+                if v in present:
+                    out.append(v)
+                elif v == "ml_score":
+                    # Parametric mass-scan branches (ml_score_mh3_<a>_mh4_<b>) aren't
+                    # literally "ml_score" — expand the whitelist entry to every
+                    # matching scored variable present in this region's candidates.
+                    out.extend(sorted(x for x in all_vars if x.startswith("ml_score_mh3_")))
+            return out
 
         return list(all_vars)
 
@@ -3171,21 +3964,16 @@ class PlotManager:
 
     def _get_variable_label(self, var_name: str) -> str:
         """Get a formatted label for a variable name."""
-        # Simple mapping - can be expanded
-        labels = {
-            'met': 'MET [GeV]',
-            'jet_pt': 'Jet pT [GeV]',
-            'jet_eta': 'Jet η',
-            'n_jets': 'Number of Jets',
-            'n_bjets': 'Number of B-jets',
-            'n_muons': 'Number of Muons',
-            'n_electrons': 'Number of Electrons',
-            'electron_pt': 'Electron pT [GeV]',
-            'electron_eta': 'Electron η',
-            'muon_pt': 'Muon pT [GeV]',
-            'muon_eta': 'Muon η',
-        }
-        return labels.get(var_name, var_name.replace('_', ' ').title())
+        if var_name in self.variable_labels:
+            return self.variable_labels[var_name]
+        if var_name.startswith("ml_score_mh3_"):
+            m = re.match(r"ml_score_mh3_([\d.p]+)_mh4_([\d.p]+)$", var_name)
+            if m:
+                mh3 = m.group(1).replace("p", ".")
+                mh4 = m.group(2).replace("p", ".")
+                base = self.variable_labels.get("ml_score", "DNN score")
+                return f"{base} (MH3={mh3}, MH4={mh4})"
+        return var_name.replace('_', ' ').title()
 
     def _create_region_plots_single(self, results: Dict[str, Any], region: str,
                                   output_path: Path, show_data: bool,

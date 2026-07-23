@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -18,14 +19,11 @@ import uproot
 try:
     from dnn.common import DEFAULT_SIGNAL_PATTERNS, is_signal, sanitize_feature_frame
     from dnn.data import list_sample_region_trees, read_tree_as_arrays
-    from dnn.feature_engineering import REQUESTED_FEATURES_25, build_feature_frame_from_tree, get_default_feature_csv
+    from dnn.feature_engineering import build_feature_frame_from_tree, get_default_feature_csv
 except ModuleNotFoundError:
     from common import DEFAULT_SIGNAL_PATTERNS, is_signal, sanitize_feature_frame
     from data import list_sample_region_trees, read_tree_as_arrays
-    from feature_engineering import REQUESTED_FEATURES_25, build_feature_frame_from_tree, get_default_feature_csv
-
-
-DEFAULT_FEATURES = list(REQUESTED_FEATURES_25)
+    from feature_engineering import build_feature_frame_from_tree, get_default_feature_csv
 
 
 def _load_label_csv(path: str) -> dict[str, int]:
@@ -104,6 +102,69 @@ def _get_edges(x_all: np.ndarray, w_all: np.ndarray, n_bins: int) -> np.ndarray:
     return np.linspace(lo, hi, int(n_bins) + 1, dtype="f8")
 
 
+def _plot_one_feature(args: tuple) -> dict | None:
+    """Draw + save signal/background overlay for one feature. Module-level
+    (picklable) so it can run as a multiprocessing worker — each feature's
+    hist/AUC/draw/savefig is independent of every other feature."""
+    (feat, x, yy, ww, outdir_str, n_bins, use_hep) = args
+    # Avoid N worker processes each spawning a BLAS thread pool.
+    os.environ["OMP_NUM_THREADS"] = "1"
+    os.environ["OPENBLAS_NUM_THREADS"] = "1"
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from sklearn.metrics import roc_auc_score
+
+    outdir = Path(outdir_str)
+
+    m_all = np.isfinite(x)
+    x = x[m_all]
+    yy = yy[m_all]
+    ww = np.maximum(ww[m_all], 0.0)
+
+    xs = x[yy == 1]
+    xb = x[yy == 0]
+    ws = ww[yy == 1]
+    wb = ww[yy == 0]
+
+    if xs.size == 0 or xb.size == 0 or np.sum(ws) <= 0.0 or np.sum(wb) <= 0.0:
+        return None
+
+    edges = _get_edges(x, ww, n_bins=n_bins)
+    hs, _ = np.histogram(xs, bins=edges, weights=ws)
+    hb, _ = np.histogram(xb, bins=edges, weights=wb)
+
+    auc = float(roc_auc_score(yy, x, sample_weight=ww))
+    z = _asimov_significance_from_hist(hs, hb)
+
+    hs_norm = hs / max(np.sum(hs), 1e-12)
+    hb_norm = hb / max(np.sum(hb), 1e-12)
+    centers = 0.5 * (edges[:-1] + edges[1:])
+    widths = np.diff(edges)
+
+    fig, ax = plt.subplots(figsize=(7.5, 6.0))
+    ax.step(centers, hs_norm, where="mid", linewidth=2.0, color="#bd1f01", label="Signal")
+    ax.step(centers, hb_norm, where="mid", linewidth=2.0, color="#3f90da", label="Background")
+    ax.bar(centers, hb_norm, width=widths, alpha=0.18, color="#3f90da", align="center")
+    ax.set_xlabel(feat)
+    ax.set_ylabel("Normalized events")
+    ax.set_title(f"{feat}  |  AUC={auc:.3f}, Asimov Z={z:.2f}")
+    ax.grid(alpha=0.2)
+    ax.legend(loc="best")
+
+    if use_hep:
+        import mplhep as hep
+        hep.cms.label("Work in progress", loc=0, com=13.6, ax=ax)
+
+    fig.tight_layout()
+    fig.savefig(outdir / f"{feat}_comparison.png", dpi=170)
+    fig.savefig(outdir / f"{feat}_comparison.pdf")
+    plt.close(fig)
+
+    return {"feature": feat, "auc": auc, "asimov_z": z}
+
+
 def main():
     ap = argparse.ArgumentParser(description="CMS-style feature comparison plots from ppbbchichi trees")
     ap.add_argument("--root", required=True, help="Path to ppbbchichi-trees.root")
@@ -116,7 +177,7 @@ def main():
     ap.add_argument("--exclude-prefixes", default="run")
     ap.add_argument("--label-csv", default=None)
     ap.add_argument("--background-prefix", default=None)
-    ap.add_argument("--outdir", default="plot", help="Output plot directory")
+    ap.add_argument("--outdir", default="outputs/dnn", help="Output plot directory")
     ap.add_argument("--n-bins", type=int, default=40)
     args = ap.parse_args()
 
@@ -228,56 +289,27 @@ def main():
     except Exception:
         use_hep = False
 
-    from sklearn.metrics import roc_auc_score
+    y_i = np.asarray(y, dtype="i4")
+    w_f = np.maximum(np.asarray(w, dtype="f8"), 0.0)
 
-    signif_rows = []
+    tasks = [
+        (feat, np.asarray(X[feat].to_numpy(), dtype="f8"), y_i, w_f, str(outdir), int(args.n_bins), use_hep)
+        for feat in features
+    ]
 
-    for feat in features:
-        x = np.asarray(X[feat].to_numpy(), dtype="f8")
-        m_all = np.isfinite(x)
-        x = x[m_all]
-        yy = np.asarray(y[m_all], dtype="i4")
-        ww = np.maximum(np.asarray(w[m_all], dtype="f8"), 0.0)
+    num_workers = int(os.environ.get("DNN_PLOT_WORKERS", max(1, (os.cpu_count() or 1))))
+    num_workers = max(1, min(num_workers, len(features)))
 
-        xs = x[yy == 1]
-        xb = x[yy == 0]
-        ws = ww[yy == 1]
-        wb = ww[yy == 0]
+    if num_workers > 1:
+        import multiprocessing as mp
 
-        if xs.size == 0 or xb.size == 0 or np.sum(ws) <= 0.0 or np.sum(wb) <= 0.0:
-            continue
+        ctx = mp.get_context("spawn")
+        with ctx.Pool(processes=num_workers) as pool:
+            results = pool.map(_plot_one_feature, tasks)
+    else:
+        results = [_plot_one_feature(t) for t in tasks]
 
-        edges = _get_edges(x, ww, n_bins=int(args.n_bins))
-        hs, _ = np.histogram(xs, bins=edges, weights=ws)
-        hb, _ = np.histogram(xb, bins=edges, weights=wb)
-
-        auc = float(roc_auc_score(yy, x, sample_weight=ww))
-        z = _asimov_significance_from_hist(hs, hb)
-        signif_rows.append({"feature": feat, "auc": auc, "asimov_z": z})
-
-        hs_norm = hs / max(np.sum(hs), 1e-12)
-        hb_norm = hb / max(np.sum(hb), 1e-12)
-        centers = 0.5 * (edges[:-1] + edges[1:])
-        widths = np.diff(edges)
-
-        fig, ax = plt.subplots(figsize=(7.5, 6.0))
-        ax.step(centers, hs_norm, where="mid", linewidth=2.0, color="#bd1f01", label="Signal")
-        ax.step(centers, hb_norm, where="mid", linewidth=2.0, color="#3f90da", label="Background")
-        ax.bar(centers, hb_norm, width=widths, alpha=0.18, color="#3f90da", align="center")
-        ax.set_xlabel(feat)
-        ax.set_ylabel("Normalized events")
-        ax.set_title(f"{feat}  |  AUC={auc:.3f}, Asimov Z={z:.2f}")
-        ax.grid(alpha=0.2)
-        ax.legend(loc="best")
-
-        if use_hep:
-            hep.cms.label("Work in progress", loc=0, com=13.6, ax=ax)
-
-        fig.tight_layout()
-        fig.savefig(outdir / f"{feat}_comparison.png", dpi=170)
-        fig.savefig(outdir / f"{feat}_comparison.pdf")
-        plt.close(fig)
-
+    signif_rows = [r for r in results if r is not None]
     signif_rows.sort(key=lambda r: (r["asimov_z"], abs(r["auc"] - 0.5)), reverse=True)
     (outdir / "feature_significance.json").write_text(json.dumps(signif_rows, indent=2) + "\n")
     (outdir / "sample_selection.json").write_text(

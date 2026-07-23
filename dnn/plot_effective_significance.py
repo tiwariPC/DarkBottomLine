@@ -149,7 +149,7 @@ def main() -> None:
 
         fig.tight_layout()
         out_path.parent.mkdir(parents=True, exist_ok=True)
-        fig.savefig(out_path, dpi=160, bbox_inches="tight")
+        fig.savefig(out_path, dpi=300, bbox_inches="tight")
         plt.close(fig)
 
     # --- Plot using the primary (syst-aware) metric ---

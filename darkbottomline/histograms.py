@@ -7,7 +7,7 @@ import numpy as np
 from typing import Dict, Any, Optional, Union
 import logging
 
-SENTINEL = -9.0
+from darkbottomline.objects import SENTINEL
 
 try:
     import hist
@@ -461,7 +461,7 @@ class HistogramManager:
             weights = ak.to_numpy(weights)
 
         # Fill MET histogram (convert to numpy to avoid axis=-1 in hist/awkward)
-        met_pt_arr = events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"]
+        met_pt_arr = next((events[v] for v in ("MET_pt", "PuppiMET_pt", "PFMET_pt") if v in events.fields), None)
         try:
             met_pt = np.asarray(ak.to_numpy(met_pt_arr))
         except Exception:
@@ -514,8 +514,8 @@ class HistogramManager:
                 histograms["jet_eta"].fill(jet_eta=jet_eta[_meta], weight=jet_weights[_meta])
                 _mphi = jet_phi != SENTINEL
                 histograms["jet_phi"].fill(jet_phi=jet_phi[_mphi], weight=jet_weights[_mphi])
-                if hasattr(jets, "btagDeepFlavB"):
-                    btag_score = np.asarray(ak.to_numpy(ak.flatten(jets.btagDeepFlavB)))
+                if hasattr(jets, "btagScore"):
+                    btag_score = np.asarray(ak.to_numpy(ak.flatten(jets.btagScore)))
                     _mbtag = btag_score != SENTINEL
                     histograms["btag_deepjet"].fill(btag_deepjet=btag_score[_mbtag], weight=jet_weights[_mbtag])
         except Exception:
@@ -586,7 +586,7 @@ class HistogramManager:
             weights = ak.to_numpy(weights)
 
         # Fill MET histogram
-        met_values = ak.to_numpy(events["PFMET_pt"] if "PFMET_pt" in events.fields else events["MET_pt"])
+        met_values = ak.to_numpy(next((events[v] for v in ("MET_pt", "PuppiMET_pt", "PFMET_pt") if v in events.fields), None))
         histograms["met"]["values"].extend(met_values)
         histograms["met"]["weights"].extend(weights)
 

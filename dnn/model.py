@@ -7,7 +7,8 @@ Purpose:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -15,6 +16,8 @@ class ModelSpec:
     n_inputs: int
     hidden_layers: tuple[int, ...]
     dropout: float
+    parametric: bool = False
+    mass_grid: Optional[list] = field(default=None)
 
 
 def parse_hidden_layers(s: str) -> tuple[int, ...]:
@@ -58,6 +61,8 @@ def save_checkpoint(path: str, *, model, spec: ModelSpec):
             "n_inputs": int(spec.n_inputs),
             "hidden_layers": list(spec.hidden_layers),
             "dropout": float(spec.dropout),
+            "parametric": bool(spec.parametric),
+            "mass_grid": spec.mass_grid,
         },
     }
     torch.save(ckpt, path)
@@ -72,6 +77,8 @@ def load_checkpoint(path: str, *, map_location: str = "cpu"):
         n_inputs=int(spec_d["n_inputs"]),
         hidden_layers=tuple(int(x) for x in spec_d.get("hidden_layers", [])),
         dropout=float(spec_d.get("dropout", 0.0)),
+        parametric=bool(spec_d.get("parametric", False)),
+        mass_grid=spec_d.get("mass_grid"),
     )
     model = build_mlp(spec)
     model.load_state_dict(ckpt["state_dict"])

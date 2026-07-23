@@ -3,8 +3,8 @@ lumi: 109.82   # To be updated with actual 2024 luminosity
 
 # Correction file paths (user must provide actual files)
 corrections:
-   pileup: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_puWeights.json.gz
-   pileup_name: "Collisions2024_355100_357900_eraBCD_GoldenJson"
+   pileup: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_puWeights_BCDEFGHI.json.gz
+   pileup_name: "Collisions24_BCDEFGHI_goldenJSON"
    btagSF: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_btagging.json.gz
    muonSF_highPT: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_muon_HighPt.json.gz
    muonSF_highPT_name: "NUM_TightPFIso_DEN_TightID"
@@ -16,6 +16,7 @@ corrections:
    electronHLT: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_electronHlt.json.gz
    electronHLT_name: "2024Re-recoBCD"
    electronHLT_WP: "HLT_SF_Ele30_TightID"
+   metHlt: data/corrections/2024/Run3-Summer24-NanoAODv15_metHlt.json.gz
    jetJEC: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_jet_jerc.json.gz
    jetJEC_tag: "Summer24_22Sep2023_V1_MC"
    jetJEC_algo: "AK4PFPuppi"
@@ -33,8 +34,8 @@ triggers:
    SingleMuon: ["HLT_IsoMu24", "HLT_IsoMu27"]
    EGamma: ["HLT_Ele30_WPTight_Gsf", "HLT_Photon200"]
 
-# MET filters
-met_filters:
+# Noise filters
+noise_filters:
    - "Flag_goodVertices"
    - "Flag_globalSuperTightHalo2016Filter"
    - "Flag_EcalDeadCellTriggerPrimitiveFilter"
@@ -61,20 +62,18 @@ objects:
       pt_min: 32.0
       pt_min_loose: 10.0
       eta_max: 2.5
-      id_loose: "loose"
-      iso_loose: "loose"
-      id_tight: "tight"
-      iso_tight: "tight"
+      # loose = cutBased >= id_wp_loose  AND mvaIso_WP90
+      # tight = cutBased >= id_wp_tight  AND mvaIso_WP80
       id_wp_loose: 2     # cutBased >= 2 = loose
       id_wp_tight: 4     # cutBased >= 4 = tight
 
    taus:
       pt_min: 20.0
       eta_max: 2.3
-      id_loose: "loose"
-      id_tight: "tight"
-      id_wp_loose: 4     # deepTau VSjet >= 4 = loose
-      id_wp_tight: 16    # deepTau VSjet >= 16 = tight
+      # Tau is a veto object (no tight WP). DeepTau2018v2p5 WPs:
+      id_wp_vsjet: 3     # VSjet >= 3  = VLoose
+      id_wp_vse: 1       # VSe   >= 1  = VVVLoose
+      id_wp_vsmu: 1      # VSmu  >= 1  = VLoose
       decay_modes: [0, 1, 2, 10, 11]
 
    jets:
@@ -85,8 +84,8 @@ objects:
    photons:
       pt_min: 15.0
       eta_max: 2.5
-      id: "loose"
-      id_wp: 1           # cutBased >= 1 = loose
+      # Veto object: ID = cutBased loose only
+      id_wp_loose: 1     # cutBased >= 1 = loose
 
    fatjets:
       pt_min: 200.0
@@ -95,11 +94,24 @@ objects:
 
 # B-tagging working points
 btagging:
-   wp: "medium"   # loose, medium, tight
-   algorithm: "deepJet"   # deepJet, deepCSV
-   score_loose: 0.0479    # Run3 2023+ deepJet WPs (BTV POG)
-   score_medium: 0.2431
-   score_tight: 0.6553
+   # BTV POG b-tag working points (WP = discriminant cut, Eff = b-eff %, MR = mistag %)
+   #            DeepJet                UParT                  ParticleNet
+   # WP         WP      Eff   MR       WP      Eff   MR       WP      Eff   MR
+   # Loose      0.0485  91.9  10.0     0.0246  92.6  10.0     0.0365  93.2  10.0
+   # Medium     0.2480  82.1   1.0     0.1272  83.4   1.0     0.1990  84.2   1.0
+   # Tight      0.6708  67.2   0.1     0.4648  72.4   0.1     0.6373  70.6   0.1
+   # XTight     0.7846  61.9   0.05    0.6298  68.1   0.05    0.7764  65.4   0.05
+   # XXTight    0.9654  42.7   0.01    0.9739  48.3   0.01    0.9815  44.6   0.01
+   algorithm: "UParT"       # PNet, deepJet, deepCSV, UParT
+   branch: "Jet_btagUParTAK4B"  # NanoAOD branch name
+   score: 0.1272            # UParT Medium WP (BTV POG Summer24)
+   # B-tag SF (correctionlib). sf_type: "shape" (continuous, discr-based)
+   # or "fixed_wp" (per-WP, needs sf_wp). Correction names built from sf_name:
+   #   shape    -> {sf_name}_shape
+   #   fixed_wp -> {sf_name}_comb (b/c, flavor 4,5) + {sf_name}_light (udsg, flavor 0)
+   sf_name: "UParTAK4"      # base correction name in btagging.json.gz
+   sf_type: "fixed_wp"      # Summer24 ships only fixed-WP UParT SFs
+   sf_wp: "M"               # L, M, T, XT, XXT (matches score above)
 
 # Event selection (aligned with SUS-23-008)
 event_selection:
@@ -118,3 +130,4 @@ event_selection:
 # Cleaning parameters
 cleaning:
    dr_jet: 0.4
+   dr_photon_lep: 0.4   # photon veto: dR cleaning vs loose electrons+muons (Run 2 parity)
