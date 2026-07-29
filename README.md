@@ -58,12 +58,18 @@ Only needed for `run-combine`/`merge-categories`/`merge-eras` (fit-running);
 datacard-generation works without it.
 
 ```bash
-# Local (conda)
+# Local (conda) — must be `source`d, not `bash`-executed: the script calls
+# `conda activate`, which only takes effect in the current (sourced) shell.
 INSTALL_COMBINE=1 source local_setup.sh
 
 # Lxplus
 python3 check_requirements.py --install-combine
 ```
+
+`local_setup.sh`'s `INSTALL_COMBINE=1` path auto-installs its own build
+toolchain (`cmake`, `ninja`, `eigen`) from conda-forge into the `darkbottomline`
+env before building CombinedLimit — no system package manager or root access
+needed, even on a bare AlmaLinux/CentOS box with no `eigen3-devel` installed.
 
 ---
 

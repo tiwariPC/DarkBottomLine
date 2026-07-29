@@ -31,13 +31,23 @@ if [ "${INSTALL_COMBINE:-0}" = "1" ]; then
   else
     echo "Building CMS Combine into this environment (INSTALL_COMBINE=1)..."
 
-    # Build toolchain (cmake, ninja) is not in environment.yml — it's only
-    # needed for this optional Combine build, so install it into the active
-    # env here rather than making every darkbottomline user carry it.
+    # Build toolchain (cmake, ninja) + Eigen3 (CombinedLimit's CMakeLists.txt
+    # requires find_package(Eigen3), a header-only library not in
+    # environment.yml) are only needed for this optional Combine build, so
+    # install them into the active env here rather than making every
+    # darkbottomline user carry them. conda-forge's eigen package installs
+    # Eigen3Config.cmake into $CONDA_PREFIX, discoverable without any system
+    # package manager / root access (reproduced: CMake failure on a fresh
+    # AlmaLinux box with no system eigen3-devel installed).
     if ! command -v cmake &>/dev/null || ! command -v ninja &>/dev/null; then
       echo "Installing build toolchain (cmake, ninja) into ${CONDA_PREFIX}..."
       conda install -y -n darkbottomline -c conda-forge cmake ninja \
         || { echo "Failed to install cmake/ninja!"; exit 1; }
+    fi
+    if ! find "${CONDA_PREFIX}/share" -iname "Eigen3Config.cmake" 2>/dev/null | grep -q .; then
+      echo "Installing Eigen3 into ${CONDA_PREFIX}..."
+      conda install -y -n darkbottomline -c conda-forge eigen \
+        || { echo "Failed to install eigen!"; exit 1; }
     fi
 
     if [ ! -d "${COMBINE_SRC}" ]; then
