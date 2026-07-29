@@ -13,7 +13,7 @@ fi
 conda activate darkbottomline
 # Install the local package in editable mode
 echo "Installing local package..."
-pip install -e "$(dirname "$0")" || { echo "pip install -e failed!"; exit 1; }
+pip install -e "$(dirname "$0")" || { echo "pip install -e failed!"; return 1; }
 echo "Environment ready! Python: $(python --version)"
 
 # OPTIONAL: build CMS Combine (HiggsAnalysis-CombinedLimit) into this conda
@@ -31,29 +31,39 @@ if [ "${INSTALL_COMBINE:-0}" = "1" ]; then
   else
     echo "Building CMS Combine into this environment (INSTALL_COMBINE=1)..."
 
-    # Build toolchain (cmake, ninja) + Eigen3 (CombinedLimit's CMakeLists.txt
-    # requires find_package(Eigen3), a header-only library not in
-    # environment.yml) are only needed for this optional Combine build, so
-    # install them into the active env here rather than making every
-    # darkbottomline user carry them. conda-forge's eigen package installs
-    # Eigen3Config.cmake into $CONDA_PREFIX, discoverable without any system
-    # package manager / root access (reproduced: CMake failure on a fresh
-    # AlmaLinux box with no system eigen3-devel installed).
+    # Build toolchain (cmake, ninja) + Eigen3 + Boost (CombinedLimit's
+    # CMakeLists.txt requires find_package(Eigen3) and find_package(Boost),
+    # neither in environment.yml) are only needed for this optional Combine
+    # build, so install them into the active env here rather than making
+    # every darkbottomline user carry them. conda-forge's eigen/libboost-devel
+    # packages install Eigen3Config.cmake/BoostConfig.cmake into
+    # $CONDA_PREFIX, discoverable without any system package manager / root
+    # access (reproduced: CMake failures for both on a fresh AlmaLinux box
+    # with neither eigen3-devel nor boost-devel installed system-wide).
+    # libboost-devel specifically (not the full "boost" meta-package) —
+    # "boost" pulls in Python bindings whose icu/python pins conflicted with
+    # this env's existing python=3.13 pin; libboost-devel is headers+cmake
+    # config only, no such conflict.
     if ! command -v cmake &>/dev/null || ! command -v ninja &>/dev/null; then
       echo "Installing build toolchain (cmake, ninja) into ${CONDA_PREFIX}..."
       conda install -y -n darkbottomline -c conda-forge cmake ninja \
-        || { echo "Failed to install cmake/ninja!"; exit 1; }
+        || { echo "Failed to install cmake/ninja!"; return 1; }
     fi
     if ! find "${CONDA_PREFIX}/share" -iname "Eigen3Config.cmake" 2>/dev/null | grep -q .; then
       echo "Installing Eigen3 into ${CONDA_PREFIX}..."
       conda install -y -n darkbottomline -c conda-forge eigen \
-        || { echo "Failed to install eigen!"; exit 1; }
+        || { echo "Failed to install eigen!"; return 1; }
+    fi
+    if ! find "${CONDA_PREFIX}/lib" "${CONDA_PREFIX}/share" -iname "BoostConfig.cmake" 2>/dev/null | grep -q .; then
+      echo "Installing Boost into ${CONDA_PREFIX}..."
+      conda install -y -n darkbottomline -c conda-forge libboost-devel \
+        || { echo "Failed to install libboost-devel!"; return 1; }
     fi
 
     if [ ! -d "${COMBINE_SRC}" ]; then
       mkdir -p "$(dirname "${COMBINE_SRC}")"
       git clone https://github.com/cms-analysis/HiggsAnalysis-CombinedLimit.git "${COMBINE_SRC}" \
-        || { echo "Combine git clone failed!"; exit 1; }
+        || { echo "Combine git clone failed!"; return 1; }
     fi
     PY_SITE_PACKAGES="lib/python$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages"
     NCPU="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
@@ -64,7 +74,7 @@ if [ "${INSTALL_COMBINE:-0}" = "1" ]; then
                  -DCMAKE_INSTALL_PYTHONDIR="${PY_SITE_PACKAGES}" -DUSE_VDT=OFF \
         && cmake --build build -j"${BUILD_JOBS}" \
         && cmake --install build
-    ) || { echo "Combine build failed!"; exit 1; }
+    ) || { echo "Combine build failed!"; return 1; }
     echo "Combine installed into ${CONDA_PREFIX}"
   fi
 
