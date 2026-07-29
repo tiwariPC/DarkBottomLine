@@ -53,7 +53,7 @@ def main():
         "objects", "selections", "corrections", "weights", 
         "histograms", "processor", "regions", "analyzer",
         "dnn_trainer", "dnn_inference", "plotting", 
-        "combine_tools", "diagnostics", "cli"
+        "combine_tools", "combine_inputs", "cli"
     ]
     
     all_passed = True

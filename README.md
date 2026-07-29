@@ -52,6 +52,19 @@ cp /tmp/x509up_u$(id -u) /afs/cern.ch/user/u/username/private/
 condor_submit submit.sub
 ```
 
+### Combine (optional)
+
+Only needed for `run-combine`/`merge-categories`/`merge-eras` (fit-running);
+datacard-generation works without it.
+
+```bash
+# Local (conda)
+INSTALL_COMBINE=1 source local_setup.sh
+
+# Lxplus
+python3 check_requirements.py --install-combine
+```
+
 ---
 
 ## Single Command: `analyze`
@@ -281,6 +294,166 @@ darkbottomline analyze \
 ```
 
 `--output` is optional in `full` mode when `--make-region-plots` is set.
+
+---
+
+## Combine Limit-Setting Pipeline
+
+CMS Combine datacard generation, region/category/era merging, and
+fit-running, driven entirely by `configs/combine.yaml` (single source of
+config — CLI flags only override yaml values). Consumes the ROOT
+histograms already produced by `region-analysis`'s `--make-region-plots`
+(Mode 2 above) — run that first.
+
+Combine (`combine`/`combineTool.py`/`text2workspace.py`) is an **optional**
+install — datacard-generation doesn't need it, only the fit-running steps do.
+See [Installation](#installation) below.
+
+`configs/combine.yaml`'s `datacard.binning_mode` selects the datacard shape:
+`"unbinned"` (default — one Combine channel per region, shape histogram
+carries all bins) or `"binned"` (Run2-production convention — each
+histogram bin becomes its own single-bin Combine channel, `region_bin1`,
+`region_bin2`, ...; `rateParam` names get a `_binN` suffix so each bin
+floats independently). Both modes support `combine_emu` and per-bin/region
+`rateParam` tying between CRs and SR identically.
+
+### Datacard generation
+
+```bash
+darkbottomline make-datacard \
+    --combine-config configs/combine.yaml \
+    --output outputs/combine/2024/ \
+    --year 2024 \
+    [--input outputs/region_plots/plots/<version>/root]  # override combine.yaml's path
+    [--category 1b|2b] \
+    [--region SR|CR_Wmunu|...] \
+    [--mass-point MH3_600_MH4_150_Mchi_1] \
+    [--blind | --unblind]
+```
+
+### Channel merge (e/μ) — optional, gated by `combine_emu: true`
+
+```bash
+darkbottomline merge-emu \
+    --combine-config configs/combine.yaml \
+    --input outputs/region_plots/plots/<version>/root \
+    --output outputs/combine/2024/merged_regions/ \
+    [--category 1b|2b]
+```
+
+### PDF normalization — optional, gated by `pdf_normalize: true`
+
+```bash
+darkbottomline normalize-pdf \
+    --combine-config configs/combine.yaml \
+    --input outputs/combine/2024/merged_regions/ \
+    --output outputs/combine/2024/normalized/ \
+    [--category 1b|2b]
+```
+
+### Region merge (SR + CRs → one combined-region card, per category)
+
+Required before category merge — CR `rateParam`s only constrain the fit
+once SR and its CR bins share one datacard, and GoF's channel-masking
+(`mask_SR_*`) needs CR bins present to mask against.
+
+```bash
+darkbottomline merge-region \
+    --combine-config configs/combine.yaml \
+    --input outputs/combine/2024/ \
+    --output outputs/combine/2024/region_merged/ \
+    [--category 1b|2b] [--mass-point MH3_600_MH4_150_Mchi_1]
+```
+
+### Category merge (1b + 2b → C)
+
+```bash
+darkbottomline merge-categories \
+    --combine-config configs/combine.yaml \
+    --input outputs/combine/2024/region_merged/ \
+    --output outputs/combine/2024/C/ \
+    [--mass-point MH3_600_MH4_150_Mchi_1]
+```
+
+### Era merge (active eras → run3/C)
+
+```bash
+darkbottomline merge-eras \
+    --combine-config configs/combine.yaml \
+    --input outputs/combine/ \
+    --output outputs/combine/run3/C/ \
+    [--mass-point MH3_600_MH4_150_Mchi_1]
+```
+
+### Run fits
+
+```bash
+darkbottomline run-combine --combine-config configs/combine.yaml \
+    --mode AsymptoticLimits|FitDiagnostics|GoodnessOfFit|Impacts \
+    --datacard outputs/combine/run3/C/<mass_point>/datacard.txt \
+    --output outputs/combine/run3/C/<mass_point>/ \
+    [--sr-datacard <SR-only .txt>]   # if --datacard is a workspace.root, for GoF channel-masking
+    [--toys 500] [--gof-algo saturated|KS|AD] [--blind | --unblind]
+```
+
+### Diagnostic plots
+
+```bash
+# GoF: collect Observed+Toys into one json, then plot (matplotlib, matches
+# Run2's plotGOF_fromDanyer.py aesthetics — filled toy histogram, red
+# observed marker/tail, CMS/Internal + sqrt(s) header via mplhep)
+darkbottomline collect-gof --combine-config configs/combine.yaml \
+    --input outputs/combine/run3/C/<mass_point>/higgsCombineObserved.GoodnessOfFit.mH120*.root \
+    --output outputs/combine/run3/C/<mass_point>/
+darkbottomline make-gof --combine-config configs/combine.yaml \
+    --input outputs/combine/run3/C/<mass_point>/gof.json \
+    --output outputs/combine/run3/C/<mass_point>/ \
+    [--gof-algo saturated] [--title-right "S+B hypothesis(1b+2b 2024)"] \
+    [--mass-point MH3_600_MH4_150_Mchi_1]   # embedded in output filename only
+
+# Impacts (plotImpacts.py wrapper)
+darkbottomline make-impact --combine-config configs/combine.yaml \
+    --input outputs/combine/run3/C/<mass_point>/impacts.json \
+    --output outputs/combine/run3/C/<mass_point>/
+
+# Pulls (diffNuisances.py + PlotPulls.C wrapper) — 4 modes, matching Run2's pulls_oneRP.sh
+darkbottomline make-pulls --combine-config configs/combine.yaml \
+    --input outputs/combine/run3/C/<mass_point>/workspace_....root \
+    --sr-datacard outputs/combine/run3/C/<mass_point>/datacard.txt \
+    --output outputs/combine/run3/C/<mass_point>/ \
+    --mode CRonly|asimov_t0|sb_t0|sb_t1 \
+    [--year 2024]
+```
+
+### Full pipeline (orchestrator)
+
+```bash
+# Single era
+darkbottomline run-all --combine-config configs/combine.yaml --era 2024
+
+# Full Run3 (all active: true eras + merge-eras)
+darkbottomline run-all --combine-config configs/combine.yaml --era full
+
+# Restrict stages / mass points
+darkbottomline run-all --combine-config configs/combine.yaml --era 2024 \
+    --stages datacard merge-region merge-categories gof limit \
+    --mass-points MH3_600_MH4_150_Mchi_1 MH3_1000_MH4_400_Mchi_1
+```
+
+`--stages` choices: `merge-emu normalize-pdf datacard merge-region merge-categories merge-eras gof impacts pulls limit all` (default `all`). `run-all` never invokes `analyze` itself — histo-production must already exist. Also aggregates limits automatically (`collect-limits`) whenever `limit` is in `--stages`.
+
+### Limits summary + Brazil-band plots
+
+```bash
+darkbottomline collect-limits --combine-config configs/combine.yaml \
+    --input outputs/combine/run3/C/ --output outputs/combine/limits/ \
+    [--name limits_summary] [--mass-points ...]
+
+darkbottomline make-limit-plot --combine-config configs/combine.yaml \
+    --input outputs/combine/limits/limits_summary.txt \
+    --output outputs/combine/limits/ \
+    [--name limits_summary] [--lumi 109.82] [--year 2024]
+```
 
 ---
 
@@ -708,7 +881,9 @@ Works with both 2022/2023 (float ±inf edges) and 2024 (string `'-inf'` edges) J
 | `plotting.py` | `PlotManager`: stacked plots, 5 formats (PDF/PNG/ROOT/TXT/TEX), SR blinding, process group routing |
 | `corrections.py` | `CorrectionManager`: correctionlib scale factors |
 | `weights.py` | `WeightCalculator` |
-| `cli.py` | CLI: `analyze` (all modes), `make-plots`, `make-stacked-plots` |
+| `combine_tools.py` | `CombineDatacardWriter`, `CombineRunner`: datacard/shapes generation, region/category/era merge, `combine`/`combineTool.py` invocation (masked GoF, 4 pulls modes, Impacts), and official-tool plotting wrappers (`plotGof.py`, `plotImpacts.py`, `diffNuisances.py`+`PlotPulls.C`) |
+| `combine_inputs.py` | Region-histogram I/O, e/mu merge (incl. shape-systematic variants), PDF normalization, signal-grid/era resolution for the Combine pipeline |
+| `cli.py` | CLI: `analyze` (all modes), `make-plots`, `make-stacked-plots`, Combine pipeline (`make-datacard`, `run-combine`, `merge-emu`, `normalize-pdf`, `merge-region`, `merge-categories`, `merge-eras`, `run-all`, `collect-gof`, `make-gof`, `make-impact`, `make-pulls`) |
 
 ---
 
@@ -719,6 +894,7 @@ configs/
   2022.yaml / 2022EE.yaml / 2023.yaml / 2024.yaml   # year-specific
   regions.yaml      # region definitions and cuts
   plotting.yaml     # process groups, exclusions, bin edges, log scale vars
+  combine.yaml      # Combine pipeline: eras, blind, categories, systematics, rateParams
 ```
 
 All thresholds in YAML — no hardcoded cuts in Python. Missing key → loud `KeyError`.

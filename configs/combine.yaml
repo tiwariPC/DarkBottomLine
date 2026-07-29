@@ -1,272 +1,444 @@
 # Higgs Combine configuration for DarkBottomLine framework
+# Single source of truth: CLI flags only OVERRIDE values here, never define new ones.
 
-# Datacard settings
+# List, not a single year — merge-eras combines datacards across every era listed
+# here. `active` marks which eras actually have histo-production output and should
+# be run through make-datacard/merge-categories today; eras present but not yet
+# `active` are schema-valid placeholders, so adding an era later means flipping this
+# flag + rerunning the pipeline, not editing the yaml shape.
+eras:
+  - year: 2024
+    year_config: "configs/2024.yaml"    # lumi read from here at runtime, not hardcoded
+    active: true                        # first era to run through this pipeline
+  - year: 2022
+    year_config: "configs/2022.yaml"
+    active: false
+  - year: 2022EE
+    year_config: "configs/2022EE.yaml"
+    active: false
+  - year: 2023
+    year_config: "configs/2023.yaml"
+    active: false
+
+regions_config: "configs/regions.yaml"
+
+# merge_categories: always on — every era's 1b+2b cards get combineCards.py-merged
+# into a "_C" card (Run2 always did this, it's not optional). merge_eras: only runs
+# across eras marked active: true above; with only 2024 active, merge-eras degenerates
+# to a "combine one era" pass-through (harmless, keeps run3/C/ populated either way)
+# rather than a special-cased single-era branch.
+merge:
+  merge_categories: true
+  merge_eras: true
+
+# Per-region blind, NOT a single global flag. Keys are region roles, not literal
+# region names, so this applies uniformly across 1b/2b. Gates BOTH the datacard
+# observation line (SR -> Asimov/TotalBkg when blind) AND combine's -t -1 usage for
+# that region's bin.
+blind:
+  SR: true
+  CR: false
+
+# show_data (plotting-only, `analyze --show-data`) is a SEPARATE concept from `blind`
+# above — plotting code must not read this file's `blind`, and Combine code must not
+# read --show-data.
+
+categories: ["1b", "2b"]
+
+regions:
+  "1b":
+    signal_region: "SR"
+    control_regions: ["CR_Wmunu", "CR_Wenu", "CR_Zmumu", "CR_Zee"]
+  "2b":
+    signal_region: "SR"
+    control_regions: ["CR_Topmunu", "CR_Topenu", "CR_Zmumu", "CR_Zee"]
+
+# Fit/discriminant variable, configurable PER CATEGORY — not hardcoded to the same
+# variable for both. 2b value is a placeholder pending confirmation of which branch
+# (ml_score vs Recoil vs other) is the actual 2b discriminant.
+fit_variable:
+  "1b": "Recoil"
+  "2b": "Recoil"     # PLACEHOLDER — confirm before running 2b datacard-generation;
+                      # candidate: ml_score, if DNN scoring is finalized for this era
+
+combine_emu: true
+
+# Toggle Agent 2's PDF weight normalization step. Independent of combine_emu — the two
+# are separate concerns (don't couple them). normalize-pdf is a no-op passthrough
+# when this is false, same pattern as merge-emu's combine_emu gate.
+pdf_normalize: true
+
+# perBinChannel: independent rateParam per bin/channel — NOT merged into one shared
+# CR->SR transfer factor even when combine_emu: true. Each e-channel and mu-channel
+# CR gets its own rateParam entry.
+rateparam_mode: "perBinChannel"
+
+# Per-era histo-production input. `analyze --output-dir`/`--version` are plain
+# CLI args in the existing framework (plotting.py doesn't encode the year into
+# its own output path), so the convention here is: point --output-dir at a
+# shared root (outputs/region_plots) and bake the year into --version itself
+# (e.g. --version 20260722_92818f6_2024), matching plotting.py's actual write
+# path Path(output_dir) / version / "root" / f"hist_..._{variable}.root"
+# (the "plots/" level has been removed from plotting.py's path construction).
+# {year} is NOT part of this template — the version string already carries it;
+# use --input to override per-run if a version's name doesn't embed the year.
+input:
+  region_root_dir_template: "outputs/region_plots/{version}/root"
+  version: null            # null -> resolve latest version dir under region_root_dir's parent
+
 datacard:
-  # Process definitions
-  processes:
-    signal:
-      name: "signal"
-      rate: 1.0  # Will be scaled by cross-section
-      is_signal: true
-    ttbar:
-      name: "ttbar"
-      rate: 1.0
-      is_signal: false
-    wjets:
-      name: "wjets"
-      rate: 1.0
-      is_signal: false
-    zjets:
-      name: "zjets"
-      rate: 1.0
-      is_signal: false
-    qcd:
-      name: "qcd"
-      rate: 1.0
-      is_signal: false
-    st:
-      name: "st"
-      rate: 1.0
-      is_signal: false
-    diboson:
-      name: "diboson"
-      rate: 1.0
-      is_signal: false
+  # Binning mode — verified against Run2's ACTUAL generated datacards
+  # (bbdmRun2/bbDMlimitmodelrateParam_oneRP/datacards/datacard_bbDM{year}_{cat}/*.txt,
+  # checked across all years/categories/the run2-combined _C variants): Run2 always
+  # used channel-per-bin ("binned"), e.g. imax 12 for 1b = 3 regions x 4 Recoil bins
+  # each as a SEPARATE Combine channel (sr_bin1..4, zll_bin1..4, wl_bin1..4), each
+  # channel's observation=-1 (shape-only, single-bin histogram). The plain
+  # (non-_asChanel) per-bin-as-process template variant was checked too and is
+  # not used in any actual final datacard — not replicated here.
+  #   "binned":   split each region's histogram into N single-bin Combine channels
+  #               (bin_name = "{region_dir}_bin{i}"), rate=-1 (shape-derived),
+  #               matching Run2's production convention above.
+  #   "unbinned": one Combine channel per region, shape histogram carries all bins
+  #               internally (modern Combine practice; simpler, fewer nuisance
+  #               correlations to manage across bins).
+  binning_mode: "binned"
 
-  # Data observation
+  # process key -> {name: datacard process name, plot_group_label: cross-ref to
+  # configs/plotting.yaml's process_groups keys, so combine_tools.py can read the
+  # right histogram out of the region ROOT file}. Verified against the actual
+  # process_groups block in plotting.yaml (not guessed).
+  processes:
+    signal:      {name: "signal", is_signal: true, plot_group_label: "Signal_2HDMa"}
+    ttbar:       {name: "ttbar",     plot_group_label: "ttbar"}
+    wjets:       {name: "wjets",     plot_group_label: "WtoLNuJets"}
+    zjets:       {name: "zjets",     plot_group_label: "DYto2LJets"}
+    znunu:       {name: "znunu",     plot_group_label: "Zto2NuJets"}
+    singletop:   {name: "singletop", plot_group_label: "singletop"}
+    diboson:     {name: "diboson",   plot_group_label: "Diboson"}
+    smhiggs:     {name: "smhiggs",   plot_group_label: "SMHiggs"}
+    # qcd disabled by default: no QCD CR exists in regions.yaml today, so no
+    # "QCD" process_group is produced by histo-production and there is no
+    # ROOT histogram for combine_tools.py to read. `enabled: false` is read
+    # by CombineDatacardWriter/write_shapes to skip this process entirely
+    # (not written into the datacard bin/rate/systematics rows or shapes.root)
+    # rather than failing with a missing-histogram-key error. Flip to
+    # enabled: true once a QCD estimate (e.g. ABCD in a dedicated QCD CR) is
+    # wired upstream and plotting.yaml gains a matching "QCD" process_group.
+    qcd:         {name: "qcd", enabled: false, plot_group_label: "QCD"}
+
   data:
     name: "data_obs"
-    rate: 1.0
 
-  # Systematic uncertainties
   systematics:
-    # Luminosity uncertainty
+    # lumi is per-era by construction (uncorrelated across years, like Run2's
+    # lumi_13TeV_2016/2017/2018 convention) so merge-eras keeps each year's lumi
+    # nuisance separate rather than combining into one flat number — critical for
+    # a correct combined limit. Nuisance name gets the year suffix at write time:
+    # "lumi_{year}". value_source resolves per-era from that era's year_config;
+    # `value:` is the fallback only if year_config has no lumi_uncertainty key.
     lumi:
       type: "lnN"
-      processes: ["signal", "ttbar", "wjets", "zjets", "qcd", "st", "diboson"]
-      value: 1.025  # 2.5% uncertainty
+      name_template: "lumi_{year}"
+      value_source: "eras[].year_config:lumi_uncertainty"
+      value: 1.014            # PLACEHOLDER fallback — replace once each era's Lumi POG
+                                # number is published (2024's is still "to be updated")
+      processes: ["signal", "ttbar", "wjets", "zjets", "znunu", "singletop", "diboson", "smhiggs"]
 
-    # B-tagging scale factors
+    # btagSF must NOT apply in Z CRs — verified two ways: (1) Run2's actual template
+    # (datacard_template_1b_perBin_asChanel_addProcs.yaml, ZLL_bin1 block) sets
+    # NuisForProc: CMSYEAR_eff_b: [] / CMSYEAR_fake_b: [] there, vs. all-process lists
+    # in SR_bin1/WL_bin1; (2) Run3's own configs/regions.yaml confirms why: CR_Zmumu/
+    # CR_Zee have no Bjet1bCond/Bjet2bCond cut at all (explicit comment "no b-tag in Z
+    # CR"), while SR/CR_Wmunu/CR_Wenu/CR_Topmunu/CR_Topenu all do — so the b-tag SF
+    # weight is never part of a Z CR event's nominal weight to begin with. Rather than
+    # hardcoding a second "which regions have b-tag" list here (which could drift out
+    # of sync with regions.yaml's cuts), `gated_by_cut` names the regions.yaml cut key
+    # whose PRESENCE in a region's `cuts:` block determines applicability — computed at
+    # datacard-generation time by reading configs/regions.yaml directly, not
+    # re-specified as a literal region list.
+    # Every shape systematic's variant histograms live in a SEPARATE ROOT file
+    # (verified against real plotting.py output — grep for _weight_systs/_kin_systs
+    # in plotting.py:2764-2781), named hist_{cat}_{rdir}_{variable}_{syst_suffix}_log.root,
+    # containing the same process-label keys as the nominal file. `syst_suffix` is
+    # the exact filename token (case-sensitive, e.g. "weight_btag" + "UP"/"DOWN",
+    # or "JES"/"JER" for the two kinematic variants with no "weight_" prefix) —
+    # NOT the same string as the yaml key (sys_name), since Combine's nuisance
+    # name and plotting.py's file-naming convention are independent.
+    # name_template: "CMS{year}_{sys}" makes a systematic UNCORRELATED across
+    # eras (matching Run2's real datacard: CMS2016_eff_b, CMS2017_PU, ... —
+    # verified against bbDMlimitmodelrateParam_oneRP's actual combined-Run2
+    # datacard). Detector/measurement-year-specific experimental SFs get it;
+    # JES/JER/JEC and theory (pdf/scale) stay flat/correlated (no
+    # name_template) — Run2 also splits JEC into correlated + per-year
+    # "reduced source" components (JECAbsolute vs JECAbsolute_2016), but that
+    # requires upstream corrections.py changes to produce those extra shape
+    # variations and is out of scope here; only the naming/correlation
+    # scheme for the systematics DarkBottomLine already produces is applied.
+    # Scoped to 2024+ eras only — 2022/2022EE/2023 stay flat/unsuffixed if
+    # ever activated, per explicit instruction not to touch those.
     btagSF:
       type: "shape"
-      processes: ["signal", "ttbar", "wjets", "zjets", "qcd", "st", "diboson"]
-      value: 1.0
+      syst_suffix: "weight_btag"
+      name_template: "CMS{year}_eff_b"
+      processes: ["signal", "ttbar", "wjets", "zjets", "znunu", "singletop", "diboson", "smhiggs"]
+      gated_by_cut: ["Bjet1bCond", "Bjet2bCond"]   # region-applicable iff its
+                                                     # regions.yaml cuts block has either key
+    JES:         {type: "shape", syst_suffix: "JES", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JER:         {type: "shape", syst_suffix: "JER", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JEC:         {type: "shape", syst_suffix: "weight_JEC", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    pileup:      {type: "shape", syst_suffix: "weight_pileup", name_template: "CMS{year}_PU", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    muonSF:      {type: "shape", syst_suffix: "weight_muon", name_template: "CMS{year}_MuID", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    electronSF:  {type: "shape", syst_suffix: "weight_electron", name_template: "CMS{year}_EleID", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    electronHLT: {type: "shape", syst_suffix: "weight_electronHLT", name_template: "CMS{year}_trig_ele", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    metHLT:      {type: "shape", syst_suffix: "weight_metHLT", name_template: "CMS{year}_trig_met", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    pdf:         {type: "shape", syst_suffix: "weight_pdf", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    scale:       {type: "shape", syst_suffix: "weight_scale", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
 
-    # Jet energy scale
-    JES:
-      type: "shape"
-      processes: ["signal", "ttbar", "wjets", "zjets", "qcd", "st", "diboson"]
-      value: 1.0
+  # perBinChannel rateParams. Naming: <process>_<category>_<region_dir>.
+  #
+  # `regions` is CR-only (unchanged from the original design) — each entry
+  # applies to its own CR datacard exactly as before. SR's tie-in is handled
+  # SEPARATELY below (sr_rate_parameters), not by adding "1b:SR" here,
+  # because SR's correct rateParam set depends on combine_emu's merge state
+  # (confirmed by reproducing the bug directly: adding "1b:SR" to BOTH
+  # wjets_1b_Wmunu and wjets_1b_Wenu made SR's datacard carry both
+  # simultaneously even when combine_emu: true had already merged them into
+  # one Wlnu CR — double-applying the correction).
+  rate_parameters:
+    wjets_1b_Wmunu:   {type: "rateParam", regions: ["1b:CR_Wmunu"],   processes: ["wjets"], value: 1.0, range: [0.05, 1.95]}
+    wjets_1b_Wenu:    {type: "rateParam", regions: ["1b:CR_Wenu"],    processes: ["wjets"], value: 1.0, range: [0.05, 1.95]}
+    zjets_1b_Zmumu:   {type: "rateParam", regions: ["1b:CR_Zmumu"],   processes: ["zjets"], value: 1.0, range: [0.05, 1.95]}
+    zjets_1b_Zee:     {type: "rateParam", regions: ["1b:CR_Zee"],     processes: ["zjets"], value: 1.0, range: [0.05, 1.95]}
+    ttbar_2b_Topmunu: {type: "rateParam", regions: ["2b:CR_Topmunu"], processes: ["ttbar"], value: 1.0, range: [0.05, 1.95]}
+    ttbar_2b_Topenu:  {type: "rateParam", regions: ["2b:CR_Topenu"],  processes: ["ttbar"], value: 1.0, range: [0.05, 1.95]}
+    zjets_2b_Zmumu:   {type: "rateParam", regions: ["2b:CR_Zmumu"],   processes: ["zjets"], value: 1.0, range: [0.05, 1.95]}
+    zjets_2b_Zee:     {type: "rateParam", regions: ["2b:CR_Zee"],     processes: ["zjets"], value: 1.0, range: [0.05, 1.95]}
+    # Merged-channel entries — used for SR's tie-in (and become the CR file's
+    # own applicable entry too) ONLY when combine_emu: true, since that's
+    # when merge_emu collapses the CR_Wmunu/CR_Wenu histograms into one Wlnu
+    # channel (region_dir_from_role logic in cli.py's make_datacard). Region
+    # key is still the first-encountered per-channel role (CR_Wmunu) per
+    # make_datacard's emu_written_dirs dedup — NOT a literal "Wlnu" role,
+    # since region_key is always derived from region_role, never
+    # region_dir_override (confirmed in combine_tools.py).
+    wjets_1b_Wlnu:    {type: "rateParam", regions: ["1b:CR_Wmunu"],   processes: ["wjets"], value: 1.0, range: [0.05, 1.95]}
+    zjets_1b_Zll:     {type: "rateParam", regions: ["1b:CR_Zmumu"],   processes: ["zjets"], value: 1.0, range: [0.05, 1.95]}
+    ttbar_2b_Topl:    {type: "rateParam", regions: ["2b:CR_Topmunu"], processes: ["ttbar"], value: 1.0, range: [0.05, 1.95]}
+    zjets_2b_Zll:     {type: "rateParam", regions: ["2b:CR_Zmumu"],   processes: ["zjets"], value: 1.0, range: [0.05, 1.95]}
+    # No qcd_CR rateParam — no QCD CR exists in regions.yaml today.
+    # zjets_*_Z{mumu,ee} rateParams float a plain normalization (CR->SR transfer
+    # factor), not a shape — they're unaffected by btagSF's gated_by_cut exclusion
+    # above (that gate only governs whether a SHAPE systematic's Up/Down histograms
+    # get written/listed for a region, not whether a rateParam applies). No double
+    # counting between the two mechanisms.
 
-    # Jet energy resolution
-    JER:
-      type: "shape"
-      processes: ["signal", "ttbar", "wjets", "zjets", "qcd", "st", "diboson"]
-      value: 1.0
+  # SR's rateParam tie-in — separate from the CR-only block above precisely
+  # because the correct set differs by combine_emu (user-confirmed: "when we
+  # have electron channel WCR ... and muon channel Wmunu then both rateparameter
+  # will contribute to wjet in SR ... but when they have been combined ...
+  # we will have only one rate param from WCR"). Each entry here names the two
+  # per-channel rate_parameters keys to use when combine_emu is false/true.
+  sr_rate_parameters:
+    "1b":
+      - {process: "wjets", unmerged: ["wjets_1b_Wmunu", "wjets_1b_Wenu"], merged: "wjets_1b_Wlnu"}
+      - {process: "zjets", unmerged: ["zjets_1b_Zmumu", "zjets_1b_Zee"],  merged: "zjets_1b_Zll"}
+    "2b":
+      - {process: "ttbar", unmerged: ["ttbar_2b_Topmunu", "ttbar_2b_Topenu"], merged: "ttbar_2b_Topl"}
+      - {process: "zjets", unmerged: ["zjets_2b_Zmumu", "zjets_2b_Zee"],      merged: "zjets_2b_Zll"}
 
-    # MET scale
-    MET_scale:
-      type: "shape"
-      processes: ["signal", "ttbar", "wjets", "zjets", "qcd", "st", "diboson"]
-      value: 1.0
+# Signal grid (2HDM+a mass points to loop over in run-all's limit stage).
+# Source of truth: data/cross-section/xsection_signal.json["2HDMa"] keys
+# (format "MH3_<x>_MH4_<y>_Mchi_1", tanb=35, sint=0.7 fixed benchmark).
+signal_grid:
+  xsection_json: "data/cross-section/xsection_signal.json"
+  model_key: "2HDMa"
+  points: null    # null -> all points found in the xsec JSON
 
-    # MET resolution
-    MET_resolution:
-      type: "shape"
-      processes: ["signal", "ttbar", "wjets", "zjets", "qcd", "st", "diboson"]
-      value: 1.0
-
-    # Pileup
-    pileup:
-      type: "shape"
-      processes: ["signal", "ttbar", "wjets", "zjets", "qcd", "st", "diboson"]
-      value: 1.0
-
-    # Lepton scale factors
-    muonSF:
-      type: "shape"
-      processes: ["signal", "ttbar", "wjets", "zjets", "qcd", "st", "diboson"]
-      value: 1.0
-
-    electronSF:
-      type: "shape"
-      processes: ["signal", "ttbar", "wjets", "zjets", "qcd", "st", "diboson"]
-      value: 1.0
-
-    # Rate parameters for control regions
-    rate_parameters:
-      ttbar_CR_to_SR:
-        type: "rateParam"
-        regions: ["TTbarCR"]
-        processes: ["ttbar"]
-        value: 1.0
-        uncertainty: 0.3  # 30% uncertainty
-
-      zjets_CR_to_SR:
-        type: "rateParam"
-        regions: ["ZjetsCR"]
-        processes: ["zjets"]
-        value: 1.0
-        uncertainty: 0.2  # 20% uncertainty
-
-      qcd_CR_to_SR:
-        type: "rateParam"
-        regions: ["QCDCR"]
-        processes: ["qcd"]
-        value: 1.0
-        uncertainty: 0.5  # 50% uncertainty
-
-# Fit settings
 fit:
-  # Fit strategy
-  strategy: "robustHesse"  # robustHesse, robustMinos, minos
-
-  # Fit regions
-  regions:
-    SR_only: ["SR"]
-    SR_plus_CR: ["SR", "TTbarCR", "ZjetsCR", "QCDCR"]
-    all_regions: ["SR", "TTbarCR", "ZjetsCR", "QCDCR", "VR_HighMET", "VR_LowBjet"]
-
-  # Signal hypothesis
-  signal_hypothesis:
-    include_signal: true
-    signal_mass: 1000  # GeV
-    signal_cross_section: 1.0  # pb
-
-  # Fit options
+  strategy: "robustHesse"
   options:
-    # Asymptotic limits
-    asymptotic_limits:
-      expected: true
-      toys: 1000
-      r_min: 0.0
-      r_max: 10.0
+    asymptotic_limits: {r_min: 0.0, r_max: 10.0}
+    fit_diagnostics:   {save_shapes: true, save_norm: true, save_with_unc: true}
+    goodness_of_fit:   {algorithm: "saturated", toys: 500, seed: 12345}
 
-    # Fit diagnostics
-    fit_diagnostics:
-      save_shapes: true
-      save_norm: true
-      save_with_unc: true
-
-    # Goodness of fit
-    goodness_of_fit:
-      toys: 1000
-      seed: 12345
-      algorithm: "saturated"  # saturated, KS, AD
-
-# Output settings
 output:
-  # Datacard file
-  datacard_file: "datacard.txt"
-
-  # Shape files
-  shapes_file: "shapes.root"
-
-  # Workspace file
+  base_dir: "outputs/combine"   # per-era subdirs ({base_dir}/{year}/...) and the merged
+                                 # {base_dir}/run3/C/ are computed at runtime, not baked
+                                 # into this path
+  # Filename template, not a fixed name — self-describing like Run2's
+  # bbDM_datacard_{year}_THDMa_{category}_allregion_2HDMa_Ma{ma}_MChi{mchi}_MA{mA}_tb{tb}_st_{st}.txt
+  # (verified against bbdmRun2/bbDMlimitmodelrateParam_oneRP/datacards/*/*.txt).
+  # {mass_point} is the raw xsection_signal.json label (e.g. MH3_600_MH4_150_Mchi_1)
+  # for SR bins; CR-only cards (no mass point) drop the {mass_point} segment
+  # entirely rather than duplicating {region} (see CombineDatacardWriter._resolve_filename).
+  # {stage} is one of: percat (per-category, per-era), C (category-merged),
+  # run3C (era+category-merged) — set by combine_tools.py, not user-configured.
+  datacard_file: "datacard_{year}_{category}_{region}_{mass_point}.txt"
+  shapes_file: "shapes_{year}_{category}_{region}_{mass_point}.root"
   workspace_file: "workspace.root"
-
-  # Fit results
   fit_results:
     asymptotic_limits: "asymptotic_limits.root"
     fit_diagnostics: "fitDiagnostics.root"
     goodness_of_fit: "gof.root"
     impacts: "impacts.json"
-
-  # Plots
-  plots_dir: "plots/"
-
-  # Log files
+  # Own top-level tree (not nested under base_dir/outputs/combine/), per-format
+  # subdirs mirroring outputs/region_plots/{version}/{png,pdf,root,...}/'s shape.
+  plots_dir: "outputs/combine_plots/{version}/"
   log_dir: "logs/"
 
-# Advanced settings
+# Every combine/combineTool.py/text2workspace.py invocation, including multi-step
+# sequences (Impacts), is a command TEMPLATE here — nothing about mode dispatch or
+# step ordering is hardcoded in combine_tools.py. CombineRunner reads the entry for
+# its mode, formats {datacard}/{workspace}/{output_dir}/{mass_point}/{blind_args}
+# placeholders, and runs the resulting argv list(s) in order. blind_args resolves at
+# runtime to ["-t", "-1"] (blind) or [] (unblind) per region, substituted into
+# whichever step's args list contains the {blind_args} token.
 advanced:
-  # Combine commands
   combine_commands:
-    # Text2workspace
     text2workspace: "text2workspace.py"
-
-    # Combine
     combine: "combine"
-
-    # CombineTool
     combine_tool: "combineTool.py"
+    plot_gof: "plotGof.py"
+    plot_impacts: "plotImpacts.py"
+    diff_nuisances: "diffNuisances.py"
 
-  # Combine options
-  combine_options:
-    # General options
-    general:
-      - "--cminDefaultMinimizerStrategy=0"
-      - "--cminDefaultMinimizerTolerance=0.1"
-      - "--cminDefaultMinimizerPrecision=0.1"
+  workspace_options:
+    args: ["--channel-masks"]   # unlocks CR-only/SR+CR masked GoF fits
 
-    # Asymptotic limits
-    asymptotic_limits:
-      - "--run=expected"
-      - "--rMin=0"
-      - "--rMax=10"
+  # One entry per run-combine --mode / make-* command. `steps` is a list because
+  # Impacts needs 3 chained calls; every other mode is a single-step list of length 1.
+  commands:
+    general_args: ["--cminDefaultMinimizerStrategy=0", "--cminDefaultMinimizerTolerance=0.1"]
 
-    # Fit diagnostics
-    fit_diagnostics:
-      - "--saveShapes"
-      - "--saveNormalizations"
-      - "--saveWithUncertainties"
+    AsymptoticLimits:
+      steps:
+        - binary: "combine"
+          args: ["-M", "AsymptoticLimits", "{workspace}", "{blind_args}",
+                  "--run={run_mode}",   # run_mode resolves to "expected" always,
+                                        # plus a second step with "observed" appended
+                                        # when the region's blind flag is false
+                  # rMax=10 was too tight: low-sensitivity mass points need
+                  # r up to ~14+ to resolve the +2sigma expected quantile,
+                  # and combine silently drops that row (rather than erroring)
+                  # when the POI search range is exceeded, breaking
+                  # collect_limits' aggregation. The near-degenerate
+                  # MH3~=MH4 corner of the 29-point signal grid (e.g.
+                  # MH3_1500_MH4_1450) has such low sensitivity it needs
+                  # r~O(1000-2000) to resolve +1/2sigma — 5000 covers the
+                  # full grid with headroom.
+                  "--rMin=0", "--rMax=5000"]
 
-    # Goodness of fit
-    goodness_of_fit:
-      - "--algo=saturated"
-      - "--toys=1000"
-      - "--seed=12345"
+    FitDiagnostics:
+      steps:
+        - binary: "combine"
+          args: ["-M", "FitDiagnostics", "{workspace}", "{blind_args}",
+                  "--saveShapes", "--saveNormalizations", "--saveWithUncertainties"]
 
-    # Impacts
-    impacts:
-      - "--rMin=0"
-      - "--rMax=10"
-      - "--cminDefaultMinimizerStrategy=0"
+    # 4 pulls modes, matching Run2's real pulls_oneRP.sh exactly — each is a
+    # distinct FitDiagnostics invocation, fed to diffNuisances.py -g then
+    # PlotPulls.C (both official/vendored tools, not custom matplotlib) by
+    # CombineRunner.run_pulls(). {mask_sr_on} is the same channel-masking
+    # token GoodnessOfFit uses (resolved from the datacard's own SR bin
+    # names, not hardcoded).
+    PullsCRonly:
+      steps:
+        - binary: "combine"
+          args: ["-M", "FitDiagnostics", "{workspace}", "-n", "_CRonly",
+                  "--saveShapes", "--saveWithUncertainties",
+                  "--setParameters", "{mask_sr_on}",
+                  "--X-rtd", "MINIMIZER_analytic",
+                  "--cminFallbackAlgo", "Minuit2,0:1.0",
+                  "--rMin=0", "--rMax=5000"]
+    PullsAsimovT0:
+      steps:
+        - binary: "combine"
+          args: ["-M", "FitDiagnostics", "{workspace}", "-n", "_AsimovT0",
+                  "--saveShapes", "--saveWithUncertainties",
+                  "-t", "-1", "--expectSignal", "0",
+                  "--rMin=0", "--rMax=5000"]
+    PullsSbT0:
+      steps:
+        - binary: "combine"
+          args: ["-M", "FitDiagnostics", "{workspace}", "-n", "_SbT0",
+                  "--saveShapes", "--saveWithUncertainties",
+                  "--expectSignal", "0",
+                  "--rMin=0", "--rMax=5000"]
+    PullsSbT1:
+      steps:
+        - binary: "combine"
+          args: ["-M", "FitDiagnostics", "{workspace}", "-n", "_SbT1",
+                  "--saveShapes", "--saveWithUncertainties",
+                  "--expectSignal", "1",
+                  "--rMin=0", "--rMax=5000"]
 
-  # Parallel processing
+    # Two separate combine calls, matching Run2's actual makeGOF_allAlgos.sh —
+    # -t -1 (blind_args, used by every other mode) does NOT apply to GoF: it
+    # collides with GoF's own --toys option (both try to set toy generation),
+    # which is the real bug that used to fire here ("--toys cannot be
+    # specified more than once"). GoF instead ALWAYS runs unblinded/Asimov-free
+    # for the observed step (step 1) — blind only gates the datacard's
+    # observation/data_obs earlier in the pipeline, not this fit call — then
+    # throws background-only toys (step 2, --toysFrequentist) to build the
+    # reference distribution the p-value is computed against.
+    #
+    # Channel-masking (mask_sr_on/mask_sr_off, resolved per-datacard by
+    # CombineRunner._sr_bin_names from the datacard's own "bin" line — NOT
+    # hardcoded bin names here, since they vary by category/era/merge stage):
+    # nuisances are fit using CR-only data (SR masked), then the GoF test
+    # statistic is evaluated with SR unmasked, signal strength frozen at 0 —
+    # matches Run2's real --setParametersForFit/--setParametersForEval/
+    # --freezeParameters r/--setParameters r=0 pattern exactly (verified this
+    # session against real combine 10.6.1: an unmasked GoF was fitting SR
+    # data along with CRs, rather than testing whether the CR-only background
+    # model describes SR).
+    GoodnessOfFit:
+      steps:
+        # No --seed on the observed step (matches Run2's makeGOF_allAlgos.sh —
+        # only the toy-throwing call takes -s): passing --seed here makes
+        # combine append the seed to the output filename
+        # (higgsCombineObserved.GoodnessOfFit.mH120.<seed>.root), which
+        # _parse_goodness_of_fit globs for rather than assuming a fixed name.
+        - binary: "combine"
+          args: ["-M", "GoodnessOfFit", "{workspace}",
+                  "--algo={gof_algo}", "-n", "Observed",
+                  "--setParametersForFit", "{mask_sr_on}",
+                  "--setParametersForEval", "{mask_sr_off}",
+                  "--freezeParameters", "r", "--setParameters", "r=0"]
+        - binary: "combine"
+          args: ["-M", "GoodnessOfFit", "{workspace}",
+                  "--algo={gof_algo}", "-n", "Toys",
+                  "--setParametersForFit", "{mask_sr_on}",
+                  "--setParametersForEval", "{mask_sr_off}",
+                  "--freezeParameters", "r", "--setParameters", "r=0,{mask_sr_on}",
+                  "-t", "{toys}", "--toysFrequentist", "--seed=12345"]
+                  # gof_algo <- fit.options.goodness_of_fit.algorithm (CLI --gof-algo
+                  # overrides); toys <- fit.options.goodness_of_fit.toys (CLI --toys
+                  # overrides) — resolved from this same yaml, not passed as Python defaults
+
+    Impacts:
+      steps:
+        - binary: "combineTool.py"
+          args: ["-M", "Impacts", "-d", "{workspace}", "-m", "120", "{blind_args}", "--doInitialFit",
+                  "--rMin=0", "--rMax=10"]
+        - binary: "combineTool.py"
+          args: ["-M", "Impacts", "-d", "{workspace}", "-m", "120", "{blind_args}", "--doFits",
+                  "--parallel={n_workers}",
+                  "--rMin=0", "--rMax=10"]
+        - binary: "combineTool.py"
+          args: ["-M", "Impacts", "-d", "{workspace}", "-m", "120", "-o", "impacts.json",
+                  "--rMin=0", "--rMax=10"]
+
   parallel:
     enabled: true
     n_workers: 4
-    batch_size: 100
 
-  # Memory management
-  memory:
-    max_memory: "8GB"
-    cleanup: true
-
-  # Debugging
-  debug:
-    verbose: false
-    save_intermediate: false
-    log_level: "INFO"
-
-# Validation settings
-validation:
-  # Check datacard consistency
-  check_datacard: true
-
-  # Validate shapes
-  validate_shapes: true
-
-  # Check systematic uncertainties
-  check_systematics: true
-
-  # Validate rate parameters
-  validate_rate_params: true
-
-  # Cross-check with expected values
-  cross_check: true
-
-# Documentation
-documentation:
-  # Generate documentation
-  generate_docs: true
-
-  # Include comments in datacard
-  include_comments: true
-
-  # Save configuration
-  save_config: true
-
-  # Generate summary
-  generate_summary: true
+  # diffNuisances.py + PlotPulls.C flags, kept yaml-driven rather than
+  # hardcoded in Python (same "no hardcoded commands" constraint as
+  # advanced.commands above), even though these two tools aren't
+  # combine/combineTool.py/text2workspace.py themselves.
+  pulls_tooling:
+    diff_nuisances_args: ["--abs", "--all"]
+    plot_pulls_macro: "condorJobs/combine/PlotPulls.C"
+    # CRonly mode uses this macro directly on fit_b (no diffNuisances.py step
+    # — see CombineRunner.run_pulls's docstring for why).
+    plot_postnuisance_macro: "condorJobs/combine/plotPostNuisance_combine.C"

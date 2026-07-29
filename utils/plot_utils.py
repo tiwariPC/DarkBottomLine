@@ -325,9 +325,9 @@ def add_cms_label(ax, year: str = "2022", lumi: float = 35.9,
     if _HAS_MPLHEP:
         extra = "Preliminary" if preliminary else None
         try:
-            hep.cms.label(extra=extra, data=True, lumi=lumi, year=year, ax=ax, loc=0)
+            hep.cms.label(text=extra, data=True, lumi=lumi, year=year, ax=ax, loc=0)
         except Exception:
-            hep.cms.text(extra=extra, ax=ax, loc=0)
+            hep.cms.text(text=extra or "", ax=ax, loc=0)
             ax.text(x, y-0.05, f"{lumi:.1f} fb$^{-1}$ ({year})", transform=ax.transAxes,
                     fontsize=14, verticalalignment='top', horizontalalignment='left')
     else:

@@ -896,17 +896,17 @@ class PlotManager:
         Save plot in ALL formats (PNG, PDF, ROOT, TXT) automatically in batch mode.
 
         Directory structure:
-        - {base_output_dir}/plots/{version}/png/{category}/{region_dir}/{hist_name}.png
-        - {base_output_dir}/plots/{version}/pdf/{category}/{region_dir}/{hist_name}.pdf
-        - {base_output_dir}/plots/{version}/root/{hist_name}.root (one file per variable, shared across regions)
-        - {base_output_dir}/plots/{version}/text/{category}/{region_dir}/{hist_name}.txt (yields)
+        - {base_output_dir}/{version}/png/{category}/{region_dir}/{hist_name}.png
+        - {base_output_dir}/{version}/pdf/{category}/{region_dir}/{hist_name}.pdf
+        - {base_output_dir}/{version}/root/{hist_name}.root (one file per variable, shared across regions)
+        - {base_output_dir}/{version}/text/{category}/{region_dir}/{hist_name}.txt (yields)
 
         Example:
             For region "1b:CR_Wmunu" and hist_name "met":
-            - outputs/plots/20231105_1430/png/1b/Wlnu_mu/met.png
-            - outputs/plots/20231105_1430/pdf/1b/Wlnu_mu/met.pdf
-            - outputs/plots/20231105_1430/root/met.root
-            - outputs/plots/20231105_1430/text/1b/Wlnu_mu/met.txt
+            - outputs/20231105_1430/png/1b/Wlnu_mu/met.png
+            - outputs/20231105_1430/pdf/1b/Wlnu_mu/met.pdf
+            - outputs/20231105_1430/root/met.root
+            - outputs/20231105_1430/text/1b/Wlnu_mu/met.txt
 
         Args:
             fig: Matplotlib figure object
@@ -929,17 +929,17 @@ class PlotManager:
         category = region_info["category"]
         region_dir = region_info["region_dir"]
 
-        # Create directory structure: plots/{version}/png/{category}/{region_dir}/
+        # Create directory structure: {version}/png/{category}/{region_dir}/
         if category == "event_selection":
-            png_dir  = os.path.join(base_output_dir, "plots", version, "png",  "event_selection")
-            pdf_dir  = os.path.join(base_output_dir, "plots", version, "pdf",  "event_selection")
-            text_dir = os.path.join(base_output_dir, "plots", version, "text", "event_selection")
+            png_dir  = os.path.join(base_output_dir, version, "png",  "event_selection")
+            pdf_dir  = os.path.join(base_output_dir, version, "pdf",  "event_selection")
+            text_dir = os.path.join(base_output_dir, version, "text", "event_selection")
         else:
             region_label = f"{category}_{region_dir}"
-            png_dir  = os.path.join(base_output_dir, "plots", version, "png",  "region_analysis", region_label)
-            pdf_dir  = os.path.join(base_output_dir, "plots", version, "pdf",  "region_analysis", region_label)
-            text_dir = os.path.join(base_output_dir, "plots", version, "text", "region_analysis", region_label)
-        root_dir = os.path.join(base_output_dir, "plots", version, "root")
+            png_dir  = os.path.join(base_output_dir, version, "png",  "region_analysis", region_label)
+            pdf_dir  = os.path.join(base_output_dir, version, "pdf",  "region_analysis", region_label)
+            text_dir = os.path.join(base_output_dir, version, "text", "region_analysis", region_label)
+        root_dir = os.path.join(base_output_dir, version, "root")
 
         # Create all directories
         for dir_path in [png_dir, pdf_dir, root_dir, text_dir]:
@@ -1145,13 +1145,17 @@ class PlotManager:
         region: str = "event_selection",
         version: str = "",
         save_root: bool = False,
-        signal_rows: Optional[List[Tuple[str, np.ndarray]]] = None,
+        signal_rows: Optional[List[Tuple[str, np.ndarray, str, np.ndarray]]] = None,
     ) -> List[str]:
         """Draw CMS-style stacked histogram with ratio panel and save in 5 formats.
 
-        signal_rows: list of (label, hv) — pre-scaled per-masspoint histograms.
-          PNG/PDF: first 3 drawn as dashed lines.
-          ROOT: all written as individual TH1s.
+        signal_rows: list of (display_label, scaled_hv, raw_key, unscaled_hv).
+          display_label/scaled_hv (pretty LaTeX label, ×signal_scale applied) are
+          used for the PNG/PDF legend (first 3 drawn as dashed lines).
+          raw_key/unscaled_hv (plain MH3_..._MH4_..._Mchi_1 label, no signal_scale)
+          are what gets written to ROOT — Combine needs the true physical yield
+          under the mass-point label that matches xsection_signal.json's keys,
+          not a scaled/prettified display string.
         """
         if not _HAS_MPLHEP:
             logging.warning("mplhep not available — skipping stacked plot for %s", variable)
@@ -1214,7 +1218,7 @@ class PlotManager:
 
         # Signal overlays — draw first 3 as dashed lines (PNG/PDF only; all go to ROOT)
         if signal_rows:
-            for _si, (_slabel, _shv) in enumerate(signal_rows[:3]):
+            for _si, (_slabel, _shv, _raw_key, _unscaled_hv) in enumerate(signal_rows[:3]):
                 _sc = self.signal_colors[_si % len(self.signal_colors)]
                 ax.stairs(
                     _shv, bins, baseline=0,
@@ -1356,7 +1360,7 @@ class PlotManager:
                 _root_stem = f"hist_event_selection_{variable}{'_log' if use_log else ''}"
             else:
                 _root_stem = f"hist_{cat_r}_{rdir_r}_{variable}{'_log' if use_log else ''}"
-            root_out = Path(output_dir) / "plots" / version / "root" / f"{_root_stem}.root"
+            root_out = Path(output_dir) / version / "root" / f"{_root_stem}.root"
             root_out.parent.mkdir(parents=True, exist_ok=True)
             with _up.recreate(str(root_out)) as rf:
                 for label, hv, hs in rows:
@@ -1365,11 +1369,14 @@ class PlotManager:
                 rf["TotalBkg"] = (mc_total.astype(float), bins.astype(float))
                 if data_ndarray is not None:
                     rf["data_obs"] = (data_ndarray.astype(float), bins.astype(float))
-                # All signal masspoints as individual TH1s (not stacked)
+                # All signal masspoints as individual TH1s (not stacked). Uses the
+                # raw mass-point label (e.g. MH3_1500_MH4_1000_Mchi_1) and the
+                # UNSCALED yield — matches xsection_signal.json's keys and the
+                # true physical rate, independent of the plot-only signal_scale.
                 if signal_rows:
-                    for _slabel, _shv in signal_rows:
-                        _safe_key = _slabel.replace(" ", "_").replace("(", "").replace(")", "").replace(",", "_").replace("=", "_")
-                        rf[f"sig_{_safe_key}"] = (_shv.astype(float), bins.astype(float))
+                    for _slabel, _shv, _raw_key, _unscaled_hv in signal_rows:
+                        _safe_key = _raw_key.replace(" ", "_").replace("(", "").replace(")", "").replace(",", "_").replace("=", "_")
+                        rf[f"sig_{_safe_key}"] = (_unscaled_hv.astype(float), bins.astype(float))
             saved['root'] = str(root_out)
         except Exception as _re:
             logging.warning("ROOT write failed for %s/%s: %s", region, variable, _re)
@@ -1381,11 +1388,11 @@ class PlotManager:
         _is_log_yield = saved.get("png", "").endswith("_log.png")
         _log_suf = "_log" if _is_log_yield else ""
         if category == "event_selection":
-            text_dir = Path(output_dir) / "plots" / version / "text" / "event_selection"
+            text_dir = Path(output_dir) / version / "text" / "event_selection"
             _yield_stem = text_dir / f"hist_event_selection_{variable}{_log_suf}"
         else:
             region_label = f"{category}_{region_dir}"
-            text_dir = Path(output_dir) / "plots" / version / "text" / "region_analysis" / region_label
+            text_dir = Path(output_dir) / version / "text" / "region_analysis" / region_label
             _yield_stem = text_dir / f"hist_{category}_{region_dir}_{variable}{_log_suf}"
         text_dir.mkdir(parents=True, exist_ok=True)
         self._write_yield_table(_yield_stem, variable, bins, rows, data_ndarray)
@@ -2621,7 +2628,7 @@ class PlotManager:
 
                 # ---- signal histograms per masspoint ----
                 # SR only — signal must never be drawn in CR plots.
-                sig_rows_for_plot: List[Tuple[str, np.ndarray]] = []
+                sig_rows_for_plot: List[Tuple[str, np.ndarray, str, np.ndarray]] = []
                 if _is_sr and sig_file_entries and bins_ref is not None:
                     for _sfe in sig_file_entries:
                         _sbr  = _sfe["branches"]
@@ -2707,7 +2714,11 @@ class PlotManager:
                                         _i += 1
                                 _pretty = " ".join(_pairs) if _pairs else _mp_label
                                 _scale_prefix = f"×{signal_scale:g} " if signal_scale != 1.0 else ""
-                                sig_rows_for_plot.append((f"{_scale_prefix}{_pretty}", _shv * signal_scale))
+                                # display tuple keeps the scaled/pretty label for the plot legend;
+                                # raw_key/unscaled_hv (physical yield, no signal_scale applied) are
+                                # what gets written to ROOT for Combine — see write path below.
+                                sig_rows_for_plot.append((f"{_scale_prefix}{_pretty}", _shv * signal_scale,
+                                                          _mp_label, _shv))
                         else:
                             # Single-masspoint signal file
                             _svals = _apply_variable_plot_filter(
@@ -2716,7 +2727,8 @@ class PlotManager:
                                 _shv, _ = np.histogram(_clip_overflow(_svals, bins_ref),
                                                        bins=bins_ref, weights=np.ones(_svals.size) * _sscale_base)
                                 _scale_suffix = f" ×{signal_scale:g}" if signal_scale != 1.0 else ""
-                                sig_rows_for_plot.append((f"{_sfe['file_label']}{_scale_suffix}", _shv * signal_scale))
+                                sig_rows_for_plot.append((f"{_sfe['file_label']}{_scale_suffix}", _shv * signal_scale,
+                                                          _sfe['file_label'], _shv))
 
                 syst_label = f" [{weight_systematic}]" if weight_systematic else ""
                 logging.info("Plotting %s/%s%s: bins=%d, bkg_rows=%d, total_mc=%.3f, data=%s, signal_masspoints=%d",
@@ -2786,7 +2798,8 @@ class PlotManager:
                     region_info_s = self._parse_region_name(region_name)
                     cat_s = region_info_s["category"]
                     rdir_s = region_info_s["region_dir"]
-                    root_dir = Path(output_dir) / "plots" / version / "root"
+                    _is_sr_syst = region_name.endswith(":SR")
+                    root_dir = Path(output_dir) / version / "root"
                     root_dir.mkdir(parents=True, exist_ok=True)
                     _all_region_branches: set = set()
                     for entries in bkg_entries.values():
@@ -2797,6 +2810,74 @@ class PlotManager:
                     # Build fresh region masks for this region (don't rely on _entry_cache
                     # which only covers the last region from the nominal variable loop)
                     _syst_cache: Dict[int, Dict] = _build_entry_cache(bkg_entries.items())
+                    # Signal gets its own cache (sig_file_entries is a flat list, not a
+                    # proc_label->entries mapping) — SR only, matching the nominal signal block.
+                    _sig_syst_cache: Dict[int, Dict] = {}
+                    if _is_sr_syst and sig_file_entries:
+                        _sig_syst_cache = _build_entry_cache(
+                            (f"sig_{_i}", [_sfe]) for _i, _sfe in enumerate(sig_file_entries)
+                        )
+
+                    def _signal_syst_rows(svar_local, bins_local, weight_override_branch=None,
+                                           kin_branch=None, recoil_min_override=None):
+                        """Per-masspoint signal rows for one systematic variant, mirroring
+                        the nominal signal block's GenModel-mask + xsec-lookup logic
+                        (raw mass-point keys, UNSCALED — matches write path's sig_{mp_label}
+                        convention, no signal_scale applied to stored/written values)."""
+                        rows: List = []
+                        if not _is_sr_syst:
+                            return rows
+                        for _sfe in sig_file_entries:
+                            _sfeid = id(_sfe)
+                            _scached = _sig_syst_cache.get(_sfeid, {"skip": True})
+                            if _scached.get("skip"):
+                                continue
+                            _smask_np = _scached["mask_np"]
+                            _sbr = _sfe["branches"]
+                            _swte = _sfe["wte"]
+                            _gm_cols = _sfe["genmodel_cols"]
+                            if not _gm_cols:
+                                continue
+
+                            if kin_branch is not None:
+                                _svals_raw = _sbr.get(kin_branch)
+                            else:
+                                _svals_raw = _sbr.get(svar_local)
+                            if _svals_raw is None or not isinstance(_svals_raw, np.ndarray) or _svals_raw.dtype == object:
+                                continue
+
+                            for _gmc in _gm_cols:
+                                _gm_arr = _sbr.get(_gmc)
+                                if _gm_arr is None:
+                                    continue
+                                _mp_mask = _smask_np & (_gm_arr.astype(bool))
+                                if kin_branch is not None:
+                                    _kin_vals = np.asarray(_svals_raw, dtype=float)[_mp_mask]
+                                    _rmin = recoil_min_override or 0.0
+                                    _kin_sel = _kin_vals > _rmin
+                                    _svals = _apply_variable_plot_filter(svar_local, _kin_vals[_kin_sel])
+                                else:
+                                    _vals_masked = np.asarray(_svals_raw, dtype=float)[_mp_mask]
+                                    _kin_sel = _apply_variable_plot_filter(svar_local, _vals_masked, return_mask=True)
+                                    _svals = _vals_masked[_kin_sel]
+                                if _svals.size == 0:
+                                    continue
+
+                                _mp_label = _gmc[len("GenModel_"):]
+                                _mp_xsec = _find_xsec(_mp_label, cross_sections)
+                                _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _swte
+                                             if _mp_xsec is not None and _swte > 0 else 1.0)
+
+                                _w_branch = weight_override_branch or "full_event_weight"
+                                _sw_arr = _sbr.get(_w_branch)
+                                if _sw_arr is None:
+                                    continue
+                                _sw = np.asarray(_sw_arr, dtype=float)[_mp_mask][_kin_sel]
+
+                                _shv, _ = np.histogram(_clip_overflow(_svals, bins_local),
+                                                       bins=bins_local, weights=_sw * _mp_scale)
+                                rows.append((f"sig_{_mp_label}", _shv))
+                        return rows
 
                     for svar in syst_vars:
                         # Determine bins from nominal (already computed above — recompute here)
@@ -2852,14 +2933,17 @@ class PlotManager:
                             if not any_branch or not syst_rows:
                                 continue
                             total_bkg = sum(h for _, h in syst_rows)
+                            sig_rows_syst = _signal_syst_rows(svar, bins_syst, weight_override_branch=wsyst)
                             root_stem = f"hist_{cat_s}_{rdir_s}_{svar}_{wsyst}_log"
                             rpath = root_dir / f"{root_stem}.root"
                             with _up_syst.recreate(str(rpath)) as rf:
                                 for label, hv in syst_rows:
                                     rf[label] = (hv.astype(float), bins_syst.astype(float))
                                 rf["TotalBkg"] = (total_bkg.astype(float), bins_syst.astype(float))
+                                for sig_label, sig_hv in sig_rows_syst:
+                                    rf[sig_label] = (sig_hv.astype(float), bins_syst.astype(float))
                             created.append(str(rpath))
-                            logging.debug("Syst ROOT: %s", rpath.name)
+                            logging.debug("Syst ROOT: %s (signal masspoints: %d)", rpath.name, len(sig_rows_syst))
 
                         # --- Kinematic systematics (JES/JER shifted Recoil) ---
                         if svar == "Recoil":
@@ -2897,14 +2981,21 @@ class PlotManager:
                                 if not any_kin or not syst_rows_k:
                                     continue
                                 total_bkg_k = sum(h for _, h in syst_rows_k)
+                                recoil_min_sig = region_obj.config.get("event_selection", {}).get("recoil_min", 0.0) \
+                                    if hasattr(region_obj, 'config') else 0.0
+                                sig_rows_k = _signal_syst_rows(svar, bins_syst, kin_branch=kin_branch,
+                                                                recoil_min_override=recoil_min_sig)
                                 root_stem_k = f"hist_{cat_s}_{rdir_s}_{svar}_{syst_name}_log"
                                 rpath_k = root_dir / f"{root_stem_k}.root"
                                 with _up_syst.recreate(str(rpath_k)) as rf:
                                     for label, hv in syst_rows_k:
                                         rf[label] = (hv.astype(float), bins_syst.astype(float))
                                     rf["TotalBkg"] = (total_bkg_k.astype(float), bins_syst.astype(float))
+                                    for sig_label, sig_hv in sig_rows_k:
+                                        rf[sig_label] = (sig_hv.astype(float), bins_syst.astype(float))
                                 created.append(str(rpath_k))
-                                logging.debug("Syst ROOT (kin): %s", rpath_k.name)
+                                logging.debug("Syst ROOT (kin): %s (signal masspoints: %d)",
+                                             rpath_k.name, len(sig_rows_k))
 
             except Exception as _syst_exc:
                 logging.error("Systematic ROOT file generation failed: %s", _syst_exc, exc_info=True)
@@ -3051,7 +3142,7 @@ class PlotManager:
         import uproot as _up
         import re as _re
 
-        root_dir = Path(output_dir) / "plots" / version / "root"
+        root_dir = Path(output_dir) / version / "root"
         created: List[str] = []
 
         if not root_dir.exists():
@@ -3184,7 +3275,7 @@ class PlotManager:
             # Save PNG + PDF in same dirs as normal region plots
             _syst_stem = f"{cat}_{rdir}_{svar}_{syst_base}"
             for fmt in ("png", "pdf"):
-                _out_dir = Path(output_dir) / "plots" / version / fmt / "region_analysis" / f"{cat}_{rdir}"
+                _out_dir = Path(output_dir) / version / fmt / "region_analysis" / f"{cat}_{rdir}"
                 _out_dir.mkdir(parents=True, exist_ok=True)
                 _out = _out_dir / f"{_syst_stem}.{fmt}"
                 fig.savefig(str(_out), dpi=self.dpi, bbox_inches="tight")
@@ -3411,7 +3502,7 @@ class PlotManager:
 
         saved = []
         for fmt in ("png", "pdf"):
-            out_dir = Path(output_dir) / "plots" / version / fmt / plot_subdir
+            out_dir = Path(output_dir) / version / fmt / plot_subdir
             out_dir.mkdir(parents=True, exist_ok=True)
             p = out_dir / f"cutflow_{region_label}.{fmt}"
             fig.savefig(str(p), dpi=self.dpi, bbox_inches="tight")
@@ -3422,7 +3513,7 @@ class PlotManager:
         step_eff = np.ones(len(total_vals), dtype=float)
         for i in range(1, len(total_vals)):
             step_eff[i] = total_vals[i] / total_vals[i - 1] if total_vals[i - 1] > 0 else 0.0
-        txt_dir = Path(output_dir) / "plots" / version / "text" / plot_subdir
+        txt_dir = Path(output_dir) / version / "text" / plot_subdir
         txt_dir.mkdir(parents=True, exist_ok=True)
 
         def _root_to_latex(label: str) -> str:
@@ -3458,7 +3549,7 @@ class PlotManager:
         # ROOT TH1D
         try:
             import uproot as _up
-            root_dir = Path(output_dir) / "plots" / version / "root"
+            root_dir = Path(output_dir) / version / "root"
             root_dir.mkdir(parents=True, exist_ok=True)
             root_path = root_dir / f"cutflow_{region_label}.root"
             edges = np.arange(len(all_labels) + 1, dtype=float)
@@ -3895,7 +3986,7 @@ class PlotManager:
                 plt.close(fig)
 
                 # --- TXT + TEX yield tables ---
-                text_dir = (Path(output_dir) / "plots" / version / "text"
+                text_dir = (Path(output_dir) / version / "text"
                             / category / region_dir)
                 text_dir.mkdir(parents=True, exist_ok=True)
                 self._write_yield_table(
@@ -3907,7 +3998,7 @@ class PlotManager:
                 )
 
                 # --- ROOT output (uproot flat TH1D, one per variable) ---
-                root_dir = Path(output_dir) / "plots" / version / "root"
+                root_dir = Path(output_dir) / version / "root"
                 root_dir.mkdir(parents=True, exist_ok=True)
                 root_path = root_dir / f"{plot_filename}.root"
                 try:
@@ -4459,7 +4550,7 @@ class PlotManager:
                                   version: Optional[str] = None,
                                   output_dir: Optional[str] = None) -> str:
         """
-        Create region summary plot and save to outputs/plots/{version}/.
+        Create region summary plot and save to outputs/{version}/.
 
         Args:
             results: Analysis results
@@ -4508,9 +4599,9 @@ class PlotManager:
 
         plt.tight_layout()
 
-        # Save to outputs/plots/{version}/region_summary.pdf
+        # Save to outputs/{version}/region_summary.pdf
         if version and output_dir:
-            summary_dir = os.path.join(output_dir, "plots", version)
+            summary_dir = os.path.join(output_dir, version)
             os.makedirs(summary_dir, exist_ok=True)
 
             # Save all formats (PNG, PDF)

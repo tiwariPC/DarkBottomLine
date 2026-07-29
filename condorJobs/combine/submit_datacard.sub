@@ -1,0 +1,29 @@
+universe = vanilla
+use_x509userproxy = true
+x509userproxy = /afs/cern.ch/user/u/username/private/x509up_u98885
+
+executable = runcombine.sh
+arguments = $(ProcId)
+
+output  = logs/output/dbl_datacard.$(ClusterId).$(ProcId).out
+error   = logs/error/dbl_datacard.$(ClusterId).$(ProcId).err
+log     = logs/dbl_datacard.$(ClusterId).log
+
+on_exit_hold = (ExitBySignal == True) || (ExitCode != 0)
+periodic_release = (NumJobStarts < 3) && ((CurrentTime - EnteredCurrentStatus) > 600)
+
+request_memory = 4000
+request_cpus = 1
++JobFlavour = "espresso"
+
+# Template submit file for datacard-generation jobs — one job per
+# (category, mass_point). Fill in DBL_COMBINE_ARGS per queue line, or drive
+# this from a small submission script that enumerates categories x
+# signal_grid points from combine.yaml, same pattern as submit_samples.py
+# for event-selection jobs.
+
+environment = "DBL_REPO_DIR=/path/to/repository \
+DBL_COMBINE_SUBCOMMAND=make-datacard \
+DBL_COMBINE_ARGS=--combine-config configs/combine.yaml --output outputs/combine/2024/ --category 1b --mass-point MH3_600_MH4_150_Mchi_1 --year 2024"
+
+queue 1

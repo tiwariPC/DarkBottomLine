@@ -31,6 +31,19 @@ from .dnn_trainer import DNNTrainer
 from .dnn_inference import DNNInference, _parse_masspoint_label, _mass_branch_name, _resolve_mass_scan
 from .plotting import PlotManager
 from .regions import RegionManager
+from .combine_tools import CombineDatacardWriter, CombineRunner
+from .combine_inputs import (
+    EMU_PAIRS,
+    load_signal_grid,
+    merge_emu_histograms,
+    merged_region_dir_for_role,
+    normalize_pdf_histograms,
+    passthrough_region_histogram,
+    region_dir_from_role,
+    resolve_active_eras,
+    resolve_era,
+    resolve_version_dir,
+)
 from utils.chunk_optimizer import (
     optimize_chunk_size_for_files,
     parse_chunk_size_arg,
@@ -1967,71 +1980,585 @@ def make_event_plots(args):
     logging.info(f"analyze-regions: {len(out_files)} plot(s) written to {args.output_dir}")
 
 
+def _region_blind(combine_config: Dict[str, Any], region_role: str,
+                   override: Optional[bool]) -> bool:
+    """Resolve a region's blind flag: CLI --blind/--unblind override, else
+    combine.yaml's per-region-role blind map (SR/CR)."""
+    if override is not None:
+        return override
+    role = "SR" if region_role == "SR" else "CR"
+    return combine_config["blind"][role]
+
+
+def _resolve_region_root_dir(combine_config: Dict[str, Any], year: str,
+                              cli_input: Optional[str]) -> str:
+    """Resolve the histo-production input directory for one era: CLI --input
+    override, else combine.yaml's input.region_root_dir_template."""
+    if cli_input:
+        return cli_input
+    template = combine_config["input"]["region_root_dir_template"]
+    return template.format(year=year, version=combine_config["input"].get("version") or "{version}")
+
+
 def make_datacard(args):
-    """Generate Combine datacard."""
-    logging.info("Generating datacard...")
+    """Generate a Combine datacard for one (category, region, mass-point) bin."""
+    combine_config = load_config(args.combine_config)
+    year = args.year or str(combine_config["eras"][0]["year"])
 
-    # Load results
-    # results = load_results(args.input)
+    region_root_dir_raw = _resolve_region_root_dir(combine_config, year, args.input)
+    version = combine_config["input"].get("version")
+    if "{version}" in region_root_dir_raw:
+        resolved = resolve_version_dir(region_root_dir_raw, version)
+        region_root_dir = str(resolved)
+    else:
+        region_root_dir = region_root_dir_raw
 
-    # Generate datacard (placeholder)
-    # datacard_writer = CombineDatacardWriter()
-    # datacard_writer.write_datacard(results, args.output)
+    categories = [args.category] if args.category else combine_config["categories"]
+    fit_variable_map = combine_config["fit_variable"]
+
+    writer = CombineDatacardWriter(combine_config)
+
+    signal_grid = load_signal_grid(
+        combine_config["signal_grid"]["xsection_json"],
+        combine_config["signal_grid"]["model_key"],
+        getattr(args, "mass_points", None) or combine_config["signal_grid"].get("points"),
+    )
+    mass_points = [args.mass_point] if args.mass_point else list(signal_grid.keys())
+
+    for category in categories:
+        variable = fit_variable_map[category]
+        region_roles = [args.region] if args.region else (
+            [combine_config["regions"][category]["signal_region"]]
+            + combine_config["regions"][category]["control_regions"]
+        )
+
+        emu_written_dirs = set()  # merged region_dirs already written this category
+        for region_role in region_roles:
+            blind = _region_blind(combine_config, region_role, args.blind)
+            is_sr = region_role == combine_config["regions"][category]["signal_region"]
+
+            # When combine_emu is on, an e/mu-paired CR (e.g. CR_Wmunu) must
+            # read merge_emu's merged histogram directory ("Wlnu") instead of
+            # its own per-channel one ("Wmunu") — otherwise the datacard is
+            # built from a histogram file merge_emu never actually populates
+            # under that name, or from stale per-channel data that combine_emu
+            # was supposed to replace. SR is never part of an emu pair.
+            region_dir_override = None
+            if not is_sr and combine_config.get("combine_emu", True):
+                region_dir_override = merged_region_dir_for_role(category, region_role)
+
+            # Both halves of a merged pair (e.g. CR_Wmunu, CR_Wenu) resolve to
+            # the same region_dir_override ("Wlnu") and would otherwise write
+            # two identical datacards under two different region_role names —
+            # write it once (under the merged name itself, e.g. "Wlnu", not
+            # either half's per-channel role) and skip the second half.
+            if region_dir_override is not None:
+                if region_dir_override in emu_written_dirs:
+                    continue
+                emu_written_dirs.add(region_dir_override)
+
+            filename_region = region_dir_override  # None for SR / unmerged CRs
+            out_region_label = region_dir_override or region_role
+
+            points_to_run = mass_points if is_sr else [None]
+            for mass_point in points_to_run:
+                out_dir = Path(args.output) / category / (mass_point or out_region_label) \
+                    if is_sr else Path(args.output) / category / out_region_label
+                datacard_file = writer.write_datacard(
+                    region_root_dir, str(out_dir), category, region_role, variable,
+                    mass_point=mass_point, blind=blind, year=year,
+                    region_dir_override=region_dir_override,
+                    filename_region=filename_region,
+                )
+                writer.write_shapes(region_root_dir, str(out_dir), category, region_role,
+                                     variable, mass_point=mass_point, year=year, blind=blind,
+                                     region_dir_override=region_dir_override,
+                                     filename_region=filename_region)
+                logging.info(f"Datacard written: {datacard_file}")
 
     logging.info("Datacard generation completed!")
 
 
 def run_combine(args):
-    """Run Combine fits."""
-    logging.info("Running Combine fits...")
+    """Run a Combine fit mode (AsymptoticLimits/FitDiagnostics/GoodnessOfFit/Impacts)."""
+    combine_config = load_config(args.combine_config)
 
-    # Run Combine command (placeholder)
-    # combine_runner = CombineRunner()
-    # results = combine_runner.run_fit(args.mode, args.datacard, args.options)
+    if args.gof_algo:
+        combine_config["fit"]["options"]["goodness_of_fit"]["algorithm"] = args.gof_algo
+    if args.toys:
+        combine_config["fit"]["options"]["goodness_of_fit"]["toys"] = args.toys
 
-    logging.info("Combine execution completed!")
+    runner = CombineRunner(combine_config)
+    output_dir = args.output or str(Path(args.datacard).parent)
+    blind = args.blind if args.blind is not None else combine_config["blind"]["SR"]
+
+    if args.mode == "GoodnessOfFit":
+        sr_datacard = args.sr_datacard or (
+            args.datacard if args.datacard.endswith(".txt") else None)
+        if sr_datacard is None:
+            raise ValueError(
+                "GoodnessOfFit needs a .txt datacard to derive SR bin names for "
+                "channel-masking — pass --sr-datacard when --datacard is a workspace (.root)."
+            )
+        results_file = runner.run_goodness_of_fit(args.datacard, output_dir, sr_datacard, blind=blind)
+    else:
+        mode_dispatch = {
+            "AsymptoticLimits": runner.run_asymptotic_limits,
+            "FitDiagnostics": runner.run_fit_diagnostics,
+            "Impacts": runner.run_impacts,
+        }
+        results_file = mode_dispatch[args.mode](args.datacard, output_dir, blind=blind)
+    logging.info(f"Combine {args.mode} completed: {results_file}")
+
+
+def collect_gof(args):
+    """Merge GoodnessOfFit's Observed + Toys outputs into one gof.json via
+    combineTool.py -M CollectGoodnessOfFit (Run2's makeGOF_allAlgos.sh) —
+    standalone entrypoint for users who already have both .root files and
+    just want the collected json make-gof consumes."""
+    combine_config = load_config(args.combine_config)
+    runner = CombineRunner(combine_config)
+    output_json = runner.run_collect_goodness_of_fit(args.input, args.output)
+    logging.info(f"GoodnessOfFit collected: {output_json}")
 
 
 def make_impact(args):
-    """Create impact plots."""
-    logging.info("Creating impact plots...")
-
-    # Load fit results
-    # results = load_fit_results(args.input)
-
-    # Create impact plots (placeholder)
-    # diagnostic_plotter = DiagnosticPlotter()
-    # diagnostic_plotter.plot_impacts(results, args.output)
-
-    logging.info("Impact plot creation completed!")
+    """Create impact plots from combineTool.py -M Impacts JSON output, via
+    the official plotImpacts.py (matches Run2's real impacts.sh tooling)."""
+    combine_config = load_config(args.combine_config)
+    runner = CombineRunner(combine_config)
+    plot_file = runner.run_plot_impacts(args.input, args.output)
+    logging.info(f"Impact plot creation completed: {plot_file}")
 
 
 def make_pulls(args):
-    """Create pull plots."""
-    logging.info("Creating pull plots...")
-
-    # Load fit results
-    # results = load_fit_results(args.input)
-
-    # Create pull plots (placeholder)
-    # diagnostic_plotter = DiagnosticPlotter()
-    # diagnostic_plotter.plot_pulls(results, args.output)
-
-    logging.info("Pull plot creation completed!")
+    """Create pull plots for one of Run2's 4 pulls modes
+    (CRonly/asimov_t0/sb_t0/sb_t1) from a workspace, via
+    diffNuisances.py + PlotPulls.C (matches Run2's real pulls_oneRP.sh
+    tooling) — NOT a single plot read directly from fitDiagnostics.root."""
+    combine_config = load_config(args.combine_config)
+    runner = CombineRunner(combine_config)
+    year = args.year or str(combine_config["eras"][0]["year"])
+    plot_file = runner.run_pulls(args.input, args.output, args.sr_datacard,
+                                  mode=args.mode, year=year)
+    logging.info(f"Pull plot creation completed: {plot_file}")
 
 
 def make_gof(args):
-    """Create goodness-of-fit plots."""
-    logging.info("Creating GOF plots...")
+    """Create goodness-of-fit plots from a collected gof.json (see
+    CombineRunner.run_collect_goodness_of_fit) — matplotlib plot matching
+    Run2's reference style (filled toys histogram, red observed line, legend)."""
+    combine_config = load_config(args.combine_config)
+    runner = CombineRunner(combine_config)
+    algo = args.gof_algo or combine_config["fit"]["options"]["goodness_of_fit"].get(
+        "algorithm", "saturated")
+    plot_file = runner.run_plot_gof(args.input, args.output, algo=algo,
+                                     title_right=args.title_right or "",
+                                     mass_point=args.mass_point or "")
+    logging.info(f"GOF plot creation completed: {plot_file}")
 
-    # Load GOF results
-    # results = load_gof_results(args.input)
 
-    # Create GOF plots (placeholder)
-    # diagnostic_plotter = DiagnosticPlotter()
-    # diagnostic_plotter.plot_gof(results, args.output)
+def merge_emu(args):
+    """Merge muon-channel and electron-channel CR histograms (Agent 2:
+    channel-merge). No-op passthrough if combine.yaml's combine_emu: false."""
+    combine_config = load_config(args.combine_config)
+    categories = [args.category] if args.category else combine_config["categories"]
+    fit_variable_map = combine_config["fit_variable"]
+    syst_suffixes = [
+        syst["syst_suffix"] for syst in combine_config["datacard"]["systematics"].values()
+        if syst.get("type") == "shape" and "syst_suffix" in syst
+    ]
 
-    logging.info("GOF plot creation completed!")
+    for category in categories:
+        variable = fit_variable_map[category]
+        if not combine_config.get("combine_emu", True):
+            for region_role in (
+                [combine_config["regions"][category]["signal_region"]]
+                + combine_config["regions"][category]["control_regions"]
+            ):
+                region_dir = region_dir_from_role(region_role)
+                passthrough_region_histogram(args.input, args.output, category,
+                                              region_dir, variable,
+                                              syst_suffixes=syst_suffixes)
+            continue
+
+        signal_region = combine_config["regions"][category]["signal_region"]
+        passthrough_region_histogram(args.input, args.output, category,
+                                      region_dir_from_role(signal_region), variable,
+                                      syst_suffixes=syst_suffixes)
+
+        merged_roles = set()
+        for mu_role, e_role, merged_dir in EMU_PAIRS.get(category, []):
+            merge_emu_histograms(args.input, args.output, category, variable,
+                                  mu_role, e_role, merged_dir,
+                                  syst_suffixes=syst_suffixes)
+            merged_roles.add(mu_role)
+            merged_roles.add(e_role)
+
+        for region_role in combine_config["regions"][category]["control_regions"]:
+            if region_role not in merged_roles:
+                passthrough_region_histogram(args.input, args.output, category,
+                                              region_dir_from_role(region_role), variable,
+                                              syst_suffixes=syst_suffixes)
+
+    logging.info("Channel merge completed!")
+
+
+def normalize_pdf(args):
+    """Rescale PDF weight Up/Down shape variants to preserve central integral
+    (Agent 2: pdf-normalize). No-op passthrough if combine.yaml's pdf_normalize: false."""
+    combine_config = load_config(args.combine_config)
+    categories = [args.category] if args.category else combine_config["categories"]
+    fit_variable_map = combine_config["fit_variable"]
+    shape_systs = {
+        name: syst for name, syst in combine_config["datacard"]["systematics"].items()
+        if syst.get("type") == "shape" and "syst_suffix" in syst
+    }
+    syst_suffixes = [syst["syst_suffix"] for syst in shape_systs.values()]
+    pdf_syst_suffix = shape_systs.get("pdf", {}).get("syst_suffix")
+
+    for category in categories:
+        variable = fit_variable_map[category]
+        signal_region_dir = region_dir_from_role(combine_config["regions"][category]["signal_region"])
+        region_dirs = [signal_region_dir] + _resolve_control_region_dirs(combine_config, category)
+        for region_dir in region_dirs:
+            if combine_config.get("pdf_normalize", True):
+                normalize_pdf_histograms(args.input, args.output, category, region_dir, variable,
+                                          syst_suffixes=syst_suffixes, pdf_syst_suffix=pdf_syst_suffix)
+            else:
+                passthrough_region_histogram(args.input, args.output, category, region_dir, variable,
+                                              syst_suffixes=syst_suffixes)
+
+    logging.info("PDF normalization completed!")
+
+
+def _resolve_control_region_dirs(combine_config: Dict[str, Any], category: str) -> List[str]:
+    """Resolve the CR output-dir names make-datacard actually wrote for this
+    category — Wlnu/Zll (deduplicated per merged pair) when combine_emu: true,
+    or the raw per-channel CR_* roles when it's off. Must match make_datacard's
+    own region_dir_override/emu_written_dirs logic exactly, or merge_region
+    globs for a directory that was never written."""
+    control_regions = combine_config["regions"][category]["control_regions"]
+    if not combine_config.get("combine_emu", True):
+        return list(control_regions)
+
+    dirs: List[str] = []
+    seen_merged = set()
+    for region_role in control_regions:
+        merged_dir = merged_region_dir_for_role(category, region_role)
+        if merged_dir is not None:
+            if merged_dir not in seen_merged:
+                dirs.append(merged_dir)
+                seen_merged.add(merged_dir)
+        else:
+            dirs.append(region_role)
+    return dirs
+
+
+def merge_region(args):
+    """Merge one category's SR (per mass point) + its CR datacards into one
+    region-combined card via combineCards.py — required so CR rateParams
+    actually constrain the fit and so GoF/pulls channel-masking (mask_SR_1b)
+    has CR bins to mask against."""
+    combine_config = load_config(args.combine_config)
+    writer = CombineDatacardWriter(combine_config)
+    categories = [args.category] if args.category else combine_config["categories"]
+
+    signal_grid = load_signal_grid(
+        combine_config["signal_grid"]["xsection_json"],
+        combine_config["signal_grid"]["model_key"],
+        getattr(args, "mass_points", None) or combine_config["signal_grid"].get("points"),
+    )
+    mass_points = [args.mass_point] if args.mass_point else list(signal_grid.keys())
+
+    for category in categories:
+        control_region_dirs = _resolve_control_region_dirs(combine_config, category)
+        for mass_point in mass_points:
+            merged = writer.merge_region(args.input, args.output, category, mass_point,
+                                          control_region_dirs)
+            logging.info(f"Region-merged datacard: {merged}")
+
+    logging.info("Region merge completed!")
+
+
+def merge_categories(args):
+    """Merge a mass point's per-category datacards (1b + 2b) via combineCards.py."""
+    combine_config = load_config(args.combine_config)
+    writer = CombineDatacardWriter(combine_config)
+
+    signal_grid = load_signal_grid(
+        combine_config["signal_grid"]["xsection_json"],
+        combine_config["signal_grid"]["model_key"],
+        getattr(args, "mass_points", None) or combine_config["signal_grid"].get("points"),
+    )
+    mass_points = [args.mass_point] if args.mass_point else list(signal_grid.keys())
+
+    for mass_point in mass_points:
+        merged = writer.merge_categories(args.input, args.output, mass_point)
+        logging.info(f"Category-merged datacard: {merged}")
+
+    logging.info("Category merge completed!")
+
+
+def merge_eras(args):
+    """Merge active eras' category-merged datacards into one full-Run3 card
+    via combineCards.py."""
+    combine_config = load_config(args.combine_config)
+    writer = CombineDatacardWriter(combine_config)
+
+    active_years = [str(era["year"]) for era in resolve_active_eras(combine_config)]
+    if not active_years:
+        raise ValueError("No active eras found in combine.yaml's eras list")
+
+    signal_grid = load_signal_grid(
+        combine_config["signal_grid"]["xsection_json"],
+        combine_config["signal_grid"]["model_key"],
+        getattr(args, "mass_points", None) or combine_config["signal_grid"].get("points"),
+    )
+    mass_points = [args.mass_point] if args.mass_point else list(signal_grid.keys())
+
+    for mass_point in mass_points:
+        merged = writer.merge_eras(args.input, args.output, mass_point, active_years)
+        logging.info(f"Era-merged datacard: {merged}")
+
+    logging.info("Era merge completed!")
+
+
+def run_all(args):
+    """Orchestrate the full Combine pipeline for one era or the full active-era
+    set, reading combine.yaml exactly once and propagating its values
+    (blind, combine_emu, pdf_normalize, signal_grid, ...) into every stage."""
+    combine_config = load_config(args.combine_config)
+    stages = set(args.stages) if args.stages and "all" not in args.stages else {
+        "merge-emu", "normalize-pdf", "datacard", "merge-region", "merge-categories",
+        "merge-eras", "gof", "impacts", "pulls", "limit",
+    }
+
+    if args.era == "full":
+        if args.input:
+            raise ValueError("--input override is only valid for a single-era run "
+                              "(--era <year>), not --era full — each active era needs "
+                              "its own histo-production directory.")
+        era_list = resolve_active_eras(combine_config)
+        if not era_list:
+            raise ValueError("No active eras found in combine.yaml's eras list")
+    else:
+        era_list = [resolve_era(combine_config, args.era)]
+
+    base_dir = Path(combine_config["output"]["base_dir"])
+    signal_grid = load_signal_grid(
+        combine_config["signal_grid"]["xsection_json"],
+        combine_config["signal_grid"]["model_key"],
+        args.mass_points or combine_config["signal_grid"].get("points"),
+    )
+    mass_points = list(signal_grid.keys())
+    # Every sub-handler below (make_datacard, merge_region, merge_categories,
+    # merge_eras) independently re-reads combine_config["signal_grid"]["points"]
+    # via a fresh load_config(args.combine_config) call as its own mass-point
+    # restriction — mutating the in-memory combine_config dict here has no
+    # effect on them. Without an explicit mass_points passthrough, run-all's
+    # --mass-points was silently ignored by all of them (confirmed: a run
+    # restricted to 2 mass points still ran merge-categories across the full
+    # 29-point grid) — each accepts a new mass_points= Namespace field below.
+
+    for era in era_list:
+        year = str(era["year"])
+        region_root_dir_raw = _resolve_region_root_dir(combine_config, year, args.input)
+        if "{version}" in region_root_dir_raw:
+            resolved = resolve_version_dir(
+                region_root_dir_raw,
+                combine_config["input"].get("version"),
+            )
+            region_root_dir = str(resolved)
+        else:
+            region_root_dir = region_root_dir_raw
+
+        stage1_dir = str(base_dir / "merged_regions" / year)
+        stage2_dir = str(base_dir / "normalized" / year)
+
+        current_input = region_root_dir
+        if "merge-emu" in stages:
+            merge_emu_args = argparse.Namespace(
+                combine_config=args.combine_config, input=current_input,
+                output=stage1_dir, category=None,
+            )
+            merge_emu(merge_emu_args)
+            current_input = stage1_dir
+
+        if "normalize-pdf" in stages:
+            normalize_pdf_args = argparse.Namespace(
+                combine_config=args.combine_config, input=current_input,
+                output=stage2_dir, category=None,
+            )
+            normalize_pdf(normalize_pdf_args)
+            current_input = stage2_dir
+
+        era_out_dir = str(base_dir / year)
+        if "datacard" in stages:
+            datacard_args = argparse.Namespace(
+                combine_config=args.combine_config, input=current_input,
+                output=era_out_dir, category=None, region=None, year=year,
+                mass_point=None, mass_points=mass_points, blind=None,
+            )
+            make_datacard(datacard_args)
+
+        # SR + CR bins must live in one combined-region card BEFORE
+        # category-merge (1b+2b), matching Run2's real datacard structure —
+        # otherwise CR rateParams never constrain the fit and GoF/pulls
+        # channel-masking has no CR bins to mask against. merge-categories
+        # below reads region_merged_dir, not era_out_dir directly, so this
+        # stage is not optional/skippable independent of merge-categories —
+        # if "merge-categories" runs, it needs this stage's output to exist.
+        region_merged_dir = str(base_dir / year / "region_merged")
+        if "merge-region" in stages:
+            for category in combine_config["categories"]:
+                control_region_dirs = _resolve_control_region_dirs(combine_config, category)
+                merge_region_args = argparse.Namespace(
+                    combine_config=args.combine_config, input=era_out_dir,
+                    output=region_merged_dir, category=category, mass_point=None,
+                    mass_points=mass_points,
+                )
+                merge_region(merge_region_args)
+
+        category_merged_dir = str(base_dir / year / "C")
+        if "merge-categories" in stages:
+            merge_cat_args = argparse.Namespace(
+                combine_config=args.combine_config, input=region_merged_dir,
+                output=category_merged_dir, mass_point=None, mass_points=mass_points,
+            )
+            merge_categories(merge_cat_args)
+
+    current_card_dir = str(base_dir / str(era_list[-1]["year"]) / "C") if len(era_list) == 1 \
+        else str(base_dir / "run3" / "C")
+    # "run3" isn't a real combine.yaml era — _resolve_lumi_text returns "" for
+    # it gracefully (no lumi label on multi-era pulls plots) rather than
+    # crashing; single-era runs get the real year's lumi from year_config.
+    era_label = "run3" if args.era == "full" else str(era_list[0]["year"])
+
+    if len(era_list) > 1 and "merge-eras" in stages:
+        merge_eras_args = argparse.Namespace(
+            combine_config=args.combine_config, input=str(base_dir),
+            output=str(base_dir / "run3" / "C"), mass_point=None,
+            mass_points=mass_points,
+        )
+        merge_eras(merge_eras_args)
+
+    if any(s in stages for s in ("gof", "impacts", "pulls", "limit")):
+        writer = CombineDatacardWriter(combine_config)
+        for mass_point in mass_points:
+            card_dir = Path(current_card_dir) / mass_point
+            if not card_dir.is_dir():
+                logging.warning(f"Skipping fit stages for {mass_point}: no directory at {card_dir}")
+                continue
+            try:
+                # datacard_file is a filename TEMPLATE (varies by year/category/
+                # region/mass_point) — glob for the actual resolved name rather
+                # than reconstructing the unformatted template string.
+                datacard_file = writer._find_one_datacard(card_dir)
+            except FileNotFoundError:
+                logging.warning(f"Skipping fit stages for {mass_point}: no datacard in {card_dir}")
+                continue
+
+            workspace_file = writer.create_workspace(str(datacard_file), str(card_dir))
+            blind = combine_config["blind"]["SR"]
+
+            runner = CombineRunner(combine_config)
+            if "gof" in stages:
+                observed_file = runner.run_goodness_of_fit(
+                    workspace_file, str(card_dir), str(datacard_file), blind=blind)
+                gof_json = runner.run_collect_goodness_of_fit(observed_file, str(card_dir))
+                gof_algo = combine_config["fit"]["options"]["goodness_of_fit"].get("algorithm", "saturated")
+                era_year = combine_config["eras"][0]["year"]
+                runner.run_plot_gof(gof_json, str(card_dir), algo=gof_algo,
+                                     title_right=f"S+B hypothesis(1b+2b {era_year})",
+                                     mass_point=mass_point)
+            if "impacts" in stages:
+                impacts_json = runner.run_impacts(workspace_file, str(card_dir), blind=blind)
+                runner.run_plot_impacts(impacts_json, str(card_dir))
+            if "pulls" in stages:
+                # All 4 of Run2's pulls modes, matching pulls_oneRP.sh — not
+                # just the plain blind FitDiagnostics fit run_fit_diagnostics
+                # gives (that mode alone is still available separately via
+                # run-combine --mode FitDiagnostics for other callers).
+                for pulls_mode in ("CRonly", "asimov_t0", "sb_t0", "sb_t1"):
+                    runner.run_pulls(workspace_file, str(card_dir), str(datacard_file),
+                                      mode=pulls_mode, year=era_label)
+            if "limit" in stages:
+                runner.run_asymptotic_limits(workspace_file, str(card_dir), blind=blind)
+
+        if "limit" in stages:
+            # Aggregate every mass point's AsymptoticLimits result into one
+            # combined summary table (Run2's limits_bbDM_C_2018.txt/.root
+            # convention) — not per-mass-point raw combine output alone.
+            limits_name = f"limits_bbDM_{era_label}"
+            limits_txt = runner.collect_limits(
+                current_card_dir, mass_points, str(base_dir / "limits"), limits_name,
+            )
+            lumi = None
+            if len(era_list) == 1:
+                try:
+                    with open(era_list[0]["year_config"]) as f:
+                        lumi = yaml.safe_load(f).get("lumi")
+                except FileNotFoundError:
+                    pass
+            runner.plot_limits(
+                limits_txt, combine_config["signal_grid"]["xsection_json"],
+                combine_config["signal_grid"]["model_key"],
+                str(base_dir / "limits"), limits_name, lumi=lumi,
+            )
+
+    logging.info("run-all pipeline completed!")
+
+
+def collect_limits(args):
+    """Aggregate every mass point's AsymptoticLimits result into one combined
+    summary table + ROOT graphs (Run2's limits_bbDM_C_2018.txt/.root
+    convention). Standalone entrypoint for users who don't want to rerun the
+    whole run-all pipeline just to regenerate the summary."""
+    combine_config = load_config(args.combine_config)
+    runner = CombineRunner(combine_config)
+
+    signal_grid = load_signal_grid(
+        combine_config["signal_grid"]["xsection_json"],
+        combine_config["signal_grid"]["model_key"],
+        args.mass_points or combine_config["signal_grid"].get("points"),
+    )
+    mass_points = list(signal_grid.keys())
+
+    txt_file = runner.collect_limits(args.input, mass_points, args.output, args.name)
+    logging.info(f"Limits summary: {txt_file}")
+
+
+def make_limit_plot(args):
+    """Render Brazil-band exclusion plot(s) from a collect_limits() .txt
+    summary — one PDF per distinct MH3 slice found in the file, x-axis MH4
+    ("m_a"), converting r-limits to absolute cross section via
+    xsection_signal.json (matches the reference CMS-style plot; not a
+    hardcoded per-point theory xsec array like Run2's original notebook)."""
+    combine_config = load_config(args.combine_config)
+    runner = CombineRunner(combine_config)
+
+    lumi = args.lumi
+    if lumi is None:
+        year = args.year or str(combine_config["eras"][0]["year"])
+        for era in combine_config["eras"]:
+            if str(era["year"]) == str(year):
+                try:
+                    with open(era["year_config"]) as f:
+                        year_cfg = yaml.safe_load(f)
+                    lumi = year_cfg.get("lumi")
+                except FileNotFoundError:
+                    pass
+                break
+
+    plot_files = runner.plot_limits(
+        args.input,
+        combine_config["signal_grid"]["xsection_json"],
+        combine_config["signal_grid"]["model_key"],
+        args.output, args.name, lumi=lumi,
+    )
+    for plot_file in plot_files:
+        logging.info(f"Limit plot: {plot_file}")
 
 
 def main():
@@ -2054,13 +2581,16 @@ Examples:
   darkbottomline make-plots --year 2023 --region SR --show-data False --save-dir outputs/plots/
 
   # Generate datacard
-  darkbottomline make-datacard --region SR --output outputs/combine/ --year 2023
+  darkbottomline make-datacard --combine-config configs/combine.yaml --output outputs/combine/2024/ --year 2024
 
   # Run Combine fits
-  darkbottomline run-combine --mode FitDiagnostics --datacard outputs/combine/datacard.txt
+  darkbottomline run-combine --combine-config configs/combine.yaml --mode FitDiagnostics --datacard outputs/combine/2024/1b/SR/workspace.root
 
   # Create diagnostic plots
-  darkbottomline make-impact --input outputs/combine/fitDiagnostics.root --output outputs/plots/
+  darkbottomline make-impact --input outputs/combine/2024/1b/SR/impacts.json --output outputs/combine_plots/
+
+  # Run the full Combine pipeline for one era
+  darkbottomline run-all --combine-config configs/combine.yaml --era 2024
         """
     )
 
@@ -2369,41 +2899,147 @@ Examples:
 
     # Make datacard command
     datacard_parser = subparsers.add_parser("make-datacard", help="Generate Combine datacard")
-    datacard_parser.add_argument("--input", required=True, help="Input results file")
+    datacard_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    datacard_parser.add_argument("--input", help="Region-plots root dir (overrides combine.yaml input.region_root_dir_template)")
     datacard_parser.add_argument("--output", required=True, help="Output directory")
-    datacard_parser.add_argument("--region", help="Specific region for datacard")
-    datacard_parser.add_argument("--year", help="Data-taking year")
+    datacard_parser.add_argument("--category", choices=["1b", "2b"], help="Restrict to one category")
+    datacard_parser.add_argument("--region", help="Restrict to one region role (e.g. SR, CR_Wmunu)")
+    datacard_parser.add_argument("--year", help="Data-taking year (selects combine.yaml eras[] entry)")
+    datacard_parser.add_argument("--mass-point", help="Signal mass-point label (required for SR bins)")
+    datacard_parser.add_argument("--blind", dest="blind", action="store_true", default=None, help="Force blind (Asimov observation)")
+    datacard_parser.add_argument("--unblind", dest="blind", action="store_false", help="Force unblind (real data observation)")
     datacard_parser.set_defaults(func=make_datacard)
 
     # Run Combine command
     combine_parser = subparsers.add_parser("run-combine", help="Run Combine fits")
+    combine_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
     combine_parser.add_argument("--mode", required=True,
-                               choices=["AsymptoticLimits", "FitDiagnostics", "GoodnessOfFit"],
+                               choices=["AsymptoticLimits", "FitDiagnostics", "GoodnessOfFit", "Impacts"],
                                help="Combine mode")
-    combine_parser.add_argument("--datacard", required=True, help="Datacard file")
+    combine_parser.add_argument("--datacard", required=True, help="Datacard or workspace file")
+    combine_parser.add_argument("--sr-datacard", help="SR bin names source (.txt datacard) for "
+                                 "GoodnessOfFit's channel-masking, if --datacard is a workspace "
+                                 "(.root) rather than the .txt datacard itself")
     combine_parser.add_argument("--output", help="Output directory")
     combine_parser.add_argument("--fit-region", help="Fit region")
     combine_parser.add_argument("--include-signal", action="store_true", help="Include signal in fit")
-    combine_parser.add_argument("--toys", type=int, help="Number of toys for GOF")
+    combine_parser.add_argument("--toys", type=int, help="Number of toys for GOF (overrides combine.yaml)")
+    combine_parser.add_argument("--gof-algo", choices=["saturated", "KS", "AD"], help="GOF algorithm (overrides combine.yaml)")
+    combine_parser.add_argument("--blind", dest="blind", action="store_true", default=None, help="Force blind (-t -1 Asimov)")
+    combine_parser.add_argument("--unblind", dest="blind", action="store_false", help="Force unblind (real data)")
     combine_parser.set_defaults(func=run_combine)
 
-    # Make impact command
-    impact_parser = subparsers.add_parser("make-impact", help="Create impact plots")
-    impact_parser.add_argument("--input", required=True, help="Input fit results file")
+    # Make impact command (official plotImpacts.py wrapper)
+    impact_parser = subparsers.add_parser("make-impact", help="Create impact plots (plotImpacts.py)")
+    impact_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    impact_parser.add_argument("--input", required=True, help="Input impacts.json file")
     impact_parser.add_argument("--output", required=True, help="Output directory")
     impact_parser.set_defaults(func=make_impact)
 
-    # Make pulls command
-    pulls_parser = subparsers.add_parser("make-pulls", help="Create pull plots")
-    pulls_parser.add_argument("--input", required=True, help="Input fit results file")
+    # Make pulls command (diffNuisances.py + PlotPulls.C wrapper)
+    pulls_parser = subparsers.add_parser("make-pulls", help="Create pull plots (diffNuisances.py + PlotPulls.C)")
+    pulls_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    pulls_parser.add_argument("--input", required=True, help="Input workspace (.root) file")
+    pulls_parser.add_argument("--sr-datacard", required=True,
+                               help="SR bin names source (.txt datacard) for CRonly mode's channel-masking")
     pulls_parser.add_argument("--output", required=True, help="Output directory")
+    pulls_parser.add_argument("--mode", required=True, choices=["CRonly", "asimov_t0", "sb_t0", "sb_t1"],
+                               help="Pulls mode (Run2's pulls_oneRP.sh)")
+    pulls_parser.add_argument("--year", help="Data-taking year, for the lumi label (default: combine.yaml's first era)")
     pulls_parser.set_defaults(func=make_pulls)
 
-    # Make GOF command
-    gof_parser = subparsers.add_parser("make-gof", help="Create goodness-of-fit plots")
-    gof_parser.add_argument("--input", required=True, help="Input GOF results file")
+    # Collect GOF command (combineTool.py -M CollectGoodnessOfFit wrapper)
+    collect_gof_parser = subparsers.add_parser("collect-gof", help="Merge GoF Observed+Toys into one gof.json (CollectGoodnessOfFit)")
+    collect_gof_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    collect_gof_parser.add_argument("--input", required=True, help="higgsCombineObserved.GoodnessOfFit.mH120*.root file")
+    collect_gof_parser.add_argument("--output", required=True, help="Output directory")
+    collect_gof_parser.set_defaults(func=collect_gof)
+
+    # Make GOF command (official plotGof.py wrapper)
+    gof_parser = subparsers.add_parser("make-gof", help="Create goodness-of-fit plots (plotGof.py)")
+    gof_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    gof_parser.add_argument("--input", required=True, help="Input gof.json file (see collect-gof / run_collect_goodness_of_fit)")
     gof_parser.add_argument("--output", required=True, help="Output directory")
+    gof_parser.add_argument("--gof-algo", choices=["saturated", "KS", "AD"], help="GOF algorithm (overrides combine.yaml)")
+    gof_parser.add_argument("--title-right", help="Right-header text on the plot (e.g. category/year)")
+    gof_parser.add_argument("--mass-point", help="Mass point label — embedded in the output filename only")
     gof_parser.set_defaults(func=make_gof)
+
+    # Channel merge command (e/mu)
+    merge_emu_parser = subparsers.add_parser("merge-emu", help="Merge muon/electron channel CR histograms")
+    merge_emu_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    merge_emu_parser.add_argument("--input", required=True, help="Region-plots root dir")
+    merge_emu_parser.add_argument("--output", required=True, help="Output directory")
+    merge_emu_parser.add_argument("--category", choices=["1b", "2b"], help="Restrict to one category")
+    merge_emu_parser.set_defaults(func=merge_emu)
+
+    # PDF normalization command
+    normalize_pdf_parser = subparsers.add_parser("normalize-pdf", help="Normalize PDF weight shape variants")
+    normalize_pdf_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    normalize_pdf_parser.add_argument("--input", required=True, help="Region-plots root dir")
+    normalize_pdf_parser.add_argument("--output", required=True, help="Output directory")
+    normalize_pdf_parser.add_argument("--category", choices=["1b", "2b"], help="Restrict to one category")
+    normalize_pdf_parser.set_defaults(func=normalize_pdf)
+
+    # Region merge command (SR + CRs -> one combined-region card, per category)
+    merge_region_parser = subparsers.add_parser("merge-region", help="Merge SR+CR datacards for one category via combineCards.py")
+    merge_region_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    merge_region_parser.add_argument("--input", required=True, help="Dir containing {category}/{mass_point,cr_dir}/datacard.txt")
+    merge_region_parser.add_argument("--output", required=True, help="Output directory")
+    merge_region_parser.add_argument("--category", choices=["1b", "2b"], help="Restrict to one category")
+    merge_region_parser.add_argument("--mass-point", help="Restrict to one mass point")
+    merge_region_parser.set_defaults(func=merge_region)
+
+    # Category merge command (1b + 2b -> C)
+    merge_categories_parser = subparsers.add_parser("merge-categories", help="Merge 1b+2b datacards via combineCards.py")
+    merge_categories_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    merge_categories_parser.add_argument("--input", required=True, help="Dir containing {1b,2b}/{mass_point}/datacard.txt")
+    merge_categories_parser.add_argument("--output", required=True, help="Output directory")
+    merge_categories_parser.add_argument("--mass-point", help="Restrict to one mass point")
+    merge_categories_parser.set_defaults(func=merge_categories)
+
+    # Era merge command (active eras -> run3/C)
+    merge_eras_parser = subparsers.add_parser("merge-eras", help="Merge active eras' category-merged datacards via combineCards.py")
+    merge_eras_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    merge_eras_parser.add_argument("--input", required=True, help="Dir containing {year}/C/{mass_point}/datacard.txt per active era")
+    merge_eras_parser.add_argument("--output", required=True, help="Output directory")
+    merge_eras_parser.add_argument("--mass-point", help="Restrict to one mass point")
+    merge_eras_parser.set_defaults(func=merge_eras)
+
+    # Full pipeline orchestrator
+    run_all_parser = subparsers.add_parser("run-all", help="Run the full Combine pipeline (datacard -> merge -> fits)")
+    run_all_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml (sole config source)")
+    run_all_parser.add_argument("--input", help="Region-plots root dir (overrides combine.yaml input.region_root_dir_template for a single-era run; ignored for --era full)")
+    run_all_parser.add_argument("--era", default="full",
+                               help="Single era year (e.g. 2024) or 'full' for all active eras + merge-eras")
+    run_all_parser.add_argument("--skip-histo-production", action="store_true",
+                               help="No-op flag: run-all never invokes `analyze` itself, histo-production must already exist")
+    run_all_parser.add_argument("--stages", nargs="+",
+                               choices=["merge-emu", "normalize-pdf", "datacard", "merge-region",
+                                        "merge-categories", "merge-eras", "gof", "impacts", "pulls",
+                                        "limit", "all"],
+                               default=["all"], help="Pipeline stages to run")
+    run_all_parser.add_argument("--mass-points", nargs="+", help="Restrict to specific mass points (overrides combine.yaml signal_grid.points)")
+    run_all_parser.set_defaults(func=run_all)
+
+    # Limits summary aggregation (standalone; run-all also calls this automatically
+    # when "limit" is in --stages)
+    collect_limits_parser = subparsers.add_parser("collect-limits", help="Aggregate per-mass-point AsymptoticLimits results into one summary table + ROOT graphs")
+    collect_limits_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    collect_limits_parser.add_argument("--input", required=True, help="Dir containing {mass_point}/higgsCombineTest.AsymptoticLimits.mH120*.root for each mass point")
+    collect_limits_parser.add_argument("--output", required=True, help="Output directory for the summary .txt/.root")
+    collect_limits_parser.add_argument("--name", default="limits_summary", help="Output file basename (default: limits_summary)")
+    collect_limits_parser.add_argument("--mass-points", nargs="+", help="Restrict to specific mass points (overrides combine.yaml signal_grid.points)")
+    collect_limits_parser.set_defaults(func=collect_limits)
+
+    limit_plot_parser = subparsers.add_parser("make-limit-plot", help="Render Brazil-band exclusion plot(s) from a collect-limits .txt summary")
+    limit_plot_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    limit_plot_parser.add_argument("--input", required=True, help="collect-limits .txt summary file")
+    limit_plot_parser.add_argument("--output", required=True, help="Output directory")
+    limit_plot_parser.add_argument("--name", default="limits_summary", help="Output file basename (default: limits_summary) — one PDF per MH3 slice: {name}_MH3_{mh3}.pdf")
+    limit_plot_parser.add_argument("--lumi", type=float, help="Integrated luminosity label (fb^-1) — overrides combine.yaml's year_config lumi lookup")
+    limit_plot_parser.add_argument("--year", help="Era to resolve lumi from (default: combine.yaml's first era) — ignored if --lumi is given")
+    limit_plot_parser.set_defaults(func=make_limit_plot)
 
     # Parse arguments
     args = parser.parse_args()

@@ -561,9 +561,23 @@ def add_weight(self, name: str, weight: Union[ak.Array, np.ndarray, float], ...)
 
 ### Modify Combine Configuration (for Statistical Analysis)
 
-**File**: `configs/combine.yaml`
+**File**: `configs/combine.yaml` — single source of Combine pipeline config; CLI flags only override yaml values, never define new ones.
 
-- **Location**: Process definitions, systematic uncertainties, etc.
+- `eras[]` — per-era `year`/`year_config`/`active` (only `active: true` eras are included in `merge-eras`/`run-all --era full`)
+- `blind` — per-region-role (`SR`/`CR`), not a single global flag
+- `regions` — per-category `signal_region`/`control_regions` (role names, not literal `configs/regions.yaml` dir names)
+- `fit_variable` — per-category discriminant (`1b`/`2b` can differ)
+- `combine_emu` — e/μ channel merge toggle (`CR_Wmunu`+`CR_Wenu`→`Wlnu`, `CR_Zmumu`+`CR_Zee`→`Zll`, per category)
+- `datacard.binning_mode` — `"unbinned"` (one Combine channel per region) or `"binned"` (one single-bin channel per histogram bin, `region_bin1..N`, Run2's production convention)
+- `datacard.processes` — process key → `{name, plot_group_label, is_signal}`; `plot_group_label` must match `configs/plotting.yaml`'s `process_groups` keys
+- `datacard.systematics` — per-systematic `{type: lnN|shape, syst_suffix, processes, gated_by_cut}`; `gated_by_cut` names a `configs/regions.yaml` cut key whose presence in a region gates whether that systematic applies there (e.g. `btagSF` only in b-tagged regions)
+- `datacard.rate_parameters` — CR-only entries, `{regions, processes, value, range}`; in binned mode each gets a `_binN` suffix per bin
+- `datacard.sr_rate_parameters` — per-category list of `{process, unmerged: [...], merged}`, controlling whether SR gets one merged rateParam (when `combine_emu: true`) or both per-channel rateParams (when `false`) tied to the matching CR bin(s)
+- `signal_grid` — `xsection_json`/`model_key`/`points` (null = all points)
+- `fit.options` — per-mode fit options (rMin/rMax, toys, algorithm, etc.)
+- `advanced.commands` — command-line templates for every `combine`/`combineTool.py`/`text2workspace.py` invocation (no `-M <mode>` string is hardcoded in Python)
+
+See [Combine Limit-Setting Pipeline](README.md#combine-limit-setting-pipeline) in the README for CLI usage.
 
 ### Modify DNN Configuration
 

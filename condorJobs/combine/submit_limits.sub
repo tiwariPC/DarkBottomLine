@@ -1,0 +1,29 @@
+universe = vanilla
+use_x509userproxy = true
+x509userproxy = /afs/cern.ch/user/u/username/private/x509up_u98885
+
+executable = runcombine.sh
+arguments = $(ProcId)
+
+output  = logs/output/dbl_limit.$(ClusterId).$(ProcId).out
+error   = logs/error/dbl_limit.$(ClusterId).$(ProcId).err
+log     = logs/dbl_limit.$(ClusterId).log
+
+on_exit_hold = (ExitBySignal == True) || (ExitCode != 0)
+periodic_release = (NumJobStarts < 3) && ((CurrentTime - EnteredCurrentStatus) > 600)
+
+request_memory = 4000
+request_cpus = 1
++JobFlavour = "workday"
+
+# Template submit file for AsymptoticLimits jobs — one job per signal mass
+# point (29 points x categories/merge stage already resolved into a single
+# merged datacard by the time this runs). Sized for the full 2HDM+a grid
+# from data/cross-section/xsection_signal.json (user-confirmed: run all
+# points, see combine.yaml's signal_grid.points: null).
+
+environment = "DBL_REPO_DIR=/path/to/repository \
+DBL_COMBINE_SUBCOMMAND=run-combine \
+DBL_COMBINE_ARGS=--combine-config configs/combine.yaml --mode AsymptoticLimits --datacard outputs/combine/run3/C/MH3_600_MH4_150_Mchi_1/workspace.root --output outputs/combine/run3/C/MH3_600_MH4_150_Mchi_1/"
+
+queue 1

@@ -236,12 +236,96 @@ def install_missing_packages(local_dir, missing_lines):
         sys.path.insert(0, local_dir_str)
     return True
 
+def install_combine(local_dir: str) -> bool:
+    """Build HiggsAnalysis-CombinedLimit (CMS Combine) into local_dir via its
+    standalone CMake build, using whatever ROOT/compiler is already on PATH
+    (the LCG view on lxplus). OPTIONAL — only runs when --install-combine is
+    explicitly passed; the rest of check_requirements.py's --install flow
+    never calls this.
+    """
+    import shutil
+    import subprocess
+
+    local_path = Path(local_dir).absolute()
+    site_packages = local_path / f"lib/python{sys.version_info.major}.{sys.version_info.minor}/site-packages"
+
+    if shutil.which("combine") and shutil.which("text2workspace.py"):
+        print("Combine already found on PATH — skipping build.")
+        return True
+
+    if not shutil.which("cmake"):
+        print("✗ cmake not found on PATH — required to build Combine.")
+        print("  On lxplus this should be provided by the LCG view "
+              "(source /cvmfs/sft.cern.ch/lcg/views/LCG_109/x86_64-el9-gcc15-opt/setup.sh).")
+        return False
+
+    clone_dir = local_path / "HiggsAnalysis" / "CombinedLimit"
+    if not clone_dir.exists():
+        print(f"Cloning HiggsAnalysis-CombinedLimit into {clone_dir}...")
+        clone_dir.parent.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(
+            ["git", "clone", "https://github.com/cms-analysis/HiggsAnalysis-CombinedLimit.git",
+             str(clone_dir)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            print(f"✗ git clone failed: {result.stderr}")
+            return False
+
+    build_dir = clone_dir / "build"
+    print("Configuring Combine build (CMake)...")
+    configure = subprocess.run(
+        ["cmake", "-S", str(clone_dir), "-B", str(build_dir),
+         f"-DCMAKE_INSTALL_PREFIX={local_path}",
+         f"-DCMAKE_INSTALL_PYTHONDIR={site_packages}",
+         "-DUSE_VDT=OFF"],
+        capture_output=True, text=True, cwd=str(clone_dir),
+    )
+    if configure.returncode != 0:
+        print(f"✗ CMake configure failed: {configure.stderr}")
+        return False
+
+    print("Building Combine (this can take several minutes)...")
+    build = subprocess.run(
+        ["cmake", "--build", str(build_dir), "-j", str(max(1, (__import__("os").cpu_count() or 2) - 2))],
+        capture_output=True, text=True, cwd=str(clone_dir),
+    )
+    if build.returncode != 0:
+        print(f"✗ Build failed: {build.stderr}")
+        return False
+
+    print("Installing Combine...")
+    install = subprocess.run(
+        ["cmake", "--install", str(build_dir)],
+        capture_output=True, text=True, cwd=str(clone_dir),
+    )
+    if install.returncode != 0:
+        print(f"✗ Install failed: {install.stderr}")
+        return False
+
+    print(f"✓ Combine installed to {local_path} (combine, combineTool.py, text2workspace.py)")
+    print(f"  Make sure {local_path / 'bin'} is on your PATH (source start.sh does this).")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Check and install packages from environment.yml")
     parser.add_argument('--install', action='store_true', help='Install missing packages locally')
+    parser.add_argument('--install-combine', action='store_true',
+                         help='OPTIONAL: build CMS Combine (HiggsAnalysis-CombinedLimit) into '
+                              '--local-dir via its standalone CMake build. Not part of the '
+                              'regular --install flow — only needed if you intend to run '
+                              '`darkbottomline run-combine`/`merge-categories`/`merge-eras` '
+                              'locally; datacard-generation does not need it.')
     parser.add_argument('--local-dir', default='./.local', help='Local installation directory')
     parser.add_argument('--requirements', default=None, help='Path to environment.yml (default: environment.yml)')
     args = parser.parse_args()
+
+    if args.install_combine:
+        if not install_combine(args.local_dir):
+            sys.exit(1)
+        if not args.install:
+            return
 
     # Find environment.yml
     script_dir = Path(__file__).parent
