@@ -28,6 +28,7 @@ from darkbottomline.combine_inputs import (
     systematic_applies_to_region,
 )
 from darkbottomline.combine_tools import CombineDatacardWriter, CombineRunner
+from darkbottomline.cli import _resolve_control_region_dirs
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 REGIONS_CONFIG = str(REPO_ROOT / "configs" / "regions.yaml")
@@ -202,6 +203,34 @@ class TestCombineInputs:
     def test_region_dir_from_role(self):
         assert region_dir_from_role("CR_Wmunu") == "Wmunu"
         assert region_dir_from_role("SR") == "SR"
+
+    def test_resolve_control_region_dirs_combine_emu_false_strips_cr_prefix(self):
+        """Reproduced real bug: with combine_emu: false, this previously
+        returned raw role names (["CR_Wmunu", "CR_Wenu", ...]) instead of
+        stripping the "CR_" prefix like every other region_dir resolution
+        path does — causing normalize-pdf/merge_region to look up
+        hist_1b_CR_Wmunu_....root (never written; the real file is
+        hist_1b_Wmunu_....root) and fail with a FileNotFoundError."""
+        combine_config = {
+            "combine_emu": False,
+            "regions": {
+                "1b": {"signal_region": "SR",
+                        "control_regions": ["CR_Wmunu", "CR_Wenu", "CR_Zmumu", "CR_Zee"]},
+            },
+        }
+        dirs = _resolve_control_region_dirs(combine_config, "1b")
+        assert dirs == ["Wmunu", "Wenu", "Zmumu", "Zee"]
+
+    def test_resolve_control_region_dirs_combine_emu_true_merges_pairs(self):
+        combine_config = {
+            "combine_emu": True,
+            "regions": {
+                "1b": {"signal_region": "SR",
+                        "control_regions": ["CR_Wmunu", "CR_Wenu", "CR_Zmumu", "CR_Zee"]},
+            },
+        }
+        dirs = _resolve_control_region_dirs(combine_config, "1b")
+        assert dirs == ["Wlnu", "Zll"]
 
     def test_resolve_version_dir_explicit_version(self, tmp_path):
         (tmp_path / "20260101_abc1234" / "root").mkdir(parents=True)

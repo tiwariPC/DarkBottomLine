@@ -2248,7 +2248,7 @@ def _resolve_control_region_dirs(combine_config: Dict[str, Any], category: str) 
     globs for a directory that was never written."""
     control_regions = combine_config["regions"][category]["control_regions"]
     if not combine_config.get("combine_emu", True):
-        return list(control_regions)
+        return [region_dir_from_role(r) for r in control_regions]
 
     dirs: List[str] = []
     seen_merged = set()
