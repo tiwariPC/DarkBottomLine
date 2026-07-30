@@ -146,7 +146,10 @@ datacard:
     # `value:` is the fallback only if year_config has no lumi_uncertainty key.
     lumi:
       type: "lnN"
-      name_template: "lumi_{year}"
+      # Matches CMS's official combination-wide naming (systematics_master.yml,
+      # luminosity: lumi_13p6TeV_{year} for the per-year-uncorrelated portion
+      # of the Run3 13.6 TeV luminosity uncertainty).
+      name_template: "lumi_13p6TeV_{year}"
       value_source: "eras[].year_config:lumi_uncertainty"
       value: 1.014            # PLACEHOLDER fallback — replace once each era's Lumi POG
                                 # number is published (2024's is still "to be updated")
@@ -204,39 +207,59 @@ datacard:
     # scheme for the systematics DarkBottomLine already produces is applied.
     # Scoped to 2024+ eras only — 2022/2022EE/2023 stay flat/unsuffixed if
     # ever activated, per explicit instruction not to touch those.
+    # name_templates below match CMS's official combination-wide naming
+    # convention (systematics_master.yml): CMS_eff_b_{year} (btag),
+    # CMS_scale_j_{year} (JES, kinematic jet-4-vector shift — CMS_scale_j
+    # family), CMS_res_j_{year} (JER, jet energy resolution), CMS_pileup_{year},
+    # CMS_eff_m_id_{year} (muon ID SF), CMS_eff_e_id_{year} (electron ID SF).
+    # JEC (weight_JEC) is a SEPARATE effect from JES — a multiplicative weight
+    # from the L1L2L3Res compound correction's own ±Total uncertainty
+    # (corrections.py:get_jet_jec_weight_nominal_up_down), not a kinematic
+    # shift like JES/JER — kept under its existing plain "JEC" name since
+    # systematics_master.yml has no distinct entry for this specific
+    # weight-level correction (not double-counted with JES: verified the two
+    # vary different things — JES/JER recompute Recoil from shifted jet
+    # 4-vectors, JEC only reweights the nominal-kinematics event).
     btagSF:
       type: "shape"
       syst_suffix: "weight_btag"
-      name_template: "CMS{year}_eff_b"
+      name_template: "CMS_eff_b_{year}"
       processes: ["signal", "ttbar", "wjets", "zjets", "znunu", "singletop", "diboson", "smhiggs"]
       gated_by_cut: ["Bjet1bCond", "Bjet2bCond"]   # region-applicable iff its
                                                      # regions.yaml cuts block has either key
-    JES:         {type: "shape", syst_suffix: "JES", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JER:         {type: "shape", syst_suffix: "JER", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JES:         {type: "shape", syst_suffix: "JES", name_template: "CMS_scale_j_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JER:         {type: "shape", syst_suffix: "JER", name_template: "CMS_res_j_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
     JEC:         {type: "shape", syst_suffix: "weight_JEC", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    pileup:      {type: "shape", syst_suffix: "weight_pileup", name_template: "CMS{year}_PU", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    muonSF:      {type: "shape", syst_suffix: "weight_muon", name_template: "CMS{year}_MuID", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    electronSF:  {type: "shape", syst_suffix: "weight_electron", name_template: "CMS{year}_EleID", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    electronHLT: {type: "shape", syst_suffix: "weight_electronHLT", name_template: "CMS{year}_trig_ele", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    metHLT:      {type: "shape", syst_suffix: "weight_metHLT", name_template: "CMS{year}_trig_met", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    pileup:      {type: "shape", syst_suffix: "weight_pileup", name_template: "CMS_pileup_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    muonSF:      {type: "shape", syst_suffix: "weight_muon", name_template: "CMS_eff_m_id_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    electronSF:  {type: "shape", syst_suffix: "weight_electron", name_template: "CMS_eff_e_id_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    # electronHLT -> CMS_eff_e_trigger_{year}, direct match in
+    # systematics_master.yml's electron_efficiency section. metHLT has no
+    # official counterpart in the master file (no MET-trigger entry exists
+    # there) — named CMS_eff_met_trigger_{year} to match the same
+    # CMS_eff_{obj}_trigger_{year} pattern used for electrons/muons.
+    electronHLT: {type: "shape", syst_suffix: "weight_electronHLT", name_template: "CMS_eff_e_trigger_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    metHLT:      {type: "shape", syst_suffix: "weight_metHLT", name_template: "CMS_eff_met_trigger_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
     pdf:         {type: "shape", syst_suffix: "weight_pdf", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
     # Split per-process, matching Run2's CMS{year}_mu_scale_{process} naming
     # convention (datacard_template_1b_perBin_asChanel_addProcs.yaml) but
-    # kept under the "scale" name already used in this repo — same
-    # weight_scale shape files as before, one named nuisance per process
-    # instead of one shared nuisance, so each process's shape uncertainty is
-    # uncorrelated from the others in the fit (matches Run2's convention).
-    scale_signal:    {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_signal",   processes: ["signal"]}
-    scale_ttbar:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_tt",       processes: ["ttbar"]}
-    scale_wjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_wjets",    processes: ["wjets"]}
-    scale_zjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_dyjets",   processes: ["zjets"]}
-    scale_singletop: {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_singlet",  processes: ["singletop"]}
-    scale_diboson:   {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_diboson",  processes: ["diboson"]}
-    scale_smhiggs:   {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_smh",      processes: ["smhiggs"]}
-    # znunu (Zto2Nu invisible-Z background) has no Run2 counterpart process,
-    # so no per-process precedent — kept under the original unsplit "scale"
-    # name instead, same weight_scale shape file.
-    scale:           {type: "shape", syst_suffix: "weight_scale", processes: ["znunu"]}
+    # named "qcdscale" (not "scale"/"mu_scale") — this is QCD renormalization/
+    # factorization scale (muR/muF 7-point envelope from LHEScaleWeight, see
+    # corrections.py:get_pdf_scale_weights), not a muon momentum/energy scale;
+    # the clearer name avoids confusion with the generic "scale" the repo used
+    # before. One named nuisance per process (not one shared nuisance), so
+    # each process's shape uncertainty is uncorrelated from the others in the
+    # fit (matches Run2's convention). znunu (Zto2Nu invisible-Z background)
+    # has no Run2 counterpart process to name a convention after, but Run3
+    # can just give it its own entry directly — no leftover/special-cased name.
+    qcdscale_signal:    {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_signal",   processes: ["signal"]}
+    qcdscale_ttbar:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_tt",       processes: ["ttbar"]}
+    qcdscale_wjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_wjets",    processes: ["wjets"]}
+    qcdscale_zjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_dyjets",   processes: ["zjets"]}
+    qcdscale_znunu:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_znunu",    processes: ["znunu"]}
+    qcdscale_singletop: {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_singlet",  processes: ["singletop"]}
+    qcdscale_diboson:   {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_diboson",  processes: ["diboson"]}
+    qcdscale_smhiggs:   {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_smh",      processes: ["smhiggs"]}
 
   # perBinChannel rateParams. Naming: <process>_<category>_<region_dir>.
   #
