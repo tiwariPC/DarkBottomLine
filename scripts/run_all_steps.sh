@@ -68,11 +68,15 @@ done
 
 # Created here (before the tmux relaunch below) so the log file exists the
 # instant this command returns, not a few seconds later once the detached
-# pane gets around to it.
+# pane gets around to it. Truncated (not just touch'd) so each new run
+# starts with a clean log instead of appending onto whatever a previous
+# run left behind — this line runs once in the outer process before either
+# relaunching into tmux or falling through to --no-tmux, so it's safe to
+# truncate unconditionally (nothing has been logged yet either way).
 LOG_DIR=${LOG_DIR:-logs}
 LOG_FILE="${LOG_DIR}/run_all_steps.log"
 mkdir -p "${LOG_DIR}"
-touch "${LOG_FILE}"
+: > "${LOG_FILE}"
 
 # Re-launch inside a detached tmux session unless already inside one (or
 # explicitly opted out with --no-tmux) — $TMUX is set by tmux itself for
@@ -143,13 +147,12 @@ SIGNAL_SCALE=${SIGNAL_SCALE:-10}
 COMBINE_ERA=${COMBINE_ERA:-full}
 COMBINE_STAGES=${COMBINE_STAGES:-all}
 
-# LOG_DIR/LOG_FILE were already set (and the file created) above, before the
-# tmux relaunch block — re-declaring here is a no-op when relaunched inside
-# tmux, and covers the --no-tmux direct-run path too.
+# LOG_DIR/LOG_FILE were already set (and the file truncated fresh) above,
+# before the tmux relaunch block — re-declaring here is a no-op when
+# relaunched inside tmux, and covers the --no-tmux direct-run path too.
 LOG_DIR=${LOG_DIR:-logs}
 LOG_FILE="${LOG_FILE:-${LOG_DIR}/run_all_steps.log}"
 mkdir -p "${LOG_DIR}"
-touch "${LOG_FILE}"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $1" | tee -a "${LOG_FILE}"
