@@ -94,7 +94,7 @@ def main():
 
         safe = region_name.replace(":", "_")
         out = os.path.join(args.outdir, f"nTrueInt_noPU_{safe}.png")
-        plt.savefig(out, dpi=150)
+        plt.savefig(out, dpi=300)
         plt.close(fig)
         logging.info("Saved %s (integral with=%.1f without=%.1f)", out, h_with.sum(), h_wo.sum())
 

@@ -1263,8 +1263,8 @@ def main():
     plt.title(f"ROC Test ({region})")
     plt.legend(loc="lower right")
     plt.tight_layout()
-    plt.savefig(outdir / "roc.png", dpi=150)
-    plt.savefig(outdir / "roc_test.png", dpi=150)
+    plt.savefig(outdir / "roc.png", dpi=300)
+    plt.savefig(outdir / "roc_test.png", dpi=300)
     plt.close()
 
     plt.figure(figsize=(6, 6))
@@ -1275,7 +1275,7 @@ def main():
     plt.title(f"ROC Train ({region})")
     plt.legend(loc="lower right")
     plt.tight_layout()
-    plt.savefig(outdir / "roc_train.png", dpi=150)
+    plt.savefig(outdir / "roc_train.png", dpi=300)
     plt.close()
 
     plt.figure(figsize=(6.5, 6))

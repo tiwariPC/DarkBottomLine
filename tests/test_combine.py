@@ -1238,7 +1238,7 @@ class TestCombineRunner:
             if cmd[0] == "combine":
                 (tmp_path / "fitDiagnostics_CRonly.root").write_text("")
             elif cmd[0] == "root":
-                (tmp_path / "pulls_CRonly_1.pdf").write_text("")
+                (tmp_path / "pulls_C_2024_CRonly_1.pdf").write_text("")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=fake_run) as mock_run:
@@ -1253,13 +1253,13 @@ class TestCombineRunner:
 
         # Persisted per-mode copy under fitDiagnosticsDir/, matching Run2's
         # --out fitDiagnosticsDir convention — not overwritten by other modes.
-        assert (tmp_path / "fitDiagnosticsDir" / "fitDiagnostics_CRonly.root").exists()
+        assert (tmp_path / "fitDiagnosticsDir" / "fitDiagnostics_C_2024_CRonly.root").exists()
 
         root_call = mock_run.call_args_list[1][0][0]
         assert root_call[0] == "root"
         assert "plotPostNuisance_combine.C" in root_call[-1]
 
-        assert Path(plot).name == "pulls_CRonly_1.pdf"
+        assert Path(plot).name == "pulls_C_2024_CRonly_1.pdf"
 
     def test_run_pulls_sb_t0_uses_diffnuisances(self, minimal_combine_config, tmp_path):
         """Unlike CRonly, the other 3 pulls modes (asimov_t0/sb_t0/sb_t1) run
@@ -1277,7 +1277,7 @@ class TestCombineRunner:
             elif cmd[0] == "diffNuisances.py":
                 Path(cmd[-1]).write_text("")
             elif cmd[0] == "root":
-                (tmp_path / "pulls_sb_t0_1_.pdf").write_text("")
+                (tmp_path / "pulls_C_2024_sb_t0_1_.pdf").write_text("")
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=fake_run) as mock_run:
@@ -1293,7 +1293,35 @@ class TestCombineRunner:
         assert root_call[0] == "root"
         assert "PlotPulls.C" in root_call[-1]
 
-        assert Path(plot).name == "pulls_sb_t0_1_.pdf"
+        assert Path(plot).name == "pulls_C_2024_sb_t0_1_.pdf"
+
+    def test_run_pulls_mass_point_added_not_replacing_catg_year_mode(self, minimal_combine_config, tmp_path):
+        """mass_point is added alongside catg/year/mode, not replacing them —
+        matches Run2's real pulls_${catg}_${year}_${mode}_${dirname}_{page}_.pdf
+        naming (pulls_oneRP.sh) exactly, with mass_point filling ${dirname}."""
+        runner = CombineRunner(minimal_combine_config)
+        workspace = tmp_path / "workspace.root"
+        workspace.write_text("")
+        datacard = tmp_path / "datacard.txt"
+        datacard.write_text("imax 1\njmax 2\nkmax 1\n\nbin          SR_1b\nobservation  -1\n")
+
+        def fake_run(cmd, **kwargs):
+            if cmd[0] == "combine":
+                (tmp_path / "fitDiagnostics_SbT1.root").write_text("")
+            elif cmd[0] == "diffNuisances.py":
+                Path(cmd[-1]).write_text("")
+            elif cmd[0] == "root":
+                (tmp_path / "pulls_C_2024_sb_t1_MH3_600_MH4_150_Mchi_1_1_.pdf").write_text("")
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fake_run):
+            plot = runner.run_pulls(str(workspace), str(tmp_path), str(datacard),
+                                     mode="sb_t1", year="2024",
+                                     mass_point="MH3_600_MH4_150_Mchi_1", category="C")
+
+        assert Path(plot).name == "pulls_C_2024_sb_t1_MH3_600_MH4_150_Mchi_1_1_.pdf"
+        assert (tmp_path / "fitDiagnosticsDir" /
+                "fitDiagnostics_C_2024_sb_t1_MH3_600_MH4_150_Mchi_1.root").exists()
 
     def test_run_pulls_unknown_mode_raises(self, minimal_combine_config, tmp_path):
         runner = CombineRunner(minimal_combine_config)
@@ -1339,10 +1367,26 @@ class TestCombineRunner:
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
             plot_file = runner.run_plot_impacts(str(impacts_json), str(tmp_path))
 
-        assert Path(plot_file).name == "impacts.pdf"
+        assert Path(plot_file).name == "impacts_C_asimov_t0.pdf"
         called_args = mock_run.call_args[0][0]
         assert called_args[0] == "plotImpacts.py"
         assert "-i" in called_args and str(impacts_json) in called_args
+
+    def test_run_plot_impacts_mass_point_and_unblind(self, minimal_combine_config, tmp_path):
+        """mass_point is added alongside catg/mode, not replacing them —
+        matches Run2's real impacts_${catg}_${mode}_${dirname}.pdf naming
+        (impacts.sh) exactly, with mass_point filling the ${dirname} slot."""
+        runner = CombineRunner(minimal_combine_config)
+        impacts_json = tmp_path / "impacts.json"
+        impacts_json.write_text("{}")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            plot_file = runner.run_plot_impacts(
+                str(impacts_json), str(tmp_path),
+                mass_point="MH3_600_MH4_150_Mchi_1", category="C", blind=False)
+
+        assert Path(plot_file).name == "impacts_C_data_t0_MH3_600_MH4_150_Mchi_1.pdf"
 
     def test_real_combine_yaml_impacts_steps_have_no_duplicate_flags(self):
         """Regression test against the actual configs/combine.yaml (not the

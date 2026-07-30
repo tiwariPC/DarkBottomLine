@@ -932,7 +932,7 @@ def _bin_centres(edges: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
 
 def _save(fig: plt.Figure, outpath: str) -> None:
     os.makedirs(os.path.dirname(outpath) or ".", exist_ok=True)
-    fig.savefig(outpath, dpi=150, bbox_inches="tight")
+    fig.savefig(outpath, dpi=300, bbox_inches="tight")
     pdf_path = os.path.splitext(outpath)[0] + ".pdf"
     fig.savefig(pdf_path, bbox_inches="tight")
     plt.close(fig)

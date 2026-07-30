@@ -2127,7 +2127,10 @@ def make_impact(args):
     the official plotImpacts.py (matches Run2's real impacts.sh tooling)."""
     combine_config = load_config(args.combine_config)
     runner = CombineRunner(combine_config)
-    plot_file = runner.run_plot_impacts(args.input, args.output)
+    plot_file = runner.run_plot_impacts(args.input, args.output,
+                                         mass_point=args.mass_point or "",
+                                         category=args.category,
+                                         blind=args.blind if args.blind is not None else True)
     logging.info(f"Impact plot creation completed: {plot_file}")
 
 
@@ -2140,7 +2143,9 @@ def make_pulls(args):
     runner = CombineRunner(combine_config)
     year = args.year or str(combine_config["eras"][0]["year"])
     plot_file = runner.run_pulls(args.input, args.output, args.sr_datacard,
-                                  mode=args.mode, year=year)
+                                  mode=args.mode, year=year,
+                                  mass_point=args.mass_point or "",
+                                  category=args.category)
     logging.info(f"Pull plot creation completed: {plot_file}")
 
 
@@ -2474,7 +2479,8 @@ def run_all(args):
                                      mass_point=mass_point)
             if "impacts" in stages:
                 impacts_json = runner.run_impacts(workspace_file, str(card_dir), blind=blind)
-                runner.run_plot_impacts(impacts_json, str(card_dir))
+                runner.run_plot_impacts(impacts_json, str(card_dir), mass_point=mass_point,
+                                         category="C", blind=blind)
             if "pulls" in stages:
                 # All 4 of Run2's pulls modes, matching pulls_oneRP.sh — not
                 # just the plain blind FitDiagnostics fit run_fit_diagnostics
@@ -2482,7 +2488,8 @@ def run_all(args):
                 # run-combine --mode FitDiagnostics for other callers).
                 for pulls_mode in ("CRonly", "asimov_t0", "sb_t0", "sb_t1"):
                     runner.run_pulls(workspace_file, str(card_dir), str(datacard_file),
-                                      mode=pulls_mode, year=era_label)
+                                      mode=pulls_mode, year=era_label, mass_point=mass_point,
+                                      category="C")
             if "limit" in stages:
                 runner.run_asymptotic_limits(workspace_file, str(card_dir), blind=blind)
 
@@ -2934,6 +2941,10 @@ Examples:
     impact_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
     impact_parser.add_argument("--input", required=True, help="Input impacts.json file")
     impact_parser.add_argument("--output", required=True, help="Output directory")
+    impact_parser.add_argument("--mass-point", help="Mass point label — embedded in the output filename only")
+    impact_parser.add_argument("--category", default="C", help="Category label for the output filename (default: C)")
+    impact_parser.add_argument("--blind", dest="blind", action="store_true", default=None, help="Blind mode -> \"asimov_t0\" in filename (default)")
+    impact_parser.add_argument("--unblind", dest="blind", action="store_false", help="Unblind mode -> \"data_t0\" in filename")
     impact_parser.set_defaults(func=make_impact)
 
     # Make pulls command (diffNuisances.py + PlotPulls.C wrapper)
@@ -2946,6 +2957,8 @@ Examples:
     pulls_parser.add_argument("--mode", required=True, choices=["CRonly", "asimov_t0", "sb_t0", "sb_t1"],
                                help="Pulls mode (Run2's pulls_oneRP.sh)")
     pulls_parser.add_argument("--year", help="Data-taking year, for the lumi label (default: combine.yaml's first era)")
+    pulls_parser.add_argument("--mass-point", help="Mass point label — embedded in the output filename only")
+    pulls_parser.add_argument("--category", default="C", help="Category label for the output filename (default: C)")
     pulls_parser.set_defaults(func=make_pulls)
 
     # Collect GOF command (combineTool.py -M CollectGoodnessOfFit wrapper)

@@ -1301,7 +1301,7 @@ class CombineRunner:
 
         fig.tight_layout()
         fig.savefig(f"{out_stem}.pdf")
-        fig.savefig(f"{out_stem}.png", dpi=150)
+        fig.savefig(f"{out_stem}.png", dpi=300)
         plt.close(fig)
 
         return f"{out_stem}.pdf"
@@ -1333,9 +1333,15 @@ class CombineRunner:
         return ""
 
     def run_pulls(self, workspace: str, output_dir: str, datacard_file: str,
-                   mode: str, year: str = "2024") -> str:
+                   mode: str, year: str = "2024", mass_point: str = "",
+                   category: str = "C") -> str:
         """Run one of Run2's 4 pulls modes (CRonly/asimov_t0/sb_t0/sb_t1,
         pulls_oneRP.sh) via FitDiagnostics.
+
+        Output filenames match Run2's real pulls_oneRP.sh naming exactly:
+        pulls_${catg}_${year}_${mode}_${dirname}_{page}_.pdf. Run3 has one
+        output dir per mass point already, so mass_point fills the
+        ${dirname} slot — added alongside catg/year/mode, not replacing them.
 
         CRonly is a DIFFERENT tooling path from the other 3 modes — verified
         by reading pulls_oneRP.sh in full: with SR masked, FitDiagnostics
@@ -1384,9 +1390,12 @@ class CombineRunner:
         # fitDiagnosticsDir/ (pulls_oneRP.sh's --out flag) rather than letting
         # each mode's run overwrite the last one, since all 4 are meant to be
         # inspectable afterward, not just the final mode run.
+        mp_suffix = f"_{mass_point}" if mass_point else ""
+        name_tag = f"{category}_{year}_{mode}{mp_suffix}"
+
         fit_diagnostics_dir = Path(output_dir) / "fitDiagnosticsDir"
         fit_diagnostics_dir.mkdir(parents=True, exist_ok=True)
-        persisted_fd = fit_diagnostics_dir / f"fitDiagnostics_{mode}.root"
+        persisted_fd = fit_diagnostics_dir / f"fitDiagnostics_{name_tag}.root"
         shutil.copy(fit_diagnostics_file, persisted_fd)
 
         pulls_tooling = self.advanced_config.get("pulls_tooling", {})
@@ -1397,7 +1406,7 @@ class CombineRunner:
                                        "condorJobs/combine/plotPostNuisance_combine.C")
             root_cmd = [
                 "root", "-l", "-b", "-q",
-                f'{macro}("{fit_diagnostics_file}", "{output_dir}/", "{mode}", "{lumi_text}")',
+                f'{macro}("{fit_diagnostics_file}", "{output_dir}/", "{name_tag}", "{lumi_text}")',
             ]
             try:
                 subprocess.run(root_cmd, capture_output=True, text=True, check=True)
@@ -1414,7 +1423,7 @@ class CombineRunner:
                 "diff_nuisances", "diffNuisances.py")
             diff_nuisances_args = pulls_tooling.get("diff_nuisances_args", ["--abs", "--all"])
 
-            pulls_root = Path(output_dir) / f"pulls_{mode}.root"
+            pulls_root = Path(output_dir) / f"pulls_{name_tag}.root"
             cmd = [diff_nuisances_bin, str(fit_diagnostics_file)] + list(diff_nuisances_args) \
                 + ["-g", str(pulls_root)]
             try:
@@ -1445,10 +1454,10 @@ class CombineRunner:
                 logging.error(f"Error output: {e.stderr}")
                 raise
 
-        plot_matches = sorted(Path(output_dir).glob(f"pulls_{mode}_*.pdf"))
+        plot_matches = sorted(Path(output_dir).glob(f"pulls_{name_tag}_*.pdf"))
         if not plot_matches:
             raise FileNotFoundError(
-                f"No pulls_{mode}_*.pdf found in {output_dir} after running the pulls plotting step."
+                f"No pulls_{name_tag}_*.pdf found in {output_dir} after running the pulls plotting step."
             )
         return str(plot_matches[0])
 
@@ -1459,14 +1468,23 @@ class CombineRunner:
         self._run_steps("Impacts", datacard_or_workspace, output_dir, blind)
         return str(results_file)
 
-    def run_plot_impacts(self, impacts_json: str, output_dir: str) -> str:
+    def run_plot_impacts(self, impacts_json: str, output_dir: str,
+                          mass_point: str = "", category: str = "C",
+                          blind: bool = True) -> str:
         """Render impacts.json via the official plotImpacts.py (confirmed
         installed and working, no CombineHarvester dependency in this build),
-        matching Run2's real impacts.sh (`plotImpacts.py -i impacts_....json
-        -o impacts_..._${dirname}`) rather than a custom matplotlib plot."""
+        matching Run2's real impacts.sh naming exactly:
+        impacts_${catg}_${mode}_${dirname}.pdf where catg=category (e.g. "C"),
+        mode="asimov_t0"/"data_t0" (blind/unblind — impacts.sh's own mode
+        string, always run with --expectSignal 0), dirname=Run2's per-run
+        output-dir tag. Run3 has one output dir per mass point already, so
+        mass_point fills the ${dirname} slot — added alongside catg/mode,
+        not replacing them."""
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
-        out_stem = output_path / "impacts"
+        mode_tag = "asimov_t0" if blind else "data_t0"
+        suffix = f"_{mass_point}" if mass_point else ""
+        out_stem = output_path / f"impacts_{category}_{mode_tag}{suffix}"
 
         cmd = [
             self.advanced_config["combine_commands"].get("plot_impacts", "plotImpacts.py"),
