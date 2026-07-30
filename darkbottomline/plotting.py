@@ -3800,7 +3800,10 @@ class PlotManager:
             # Alias mapping: plotting.yaml name → PKL name
             _valias = {
                 'Recoil':'recoil','MET_pt':'met','MET_phi':'met_phi',
-                'njets':'n_jets','Jet1Pt':'jet_pt','Jet1Eta':'jet_eta',
+                'njets':'n_jets','n_bjets':'n_bjets','n_muons':'n_muons',
+                'n_electrons':'n_electrons','n_taus':'n_taus',
+                'MET_significance':'met_significance',
+                'Jet1Pt':'jet_pt','Jet1Eta':'jet_eta',
                 'Jet1Phi':'jet_phi','Jet2Pt':'jet2_pt','Jet2Eta':'jet2_eta',
                 'Jet2Phi':'jet2_phi','dPhi_jetMET':'min_dphi',
                 'dPhiJet12':'dphi_jet12','dEtaJet12':'deta_jet12',
