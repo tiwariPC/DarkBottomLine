@@ -144,6 +144,26 @@ datacard:
                                 # number is published (2024's is still "to be updated")
       processes: ["signal", "ttbar", "wjets", "zjets", "znunu", "singletop", "diboson", "smhiggs"]
 
+    # Tau-veto cut efficiency uncertainty — cut exists in objects.py but had
+    # no associated systematic until now (matches Run2's CMS_veto_tau, which
+    # was also a flat lnN). 1.02 (2%) is a placeholder value, not a measured
+    # number — replace once a real estimate exists.
+    veto_tau:
+      type: "lnN"
+      name_template: "CMS{year}_veto_tau"
+      value: 1.02
+      processes: ["signal", "ttbar", "wjets", "zjets", "znunu", "singletop", "diboson", "smhiggs"]
+
+    # Flat background normalization uncertainties, matching Run2's real
+    # values (datacard_template_1b_perBin_asChanel_addProcs.yaml: norm_stop
+    # 1.1, norm_diboson 1.2, norm_smh 1.2, norm_dyjets 1.05). norm_qcd
+    # omitted — no QCD CR/process active in Run3 today (see qcd: enabled:
+    # false above).
+    norm_diboson: {type: "lnN", value: 1.2,  processes: ["diboson"]}
+    norm_zjets:   {type: "lnN", value: 1.05, processes: ["zjets"]}
+    norm_smhiggs: {type: "lnN", value: 1.2,  processes: ["smhiggs"]}
+    norm_singletop: {type: "lnN", value: 1.1, processes: ["singletop"]}
+
     # btagSF must NOT apply in Z CRs — verified two ways: (1) Run2's actual template
     # (datacard_template_1b_perBin_asChanel_addProcs.yaml, ZLL_bin1 block) sets
     # NuisForProc: CMSYEAR_eff_b: [] / CMSYEAR_fake_b: [] there, vs. all-process lists
@@ -192,7 +212,23 @@ datacard:
     electronHLT: {type: "shape", syst_suffix: "weight_electronHLT", name_template: "CMS{year}_trig_ele", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
     metHLT:      {type: "shape", syst_suffix: "weight_metHLT", name_template: "CMS{year}_trig_met", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
     pdf:         {type: "shape", syst_suffix: "weight_pdf", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    scale:       {type: "shape", syst_suffix: "weight_scale", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    # Split per-process, matching Run2's CMS{year}_mu_scale_{process} naming
+    # convention (datacard_template_1b_perBin_asChanel_addProcs.yaml) but
+    # kept under the "scale" name already used in this repo — same
+    # weight_scale shape files as before, one named nuisance per process
+    # instead of one shared nuisance, so each process's shape uncertainty is
+    # uncorrelated from the others in the fit (matches Run2's convention).
+    scale_signal:    {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_signal",   processes: ["signal"]}
+    scale_ttbar:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_tt",       processes: ["ttbar"]}
+    scale_wjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_wjets",    processes: ["wjets"]}
+    scale_zjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_dyjets",   processes: ["zjets"]}
+    scale_singletop: {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_singlet",  processes: ["singletop"]}
+    scale_diboson:   {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_diboson",  processes: ["diboson"]}
+    scale_smhiggs:   {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_scale_smh",      processes: ["smhiggs"]}
+    # znunu (Zto2Nu invisible-Z background) has no Run2 counterpart process,
+    # so no per-process precedent — kept under the original unsplit "scale"
+    # name instead, same weight_scale shape file.
+    scale:           {type: "shape", syst_suffix: "weight_scale", processes: ["znunu"]}
 
   # perBinChannel rateParams. Naming: <process>_<category>_<region_dir>.
   #
