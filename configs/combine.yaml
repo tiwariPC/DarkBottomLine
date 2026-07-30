@@ -30,6 +30,14 @@ regions_config: "configs/regions.yaml"
 merge:
   merge_categories: true
   merge_eras: true
+  # Label for the category-merged (1b+2b) output stage — used both as the
+  # directory name (outputs/combine/{year}/C/...) and as the "catg" token in
+  # Run2-style plot/result filenames (impacts_{catg}_..., pulls_{catg}_...).
+  # Always "C" today since merge_categories is always on (no per-category-only
+  # output stage exists downstream of the fit steps) — exposed here rather
+  # than hardcoded so a future per-category (non-merged) fit path has
+  # somewhere to override it, without touching combine_tools.py/cli.py.
+  merged_category_label: "C"
 
 # Per-region blind, NOT a single global flag. Keys are region roles, not literal
 # region names, so this applies uniformly across 1b/2b. Gates BOTH the datacard
@@ -316,6 +324,10 @@ output:
     asymptotic_limits: "asymptotic_limits.root"
     fit_diagnostics: "fitDiagnostics.root"
     goodness_of_fit: "gof.root"
+    # CollectGoodnessOfFit's merged Observed+Toys json (consumed by
+    # run_plot_gof) — a different file from goodness_of_fit above (that one
+    # is the raw per-step GoodnessOfFit .root output).
+    goodness_of_fit_json: "gof.json"
     impacts: "impacts.json"
   # Own top-level tree (not nested under base_dir/outputs/combine/), per-format
   # subdirs mirroring outputs/region_plots/{version}/{png,pdf,root,...}/'s shape.
@@ -461,7 +473,7 @@ advanced:
                   "--parallel={n_workers}",
                   "--rMin=0", "--rMax=10"]
         - binary: "combineTool.py"
-          args: ["-M", "Impacts", "-d", "{workspace}", "-m", "120", "-o", "impacts.json",
+          args: ["-M", "Impacts", "-d", "{workspace}", "-m", "120", "-o", "{impacts_filename}",
                   "--rMin=0", "--rMax=10"]
 
   parallel:

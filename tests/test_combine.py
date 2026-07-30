@@ -49,6 +49,7 @@ def minimal_combine_config():
         "eras": [{"year": 2024, "year_config": "configs/2024.yaml", "active": True}],
         "regions_config": REGIONS_CONFIG,
         "blind": {"SR": True, "CR": False},
+        "merge": {"merge_categories": True, "merge_eras": True, "merged_category_label": "C"},
         "categories": ["1b"],
         "regions": {
             "1b": {"signal_region": "SR", "control_regions": ["CR_Zmumu"]},
@@ -116,6 +117,7 @@ def minimal_combine_config():
                 "asymptotic_limits": "asymptotic_limits.root",
                 "fit_diagnostics": "fitDiagnostics.root",
                 "goodness_of_fit": "gof.root",
+                "goodness_of_fit_json": "gof.json",
                 "impacts": "impacts.json",
             },
         },
@@ -161,7 +163,7 @@ def minimal_combine_config():
                         {"binary": "combineTool.py",
                          "args": ["-M", "Impacts", "-d", "{workspace}", "{blind_args}", "--doFits"]},
                         {"binary": "combineTool.py",
-                         "args": ["-M", "Impacts", "-d", "{workspace}", "-o", "impacts.json"]},
+                         "args": ["-M", "Impacts", "-d", "{workspace}", "-o", "{impacts_filename}"]},
                     ],
                 },
                 "PullsCRonly": {
@@ -1357,6 +1359,26 @@ class TestCombineRunner:
             if "-o" in args:
                 o_value = args[args.index("-o") + 1]
                 assert "/" not in o_value, f"-o value should be a basename, got {o_value}"
+
+    def test_run_impacts_mass_point_added_not_replacing_plain_name(self, minimal_combine_config, tmp_path):
+        """mass_point is appended to impacts.json (impacts_{mass_point}.json),
+        added alongside the plain name, not replacing it — same convention as
+        run_plot_impacts/run_pulls/run_collect_goodness_of_fit. The returned
+        path and the actual -o value passed to combineTool.py must agree."""
+        runner = CombineRunner(minimal_combine_config)
+        workspace = tmp_path / "workspace.root"
+        workspace.write_text("")
+
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+            results_file = runner.run_impacts(str(workspace), str(tmp_path), blind=True,
+                                               mass_point="MH3_600_MH4_150_Mchi_1")
+
+        assert Path(results_file).name == "impacts_MH3_600_MH4_150_Mchi_1.json"
+        step_flags = [call[0][0] for call in mock_run.call_args_list]
+        o_step = next(args for args in step_flags if "-o" in args)
+        o_value = o_step[o_step.index("-o") + 1]
+        assert o_value == "impacts_MH3_600_MH4_150_Mchi_1.json"
 
     def test_run_plot_impacts(self, minimal_combine_config, tmp_path):
         runner = CombineRunner(minimal_combine_config)

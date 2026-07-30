@@ -981,6 +981,7 @@ class CombineRunner:
             "gof_algo": self.fit_config.get("options", {}).get("goodness_of_fit", {}).get("algorithm", "saturated"),
             "toys": self.fit_config.get("options", {}).get("goodness_of_fit", {}).get("toys", 500),
             "run_mode": "expected",
+            "impacts_filename": self.output_config["fit_results"].get("impacts", "impacts.json"),
         }
         if extra_format_args:
             format_args.update(extra_format_args)
@@ -1131,7 +1132,8 @@ class CombineRunner:
         step's output); the Toys step's output is found alongside it via glob.
 
         mass_point is appended to the output filename (gof_{mass_point}.json),
-        added alongside the plain "gof" name, not replacing it — same
+        added alongside the plain base name from combine.yaml's
+        output.fit_results.goodness_of_fit_json, not replacing it — same
         convention as run_plot_gof/run_plot_impacts/run_pulls.
         """
         toys_matches = sorted(Path(observed_file).parent.glob(
@@ -1144,8 +1146,13 @@ class CombineRunner:
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
-        suffix = f"_{mass_point}" if mass_point else ""
-        output_json = output_path / f"gof{suffix}.json"
+        base_name = self.output_config["fit_results"].get("goodness_of_fit_json", "gof.json")
+        if mass_point:
+            stem, _, ext = base_name.rpartition(".")
+            filename = f"{stem}_{mass_point}.{ext}" if stem else f"{base_name}_{mass_point}"
+        else:
+            filename = base_name
+        output_json = output_path / filename
 
         cmd = [
             self.advanced_config["combine_commands"]["combine_tool"],
@@ -1205,8 +1212,10 @@ class CombineRunner:
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
+        base_stem = self.output_config["fit_results"].get(
+            "goodness_of_fit_json", "gof.json").rsplit(".", 1)[0]
         suffix = f"_{mass_point}" if mass_point else ""
-        out_stem = output_path / f"gof{suffix}"
+        out_stem = output_path / f"{base_stem}{suffix}"
 
         with open(gof_json) as f:
             data = json.load(f)
@@ -1468,10 +1477,20 @@ class CombineRunner:
         return str(plot_matches[0])
 
     def run_impacts(self, datacard_or_workspace: str, output_dir: str,
-                     blind: bool = True) -> str:
-        results_file = Path(output_dir) / self.output_config["fit_results"].get(
-            "impacts", "impacts.json")
-        self._run_steps("Impacts", datacard_or_workspace, output_dir, blind)
+                     blind: bool = True, mass_point: str = "") -> str:
+        """mass_point is appended to the impacts.json filename (added
+        alongside the plain "impacts" name, not replacing it — same
+        convention as run_plot_impacts/run_pulls/run_collect_goodness_of_fit),
+        so downstream stages (run_plot_impacts) and the file on disk agree."""
+        base_name = self.output_config["fit_results"].get("impacts", "impacts.json")
+        if mass_point:
+            stem, _, ext = base_name.rpartition(".")
+            impacts_filename = f"{stem}_{mass_point}.{ext}" if stem else f"{base_name}_{mass_point}"
+        else:
+            impacts_filename = base_name
+        results_file = Path(output_dir) / impacts_filename
+        self._run_steps("Impacts", datacard_or_workspace, output_dir, blind,
+                         extra_format_args={"impacts_filename": impacts_filename})
         return str(results_file)
 
     def run_plot_impacts(self, impacts_json: str, output_dir: str,
