@@ -1666,9 +1666,10 @@ class PlotManager:
         save_root: bool,
     ) -> List[str]:
         logging.info("=== Creating event-selection plots ===")
-        bkg_groups  = self._load_group_entries(input_folder, process_groups, cross_sections, variables)
-        sig_groups  = self._load_group_entries(input_folder, signal_groups,  cross_sections, variables)
-        dat_groups  = self._load_group_entries(input_folder, data_groups,    {}, None)  # no xsec for data
+        _load_vars = variables or self.event_selection_variables or None
+        bkg_groups  = self._load_group_entries(input_folder, process_groups, cross_sections, _load_vars)
+        sig_groups  = self._load_group_entries(input_folder, signal_groups,  cross_sections, _load_vars)
+        dat_groups  = self._load_group_entries(input_folder, data_groups,    {}, _load_vars)  # no xsec for data
 
         logging.info("Loaded groups: bkg=%d, sig=%d, data=%d",
                      len(bkg_groups), len(sig_groups), len(dat_groups))
@@ -1921,6 +1922,20 @@ class PlotManager:
                 for pkl in info["pkls"]:
                     rh = pkl.get("region_histograms", {}).get(region, {})
                     h = rh.get(var)
+                    # Try common PKL→plotting name aliases
+                    _aliases = {
+                        'Recoil': 'recoil', 'MET_pt': 'met', 'MET_phi': 'met_phi',
+                        'njets': 'n_jets', 'Jet1Pt': 'jet_pt', 'Jet1Eta': 'jet_eta',
+                        'Jet1Phi': 'jet_phi', 'Jet2Pt': 'jet2_pt', 'Jet2Eta': 'jet2_eta',
+                        'Jet2Phi': 'jet2_phi', 'dPhi_jetMET': 'min_dphi',
+                        'dPhiJet12': 'dphi_jet12', 'dEtaJet12': 'deta_jet12',
+                        'M_Jet1Jet2': 'm_jet1jet2', 'Jet1BTagScore': 'btag_deepjet',
+                        'Jet2BTagScore': 'jet2_deepcsv',
+                    }
+                    if h is None:
+                        _alias = _aliases.get(var)
+                        if _alias:
+                            h = rh.get(_alias)
                     if h is None:
                         continue
                     if _HAS_HIST and isinstance(h, hist_lib.Hist):
@@ -1980,6 +1995,20 @@ class PlotManager:
                     for e in entries:
                         rh = e["data"].get("region_histograms", {}).get(region, {})
                         h = rh.get(var)
+                    # Try common PKL→plotting name aliases
+                    _aliases = {
+                        'Recoil': 'recoil', 'MET_pt': 'met', 'MET_phi': 'met_phi',
+                        'njets': 'n_jets', 'Jet1Pt': 'jet_pt', 'Jet1Eta': 'jet_eta',
+                        'Jet1Phi': 'jet_phi', 'Jet2Pt': 'jet2_pt', 'Jet2Eta': 'jet2_eta',
+                        'Jet2Phi': 'jet2_phi', 'dPhi_jetMET': 'min_dphi',
+                        'dPhiJet12': 'dphi_jet12', 'dEtaJet12': 'deta_jet12',
+                        'M_Jet1Jet2': 'm_jet1jet2', 'Jet1BTagScore': 'btag_deepjet',
+                        'Jet2BTagScore': 'jet2_deepcsv',
+                    }
+                    if h is None:
+                        _alias = _aliases.get(var)
+                        if _alias:
+                            h = rh.get(_alias)
                         if h is None:
                             continue
                         wte = int(e["data"].get("metadata", {}).get("weighted_total_events", 0)
@@ -1988,8 +2017,8 @@ class PlotManager:
                         if hv is None or hv.size == 0:
                             logging.debug("  %s/%s/%s: histogram empty after conversion", region, proc_label, var)
                             continue
-                        if bins_ref is None and edges is not None:
-                            bins_ref = edges
+                        if edges is not None:
+                            bins_ref = edges  # Use PKL pre-computed binning
                         scale = ((luminosity * e["xsec"] * 1000.0) / wte
                                  if e["xsec"] is not None and wte > 0
                                  else (luminosity / wte if wte > 0 else 1.0))
@@ -3768,15 +3797,28 @@ class PlotManager:
                     seen.add(v)
                     unique.append(v)
             present = set(all_vars)
+            # Alias mapping: plotting.yaml name → PKL name
+            _valias = {
+                'Recoil':'recoil','MET_pt':'met','MET_phi':'met_phi',
+                'njets':'n_jets','Jet1Pt':'jet_pt','Jet1Eta':'jet_eta',
+                'Jet1Phi':'jet_phi','Jet2Pt':'jet2_pt','Jet2Eta':'jet2_eta',
+                'Jet2Phi':'jet2_phi','dPhi_jetMET':'min_dphi',
+                'dPhiJet12':'dphi_jet12','dEtaJet12':'deta_jet12',
+                'M_Jet1Jet2':'m_jet1jet2','Jet1BTagScore':'btag_deepjet',
+                'Jet2BTagScore':'jet2_deepcsv','pT_Jet1Jet2':'pt_jet1jet2',
+                'ratioPtJet21':'ratio_pt_jet21','dRJet12':'dr_jet12',
+                'b_flavor_count':'btag_hf',
+            }
             out: List[str] = []
             for v in unique:
                 if v in present:
                     out.append(v)
                 elif v == "ml_score":
-                    # Parametric mass-scan branches (ml_score_mh3_<a>_mh4_<b>) aren't
-                    # literally "ml_score" — expand the whitelist entry to every
-                    # matching scored variable present in this region's candidates.
                     out.extend(sorted(x for x in all_vars if x.startswith("ml_score_mh3_")))
+                else:
+                    alias = _valias.get(v)
+                    if alias and alias in present:
+                        out.append(v)  # keep the plotting name, but match alias
             return out
 
         return list(all_vars)
