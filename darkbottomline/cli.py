@@ -560,6 +560,16 @@ def _run_analyzer_from_eventselection(args):
         result.setdefault("metadata", {})["xsec"] = xsec
         result["metadata"]["sample"] = stem
 
+        # Save per-sample PKL
+        if args.output:
+            import os as _os2
+            _out_dir = args.output if _os2.path.isdir(args.output) else _os2.path.dirname(args.output) or '.'
+            _pkl_dir = _os2.path.join(_out_dir, 'per_sample')
+            _os2.makedirs(_pkl_dir, exist_ok=True)
+            _pkl_path = _os2.path.join(_pkl_dir, stem + '.pkl')
+            import pickle as _pkl2
+            with open(_pkl_path, 'wb') as _pf:
+                _pkl2.dump(result, _pf)
         if merged_result is None:
             merged_result = result
         else:
@@ -577,10 +587,13 @@ def _run_analyzer_from_eventselection(args):
         logging.error("No files processed — nothing to save.")
         return
 
+    # Save merged result (for backward compat) + per-sample PKLs already saved above
     if args.output:
+        _out_dir2 = args.output if _os.path.isdir(args.output) else _os.path.dirname(args.output) or '.'
+        _merged_out = _os.path.join(_out_dir2, 'merged.pkl')
         analyzer.accumulator = merged_result
-        analyzer.save_results(args.output, output_format=args.output_format)
-        logging.info("Region analysis from event-selection saved to %s", args.output)
+        analyzer.save_results(_merged_out, output_format=args.output_format)
+        logging.info("Region analysis saved: merged=%s, per_sample=%s", _merged_out, _os.path.join(_out_dir2, 'per_sample'))
 
 
 def _merge_region_results(a: Dict, b: Dict) -> Dict:
