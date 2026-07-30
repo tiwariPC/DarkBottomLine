@@ -240,7 +240,15 @@ datacard:
     # CMS_eff_{obj}_trigger_{year} pattern used for electrons/muons.
     electronHLT: {type: "shape", syst_suffix: "weight_electronHLT", name_template: "CMS_eff_e_trigger_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
     metHLT:      {type: "shape", syst_suffix: "weight_metHLT", name_template: "CMS_eff_met_trigger_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    pdf:         {type: "shape", syst_suffix: "weight_pdf", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    # Named "pdf_envelope" (not any of systematics_master.yml's pdf_* names)
+    # because none of them match our actual methodology: this is a max/min
+    # envelope over 100 NNPDF replicas (corrections.py:get_pdf_scale_weights,
+    # LHEPdfWeight indices 1-100) — pdf_alphas is specifically an alpha_s-only
+    # variation (different LHAPDF indices, not computed here), and
+    # pdf_gg/gq/qqbar assume Hessian eigenvector-by-parton-type splitting we
+    # don't do. "pdf_envelope" names the method honestly instead of claiming
+    # an official name that would misrepresent how this was derived.
+    pdf_envelope: {type: "shape", syst_suffix: "weight_pdf", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
     # Split per-process, matching Run2's CMS{year}_mu_scale_{process} naming
     # convention (datacard_template_1b_perBin_asChanel_addProcs.yaml) but
     # named "qcdscale" (not "scale"/"mu_scale") — this is QCD renormalization/
