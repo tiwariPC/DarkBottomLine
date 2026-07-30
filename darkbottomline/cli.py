@@ -2058,7 +2058,13 @@ def make_datacard(args):
                 emu_written_dirs.add(region_dir_override)
 
             filename_region = region_dir_override  # None for SR / unmerged CRs
-            out_region_label = region_dir_override or region_role
+            # For unmerged CRs (combine_emu off, or a role with no e/mu pair),
+            # the output dir must be the stripped region_dir ("Wmunu"), not
+            # the raw role ("CR_Wmunu") — must match _resolve_control_region_dirs'
+            # combine_emu:false branch exactly, or merge_region globs for a
+            # directory this step never wrote (reproduced: real "Missing CR
+            # datacard directory 'Wmunu'" failure when these two disagreed).
+            out_region_label = region_dir_override or region_dir_from_role(region_role)
 
             points_to_run = mass_points if is_sr else [None]
             for mass_point in points_to_run:
