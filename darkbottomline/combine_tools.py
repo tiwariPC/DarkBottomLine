@@ -1117,7 +1117,8 @@ class CombineRunner:
             )
         return str(matches[0])
 
-    def run_collect_goodness_of_fit(self, observed_file: str, output_dir: str) -> str:
+    def run_collect_goodness_of_fit(self, observed_file: str, output_dir: str,
+                                     mass_point: str = "") -> str:
         """Merge the Observed + Toys GoodnessOfFit outputs into one .json via
         combineTool.py -M CollectGoodnessOfFit, matching Run2's real
         makeGOF_allAlgos.sh (`combineTool.py -M CollectGoodnessOfFit --input
@@ -1128,6 +1129,10 @@ class CombineRunner:
 
         observed_file: run_goodness_of_fit's return value (the Observed
         step's output); the Toys step's output is found alongside it via glob.
+
+        mass_point is appended to the output filename (gof_{mass_point}.json),
+        added alongside the plain "gof" name, not replacing it — same
+        convention as run_plot_gof/run_plot_impacts/run_pulls.
         """
         toys_matches = sorted(Path(observed_file).parent.glob(
             "higgsCombineToys.GoodnessOfFit.mH120*.root"))
@@ -1139,7 +1144,8 @@ class CombineRunner:
 
         output_path = Path(output_dir)
         output_path.mkdir(parents=True, exist_ok=True)
-        output_json = output_path / "gof.json"
+        suffix = f"_{mass_point}" if mass_point else ""
+        output_json = output_path / f"gof{suffix}.json"
 
         cmd = [
             self.advanced_config["combine_commands"]["combine_tool"],

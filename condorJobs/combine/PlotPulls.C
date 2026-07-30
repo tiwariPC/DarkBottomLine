@@ -26,9 +26,17 @@ void PlotPulls(TString filename="pulls_none.root", TString outdir="",
     h1->SetMinimum(-3.00);
     h1->SetMaximum(3.0);
     int numberOfNuisance = h1->GetXaxis()->GetNbins();
-    TLegend leg1 = TLegend(0.6, 0.74, 0.89, 0.89);
+    // Reposition the real legend diffNuisances.py already populated
+    // (Prefit/B-only fit/S+B fit entries) in place — NOT TLegend::Copy(),
+    // which overwrites the target's entry list with the (empty) source's,
+    // leaving an empty legend box. Reproduced directly: a fresh TLegend
+    // Copy()'d onto a populated one drops its entries to zero while still
+    // moving its position, matching the exact symptom observed here.
     TLegend *leg2 = (TLegend*)(c->GetPrimitive("TPave"));
-    leg1.Copy(*leg2);
+    leg2->SetX1NDC(0.6);
+    leg2->SetY1NDC(0.74);
+    leg2->SetX2NDC(0.89);
+    leg2->SetY2NDC(0.89);
 
     TPaveText *pt = new TPaveText(0.0877181,0.9,0.9580537,0.96,"brNDC");
     pt->SetBorderSize(0);

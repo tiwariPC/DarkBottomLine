@@ -2118,7 +2118,8 @@ def collect_gof(args):
     just want the collected json make-gof consumes."""
     combine_config = load_config(args.combine_config)
     runner = CombineRunner(combine_config)
-    output_json = runner.run_collect_goodness_of_fit(args.input, args.output)
+    output_json = runner.run_collect_goodness_of_fit(args.input, args.output,
+                                                       mass_point=args.mass_point or "")
     logging.info(f"GoodnessOfFit collected: {output_json}")
 
 
@@ -2471,7 +2472,8 @@ def run_all(args):
             if "gof" in stages:
                 observed_file = runner.run_goodness_of_fit(
                     workspace_file, str(card_dir), str(datacard_file), blind=blind)
-                gof_json = runner.run_collect_goodness_of_fit(observed_file, str(card_dir))
+                gof_json = runner.run_collect_goodness_of_fit(observed_file, str(card_dir),
+                                                                mass_point=mass_point)
                 gof_algo = combine_config["fit"]["options"]["goodness_of_fit"].get("algorithm", "saturated")
                 era_year = combine_config["eras"][0]["year"]
                 runner.run_plot_gof(gof_json, str(card_dir), algo=gof_algo,
@@ -2966,6 +2968,7 @@ Examples:
     collect_gof_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
     collect_gof_parser.add_argument("--input", required=True, help="higgsCombineObserved.GoodnessOfFit.mH120*.root file")
     collect_gof_parser.add_argument("--output", required=True, help="Output directory")
+    collect_gof_parser.add_argument("--mass-point", help="Mass point label — embedded in the output filename only")
     collect_gof_parser.set_defaults(func=collect_gof)
 
     # Make GOF command (official plotGof.py wrapper)
