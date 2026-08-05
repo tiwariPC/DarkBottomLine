@@ -587,13 +587,14 @@ def _run_analyzer_from_eventselection(args):
         logging.error("No files processed — nothing to save.")
         return
 
+    import os as _os2
     # Save merged result (for backward compat) + per-sample PKLs already saved above
     if args.output:
-        _out_dir2 = args.output if _os.path.isdir(args.output) else _os.path.dirname(args.output) or '.'
-        _merged_out = _os.path.join(_out_dir2, 'merged.pkl')
+        _out_dir2 = args.output if _os2.path.isdir(args.output) else _os2.path.dirname(args.output) or '.'
+        _merged_out = _os2.path.join(_out_dir2, 'merged.pkl')
         analyzer.accumulator = merged_result
         analyzer.save_results(_merged_out, output_format=args.output_format)
-        logging.info("Region analysis saved: merged=%s, per_sample=%s", _merged_out, _os.path.join(_out_dir2, 'per_sample'))
+        logging.info("Region analysis saved: merged=%s, per_sample=%s", _merged_out, _os2.path.join(_out_dir2, 'per_sample'))
 
 
 def _merge_region_results(a: Dict, b: Dict) -> Dict:
