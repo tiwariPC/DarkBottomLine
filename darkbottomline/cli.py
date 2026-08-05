@@ -632,23 +632,28 @@ def _trigger_plots(args):
     # If --region-results, create temp folder with pattern-named PKL copies
     import os as _os2
     region_pkl = getattr(args, "region_results", None)
-    if region_pkl and _os2.path.isfile(str(region_pkl)):
-        import tempfile, shutil, yaml as _yaml
-        td = tempfile.mkdtemp(prefix='rplot_')
-        _cfg = {}
-        if getattr(args, 'plot_config', None):
-            with open(args.plot_config) as _f:
-                _cfg = _yaml.safe_load(_f)
-        _pats = set()
-        for _g in ['process_groups','signal_groups','data_groups']:
-            for _v in _cfg.get(_g,{}).values():
-                if isinstance(_v,dict) and 'patterns' in _v:
-                    _pats.update(_v['patterns'])
-        if not _pats:
-            _pats = {'merged'}
-        for _p in _pats:
-            shutil.copy(str(region_pkl), f'{td}/{_p}.pkl')
-        args.input_folder = td
+    if region_pkl:
+        if _os2.path.isdir(str(region_pkl)):
+            # Directory of per-sample PKLs — use directly
+            args.input_folder = str(region_pkl)
+        elif _os2.path.isfile(str(region_pkl)):
+            # Single merged PKL — replicate per pattern for matching
+            import tempfile, shutil, yaml as _yaml
+            td = tempfile.mkdtemp(prefix='rplot_')
+            _cfg = {}
+            if getattr(args, 'plot_config', None):
+                with open(args.plot_config) as _f:
+                    _cfg = _yaml.safe_load(_f)
+            _pats = set()
+            for _g in ['process_groups','signal_groups','data_groups']:
+                for _v in _cfg.get(_g,{}).values():
+                    if isinstance(_v,dict) and 'patterns' in _v:
+                        _pats.update(_v['patterns'])
+            if not _pats:
+                _pats = {'merged'}
+            for _p in _pats:
+                shutil.copy(str(region_pkl), f'{td}/{_p}.pkl')
+            args.input_folder = td
     # make_event_plots needs input_folder
     if not getattr(args, "input_folder", None):
         import os
