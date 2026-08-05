@@ -588,6 +588,30 @@ class HistogramManager:
                 ("btag_deepjet",    "Jet1BTagScore",     True),
                 ("jet2_deepcsv",    "Jet2BTagScore",     True),
             }
+            # Per-event scalar variables (no sentinel check needed)
+            _scalar_fill = {
+                "min_dphi":       "dPhi_jetMET",
+                "dphi_jet12":     "dPhiJet12",
+                "deta_jet12":     "dEtaJet12",
+                "m_jet1jet2":     "M_Jet1Jet2",
+                "mt":             "mt",
+                "mll":            "mll",
+                "z_pt":           "Zpt",
+                "z_mass":         "mll",          # Z mass ≈ mll for Z CRs
+                "ratio_pt_jet21": "ratioPtJet21",
+            }
+            for _hname, _bname in _scalar_fill.items():
+                if _bname not in events.fields:
+                    continue
+                try:
+                    _arr = np.asarray(ak.to_numpy(events[_bname]), dtype="f8")
+                    _mask = _arr != SENTINEL
+                    if _mask.sum() > 0:
+                        histograms[_hname].fill(**{_hname: _arr[_mask]},
+                                                 weight=weights[_mask])
+                except Exception:
+                    pass
+
             for _hname, _bname, _sentinelled in _flat_fill:
                 if _bname not in events.fields:
                     continue
