@@ -634,7 +634,12 @@ def _trigger_plots(args):
     region_pkl = getattr(args, "region_results", None)
     if region_pkl:
         if _os2.path.isdir(str(region_pkl)):
-            # Directory of per-sample PKLs — use directly
+            # Directory of per-sample PKLs — use as input_folder
+            # Save original ROOT dir for cutflow lookups
+            args.root_input_folder = getattr(args, "input_folder", None) or (
+                args.input[0] if isinstance(getattr(args, "input", None), list) and args.input
+                else getattr(args, "input", None)
+            )
             args.input_folder = str(region_pkl)
         elif _os2.path.isfile(str(region_pkl)):
             # Single merged PKL — replicate per pattern for matching
@@ -2006,6 +2011,7 @@ def make_event_plots(args):
         dnn_model=getattr(args, "dnn_model", None),
         dnn_config=getattr(args, "dnn_config", None),
         dnn_mass_scan=getattr(args, "dnn_mass_scan", None),
+        root_input_folder=getattr(args, "root_input_folder", None),
     )
     logging.info(f"analyze-regions: {len(out_files)} plot(s) written to {args.output_dir}")
 
@@ -2467,7 +2473,7 @@ Examples:
     try:
         args.func(args)
     except Exception as e:
-        logging.error(f"Command failed: {e}")
+        import traceback; logging.error(f"Command failed: {e}"); logging.error(traceback.format_exc())
         sys.exit(1)
 
 
