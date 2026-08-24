@@ -1427,6 +1427,7 @@ class PlotManager:
         dnn_model: Optional[str] = None,
         dnn_config: Optional[str] = None,
         dnn_mass_scan: Optional[str] = None,
+        root_input_folder: Optional[str] = None,
     ) -> List[str]:
         """Create stacked MC+data plots.
 
@@ -1480,6 +1481,9 @@ class PlotManager:
                 variables=variables,
                 regions=regions,
                 save_root=save_root,
+                show_data=show_data,
+                root_input_folder=root_input_folder,
+                signal_scale=signal_scale,
             ))
         else:  # region-from-events
             regions_config = getattr(self, "_regions_config_path", None)
@@ -1673,9 +1677,10 @@ class PlotManager:
         save_root: bool,
     ) -> List[str]:
         logging.info("=== Creating event-selection plots ===")
-        bkg_groups  = self._load_group_entries(input_folder, process_groups, cross_sections, variables)
-        sig_groups  = self._load_group_entries(input_folder, signal_groups,  cross_sections, variables)
-        dat_groups  = self._load_group_entries(input_folder, data_groups,    {}, None)  # no xsec for data
+        _load_vars = variables or self.event_selection_variables or None
+        bkg_groups  = self._load_group_entries(input_folder, process_groups, cross_sections, _load_vars)
+        sig_groups  = self._load_group_entries(input_folder, signal_groups,  cross_sections, _load_vars)
+        dat_groups  = self._load_group_entries(input_folder, data_groups,    {}, _load_vars)  # no xsec for data
 
         logging.info("Loaded groups: bkg=%d, sig=%d, data=%d",
                      len(bkg_groups), len(sig_groups), len(dat_groups))
@@ -1849,6 +1854,9 @@ class PlotManager:
         variables: Optional[List[str]],
         regions: Optional[List[str]],
         save_root: bool,
+        show_data: bool = False,
+        root_input_folder: Optional[str] = None,
+        signal_scale: float = 1.0,
     ) -> List[str]:
         logging.info("=== Creating region stacked plots ===")
         cross_sections = self._normalize_cross_sections(cross_sections)
@@ -1905,6 +1913,58 @@ class PlotManager:
         # Data PKLs: {data_label: {"pkls": [dict], "region_patterns": [str]}}
         # region_patterns from yaml data group "regions" key — if absent, matches all regions.
         raw_data_cfg: Dict[str, Any] = self.config.get("process_groups", {})
+        # Signal groups: load from ROOT for per-masspoint histograms
+        import awkward as _ak
+        sig_file_entries: List[Dict[str, Any]] = []
+        _root_sig_input = root_input_folder if root_input_folder else input_folder
+        if signal_groups:
+            for sig_label, sig_patterns in signal_groups.items():
+                paths = self._resolve_group_files(_root_sig_input, sig_patterns)
+                for p in paths:
+                    try:
+                        if p.suffix == '.pkl':
+                            loaded = _load_region_pkl(p)
+                            branches = loaded.get('region_histograms', {})
+                            wte = float(loaded.get('metadata', {}).get('weighted_total_events', 0) or 0)
+                        else:
+                            import uproot as _uproot_sig
+                            with _uproot_sig.open(str(p)) as f:
+                                if 'Events' not in f:
+                                    continue
+                                branches = {}
+                                for k in f['Events'].keys():
+                                    try:
+                                        branches[str(k)] = f['Events'][str(k)].array(library='np')
+                                    except Exception:
+                                        pass
+                                wte = 0.0
+                                for k in ('weighted_total_events', 'weighted_total_events;1'):
+                                    if k in f:
+                                        try:
+                                            wte = float(f[k].values()[0])
+                                            break
+                                        except Exception:
+                                            pass
+                        gm_cols = sorted(k for k in branches if k.startswith('GenModel_')) if isinstance(branches, dict) else []
+                        _stem = p.stem.replace('_EVENTSELECTION', '')
+                        xsec = _find_xsec(p.stem, cross_sections) or _find_xsec(_stem, cross_sections) or _find_xsec(p.name, cross_sections)
+                        sig_file_entries.append({
+                            'branches': branches,
+                            'wte': wte,
+                            'xsec': xsec,
+                            'genmodel_cols': gm_cols,
+                            'file_label': sig_label,
+                        })
+                        if gm_cols:
+                            logging.info('[Signal:%s] loaded %s: wte=%.1f, masspoints=%d',
+                                       sig_label, p.name, wte, len(gm_cols))
+                        else:
+                            logging.info('[Signal:%s] loaded %s: wte=%.1f (single masspoint)',
+                                       sig_label, p.name, wte)
+                    except Exception as exc:
+                        logging.warning('[Signal:%s] skipping %s: %s', sig_label, p.name, exc)
+        logging.info('Signal files loaded: %d', len(sig_file_entries))
+
         data_loaded: Dict[str, Dict[str, Any]] = {}
         for label, patterns in data_groups.items():
             grp_cfg = raw_data_cfg.get(label, {})
@@ -1928,6 +1988,10 @@ class PlotManager:
                 for pkl in info["pkls"]:
                     rh = pkl.get("region_histograms", {}).get(region, {})
                     h = rh.get(var)
+                    if h is None:
+                        _alias = _aliases.get(var)
+                        if _alias:
+                            h = rh.get(_alias)
                     if h is None:
                         continue
                     if _HAS_HIST and isinstance(h, hist_lib.Hist):
@@ -1975,6 +2039,18 @@ class PlotManager:
             logging.info("Region '%s': candidate_vars=%d, after filtering=%d",
                          region, len(candidate_vars), len(all_vars_for_region))
 
+            _aliases = {
+                'Recoil': 'recoil', 'MET_pt': 'met', 'MET_phi': 'met_phi',
+                'njets': 'n_jets', 'n_bjets': 'n_bjets', 'n_muons': 'n_muons',
+                'n_electrons': 'n_electrons', 'n_taus': 'n_taus',
+                'Jet1Pt': 'jet_pt', 'Jet1Eta': 'jet_eta', 'Jet1Phi': 'jet_phi',
+                'Jet2Pt': 'jet2_pt', 'Jet2Eta': 'jet2_eta', 'Jet2Phi': 'jet2_phi',
+                'dPhi_jetMET': 'min_dphi',
+                'dPhiJet12': 'dphi_jet12', 'dEtaJet12': 'deta_jet12',
+                'M_Jet1Jet2': 'm_jet1jet2', 'Jet1BTagScore': 'btag_deepjet',
+                'Jet2BTagScore': 'jet2_deepcsv', 'ratioPtJet21': 'ratio_pt_jet21',
+            }
+
             for var in all_vars_for_region:
                 bins_ref: Optional[np.ndarray] = self._build_bins_from_config(var)
                 bkg_rows: List[Tuple[str, np.ndarray, np.ndarray]] = []
@@ -1988,6 +2064,10 @@ class PlotManager:
                         rh = e["data"].get("region_histograms", {}).get(region, {})
                         h = rh.get(var)
                         if h is None:
+                            _alias = _aliases.get(var)
+                            if _alias:
+                                h = rh.get(_alias)
+                        if h is None:
                             continue
                         wte = int(e["data"].get("metadata", {}).get("weighted_total_events", 0)
                                    or e["data"].get("weighted_total_events", 0) or 0)
@@ -1995,8 +2075,8 @@ class PlotManager:
                         if hv is None or hv.size == 0:
                             logging.debug("  %s/%s/%s: histogram empty after conversion", region, proc_label, var)
                             continue
-                        if bins_ref is None and edges is not None:
-                            bins_ref = edges
+                        if edges is not None:
+                            bins_ref = edges  # Use PKL pre-computed binning
                         scale = ((luminosity * e["xsec"] * 1000.0) / wte
                                  if e["xsec"] is not None and wte > 0
                                  else (luminosity / wte if wte > 0 else 1.0))
@@ -2021,15 +2101,83 @@ class PlotManager:
                     skipped_region_var.append((region, var, "zero_yield"))
                     continue
 
-                data_hist = _data_hist_for_region(region, var)
+                # Normalise: drop rows whose shape doesn't match bins_ref (continued from above)
+                _is_sr = region.endswith(":SR")
+                if _is_sr and not show_data:
+                    # Blinded SR: use total bkg-sum as pseudo-data
+                    data_hist = total_mc
+                    logging.debug("  %s/%s: blinded SR, using bkg-sum as pseudo-data (sum=%.3f)", region, var, float(np.sum(total_mc)))
+                else:
+                    data_hist = _data_hist_for_region(region, var)
                 data_sum = float(np.sum(data_hist)) if data_hist is not None else 0
                 logging.info("Queuing %s/%s: bins=%d, bkg_rows=%d, total_mc=%.3f, data_sum=%.1f, procs=%s",
                              region, var, len(bins_ref) - 1, len(bkg_rows),
                              float(np.sum(total_mc)), data_sum, ', '.join(procs_with_data))
 
+                # Signal rows per masspoint (SR only)
+                _sig_rows = []
+                if _is_sr and sig_file_entries and bins_ref is not None:
+                    # Need to import region cuts helper
+                    from darkbottomline.regions import RegionManager as _RM
+                    _weight_branch = 'full_event_weight'
+                    for _sfe in sig_file_entries:
+                        _sbr  = _sfe['branches']
+                        _swte = _sfe['wte']
+                        _sxsec = _sfe['xsec']
+                        _gm_cols = _sfe['genmodel_cols']
+                        if not isinstance(_sbr, dict) or not _sbr:
+                            continue
+                        # Get variable values: use flat branch or alias
+                        _svals_raw = _sbr.get(var)
+                        if _svals_raw is None:
+                            _alias = _aliases.get(var)
+                            if _alias:
+                                _svals_raw = _sbr.get(_alias)
+                        if _svals_raw is None or not isinstance(_svals_raw, np.ndarray) or _svals_raw.dtype == object:
+                            continue
+                        _sscale_base = ((luminosity * _sxsec * 1000.0) / _swte
+                                        if _sxsec is not None and _swte > 0
+                                        else (luminosity / _swte if _swte > 0 else 1.0))
+                        if _gm_cols:
+                            for _gmc in _gm_cols:
+                                _gm_arr = _sbr.get(_gmc)
+                                if _gm_arr is None:
+                                    continue
+                                _mp_mask = _gm_arr.astype(bool)
+                                _svals = np.asarray(_svals_raw, dtype=float)[_mp_mask]
+                                if _svals.size == 0:
+                                    continue
+                                _mp_label = _gmc[len('GenModel_'):]
+                                _mp_xsec = _find_xsec(_mp_label, cross_sections)
+                                _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _swte
+                                             if _mp_xsec is not None and _swte > 0
+                                             else _sscale_base)
+                                _shv, _ = np.histogram(np.clip(_svals, bins_ref[0], bins_ref[-1]),
+                                                       bins=bins_ref, weights=np.ones(_svals.size) * _mp_scale)
+                                _parts = _mp_label.split('_')
+                                _pairs = []
+                                _i = 0
+                                while _i < len(_parts) - 1:
+                                    _key = _parts[_i]
+                                    _val = _parts[_i+1]
+                                    if _key in ('MH3','MH4','Mchi'):
+                                        _tex_key = {'MH3':'m_A','MH4':'m_a','Mchi':'m_chi'}.get(_key,_key)
+                                        _pairs.append(f'{_tex_key}={_val}')
+                                        _i += 2
+                                    else:
+                                        _i += 1
+                                _pretty = ', '.join(_pairs) if _pairs else _mp_label
+                                _sig_rows.append((_pretty, _shv * signal_scale))
+                        else:
+                            _shv, _ = np.histogram(np.clip(np.asarray(_svals_raw, dtype=float),
+                                                           bins_ref[0], bins_ref[-1]),
+                                                   bins=bins_ref, weights=np.ones(len(_svals_raw)) * _sscale_base)
+                            _sig_rows.append((_sfe['file_label'], _shv * signal_scale))
+
                 plot_kwargs = dict(
                     variable=var, bins=bins_ref,
                     background_rows=bkg_rows, data_ndarray=data_hist,
+                    signal_rows=_sig_rows if _sig_rows else None,
                     output_dir=output_dir, luminosity=luminosity, year=year,
                     region=region, version=version, save_root=save_root,
                 )
@@ -2060,6 +2208,126 @@ class PlotManager:
                             len(skipped_region_var),
                             ', '.join(f"{r}/{v}({why})" for r, v, why in skipped_region_var[:10])
                             + ('...' if len(skipped_region_var) > 10 else ''))
+        # Per-region cutflow waterfall plots
+        try:
+            import uproot as _uproot_cf
+            _proc_region_cf = {}
+            for _proc_label, _elist in bkg_groups.items():
+                _cf_by_region = {}
+                for _e in _elist:
+                    _data = _e.get("data", {})
+                    _cf_steps = _data.get("region_cutflow_steps", {})
+                    _wte = float(_data.get("metadata", {}).get("weighted_total_events", 0) or 0)
+                    _xsec = _e.get("xsec")
+                    _scale = ((luminosity * _xsec * 1000.0) / _wte
+                              if _xsec is not None and _wte > 0
+                              else (luminosity / _wte if _wte > 0 else 1.0))
+                    for _rname, _steps in _cf_steps.items():
+                        if _rname not in _cf_by_region:
+                            _cf_by_region[_rname] = {}
+                        for _cut, _yield in _steps.items():
+                            _cf_by_region[_rname][_cut] = (
+                                _cf_by_region[_rname].get(_cut, 0.0) + float(_yield) * _scale
+                            )
+                if _cf_by_region:
+                    _proc_region_cf[_proc_label] = _cf_by_region
+
+            if _proc_region_cf:
+                _all_regions = sorted({_r for _pcf in _proc_region_cf.values() for _r in _pcf})
+                for _rname in _all_regions:
+                    _region_cf_per_proc = {}
+                    for _proc_label, _cf_by_region in _proc_region_cf.items():
+                        _steps = _cf_by_region.get(_rname, {})
+                        if _steps:
+                            _region_cf_per_proc[_proc_label] = _steps
+                    if _region_cf_per_proc:
+                        _evtsel_cf = {}
+                        _all_evtsel_labels = []
+                        _all_region_labels = list(next(iter(_region_cf_per_proc.values()), {}).keys()) if _region_cf_per_proc else []
+
+                        # Load evtsel cutflow from ROOT for each proc (moved from below)
+                        _root_input = root_input_folder if root_input_folder else input_folder
+                        for _proc_label in _region_cf_per_proc:
+                            _pat = process_groups.get(_proc_label, [])
+                            _root_files = self._resolve_group_files(_root_input, _pat)
+                            for _rf in _root_files[:1]:
+                                try:
+                                    with _uproot_cf.open(str(_rf)) as _f:
+                                        for _key in ("cutflow", "cutflow;1"):
+                                            if _key in _f:
+                                                _h = _f[_key]
+                                                _labels = [str(b) for b in _h.axes[0]]
+                                                _vals = _h.values()
+                                                _evtsel_cf[_proc_label] = dict(zip(_labels, _vals))
+                                                break
+                                except Exception:
+                                    pass
+                                break
+                        _all_evtsel_labels = list(next(iter(_evtsel_cf.values()), {}).keys()) if _evtsel_cf else []
+                        _all_cf_labels = _all_evtsel_labels + _all_region_labels
+
+                        # Data cutflow: evtsel from ROOT + region from PKL
+                        _data_cf_arr = None
+                        _is_sr_cf = _rname.endswith(":SR")
+                        if not _is_sr_cf:
+                            # Load evtsel cutflow from data ROOT files
+                            for _dlabel, _dinfo in data_loaded.items():
+                                _dpat = data_groups.get(_dlabel, [])
+                                _d_root_files = self._resolve_group_files(_root_input, _dpat)
+                                logging.info("  data %s: patterns=%s, root_files=%d", _dlabel, _dpat, len(_d_root_files))
+                                for _drf in _d_root_files[:1]:
+                                    try:
+                                        with _uproot_cf.open(str(_drf)) as _df:
+                                            for _key in ("cutflow", "cutflow;1"):
+                                                if _key in _df:
+                                                    _dh = _df[_key]
+                                                    _dlabels_data = [str(b) for b in _dh.axes[0]]
+                                                    _dvals_data = _dh.values()
+                                                    if _data_cf_arr is None:
+                                                        _data_cf_arr = np.zeros(len(_all_cf_labels), dtype=float)
+                                                    for _i, _lbl in enumerate(_all_evtsel_labels):
+                                                        if _lbl in _dlabels_data:
+                                                            _idx = _dlabels_data.index(_lbl)
+                                                            _data_cf_arr[_i] += float(_dvals_data[_idx])
+                                                    break
+                                    except Exception:
+                                        pass
+                                    break
+                            # Load region cutflow from data PKLs
+                            for _dlabel, _dinfo in data_loaded.items():
+                                for _pkl in _dinfo.get("pkls", []):
+                                    _dcf_steps = _pkl.get("region_cutflow_steps", {}).get(_rname, {})
+                                    if _dcf_steps and _data_cf_arr is not None:
+                                        for _i, _lbl in enumerate(_all_region_labels):
+                                            _data_cf_arr[len(_all_evtsel_labels) + _i] += float(_dcf_steps.get(_lbl, 0.0))
+                        elif _all_cf_labels and (_evtsel_cf or _region_cf_per_proc):
+                            # Blinded SR: pseudo-data = MC sum
+                            _data_cf_arr = np.zeros(len(_all_cf_labels), dtype=float)
+                            for _proc, _pcf in _evtsel_cf.items():
+                                for _i, _lbl in enumerate(_all_evtsel_labels):
+                                    _data_cf_arr[_i] += _pcf.get(_lbl, 0.0)
+                            for _proc, _pcf in _region_cf_per_proc.items():
+                                for _i, _lbl in enumerate(_all_region_labels):
+                                    _data_cf_arr[len(_all_evtsel_labels) + _i] += _pcf.get(_lbl, 0.0)
+
+                        try:
+                            cf_files = self._plot_cutflow(
+                                evtsel_cutflow_per_proc=_evtsel_cf,
+                                region_cutflow_per_proc=_region_cf_per_proc,
+                                region_name=_rname,
+                                output_dir=output_dir,
+                                version=version,
+                                year=year,
+                                luminosity=luminosity,
+                                data_cutflow=_data_cf_arr,
+                            )
+                            created.extend(cf_files)
+                            logging.info("Cutflow plot for %s: %d files", _rname, len(cf_files))
+                        except Exception as _cf_exc:
+                            logging.warning("Cutflow plot failed for %s: %s", _rname, _cf_exc)
+        except Exception as _cf_exc:
+            logging.warning("Cutflow aggregation failed: %s", _cf_exc)
+
         logging.info("Region stacked plots complete: %d plots created", len(created))
         return created
 
@@ -2085,6 +2353,7 @@ class PlotManager:
         dnn_model: Optional[str] = None,
         dnn_config: Optional[str] = None,
         dnn_mass_scan: Optional[str] = None,
+        root_input_folder: Optional[str] = None,
     ) -> List[str]:
         """Load event-selected ROOT/PKL files, apply region cuts in-memory, produce stacked region plots.
 
@@ -3859,15 +4128,31 @@ class PlotManager:
                     seen.add(v)
                     unique.append(v)
             present = set(all_vars)
+            # Alias mapping: plotting.yaml name → PKL name
+            _valias = {
+                'Recoil':'recoil','MET_pt':'met','MET_phi':'met_phi',
+                'njets':'n_jets','n_bjets':'n_bjets','n_muons':'n_muons',
+                'n_electrons':'n_electrons','n_taus':'n_taus',
+                'MET_significance':'met_significance',
+                'Jet1Pt':'jet_pt','Jet1Eta':'jet_eta',
+                'Jet1Phi':'jet_phi','Jet2Pt':'jet2_pt','Jet2Eta':'jet2_eta',
+                'Jet2Phi':'jet2_phi','dPhi_jetMET':'min_dphi',
+                'dPhiJet12':'dphi_jet12','dEtaJet12':'deta_jet12',
+                'M_Jet1Jet2':'m_jet1jet2','Jet1BTagScore':'btag_deepjet',
+                'Jet2BTagScore':'jet2_deepcsv','pT_Jet1Jet2':'pt_jet1jet2',
+                'ratioPtJet21':'ratio_pt_jet21','dRJet12':'dr_jet12',
+                'b_flavor_count':'btag_hf',
+            }
             out: List[str] = []
             for v in unique:
                 if v in present:
                     out.append(v)
                 elif v == "ml_score":
-                    # Parametric mass-scan branches (ml_score_mh3_<a>_mh4_<b>) aren't
-                    # literally "ml_score" — expand the whitelist entry to every
-                    # matching scored variable present in this region's candidates.
                     out.extend(sorted(x for x in all_vars if x.startswith("ml_score_mh3_")))
+                else:
+                    alias = _valias.get(v)
+                    if alias and alias in present:
+                        out.append(v)  # keep the plotting name, but match alias
             return out
 
         return list(all_vars)

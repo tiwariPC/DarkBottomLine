@@ -571,12 +571,26 @@ class DarkBottomLineAnalyzer:
 
         region_histograms = self._fill_region_histograms(events, {}, region_masks, event_weights_nominal)
         region_cutflow    = self._calculate_region_cutflow(region_masks)
+
+        # Per-cut-step cutflow for each region (for cutflow waterfall plots)
+        region_cutflow_steps: Dict[str, Dict[str, float]] = {}
+        for _rname in region_masks:
+            _robj = self.region_manager.regions.get(_rname)
+            if _robj is not None:
+                try:
+                    _steps = _robj.apply_cuts_with_yields(events, objects={},
+                                                           weight=event_weights_nominal)
+                    region_cutflow_steps[_rname] = _steps
+                except Exception:
+                    pass
+
         validation        = self.region_manager.validate_regions(events, {})
         processing_time   = time.time() - start_time
 
         self.accumulator["regions"]          = region_results
         self.accumulator["region_histograms"] = region_histograms
         self.accumulator["region_cutflow"]    = region_cutflow
+        self.accumulator["region_cutflow_steps"] = region_cutflow_steps
         self.accumulator["region_validation"] = validation
         self.accumulator["event_weights"]     = {}
         self.accumulator["metadata"] = {

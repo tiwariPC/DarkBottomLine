@@ -573,6 +573,16 @@ def _run_analyzer_from_eventselection(args):
         result.setdefault("metadata", {})["xsec"] = xsec
         result["metadata"]["sample"] = stem
 
+        # Save per-sample PKL
+        if args.output:
+            import os as _os2
+            _out_dir = args.output if _os2.path.isdir(args.output) else _os2.path.dirname(args.output) or '.'
+            _pkl_dir = _os2.path.join(_out_dir, 'per_sample')
+            _os2.makedirs(_pkl_dir, exist_ok=True)
+            _pkl_path = _os2.path.join(_pkl_dir, stem + '.pkl')
+            import pickle as _pkl2
+            with open(_pkl_path, 'wb') as _pf:
+                _pkl2.dump(result, _pf)
         if merged_result is None:
             merged_result = result
         else:
@@ -590,10 +600,14 @@ def _run_analyzer_from_eventselection(args):
         logging.error("No files processed — nothing to save.")
         return
 
+    import os as _os2
+    # Save merged result (for backward compat) + per-sample PKLs already saved above
     if args.output:
+        _out_dir2 = args.output if _os2.path.isdir(args.output) else _os2.path.dirname(args.output) or '.'
+        _merged_out = _os2.path.join(_out_dir2, 'merged.pkl')
         analyzer.accumulator = merged_result
-        analyzer.save_results(args.output, output_format=args.output_format)
-        logging.info("Region analysis from event-selection saved to %s", args.output)
+        analyzer.save_results(_merged_out, output_format=args.output_format)
+        logging.info("Region analysis saved: merged=%s, per_sample=%s", _merged_out, _os2.path.join(_out_dir2, 'per_sample'))
 
 
 def _merge_region_results(a: Dict, b: Dict) -> Dict:
@@ -628,6 +642,36 @@ def _trigger_plots(args):
     make_evsel_flag    = getattr(args, "make_event_selection_plots", False)
     if not make_region_plots_flag and not make_evsel_flag:
         return
+    # If --region-results, create temp folder with pattern-named PKL copies
+    import os as _os2
+    region_pkl = getattr(args, "region_results", None)
+    if region_pkl:
+        if _os2.path.isdir(str(region_pkl)):
+            # Directory of per-sample PKLs — use as input_folder
+            # Save original ROOT dir for cutflow lookups
+            args.root_input_folder = getattr(args, "input_folder", None) or (
+                args.input[0] if isinstance(getattr(args, "input", None), list) and args.input
+                else getattr(args, "input", None)
+            )
+            args.input_folder = str(region_pkl)
+        elif _os2.path.isfile(str(region_pkl)):
+            # Single merged PKL — replicate per pattern for matching
+            import tempfile, shutil, yaml as _yaml
+            td = tempfile.mkdtemp(prefix='rplot_')
+            _cfg = {}
+            if getattr(args, 'plot_config', None):
+                with open(args.plot_config) as _f:
+                    _cfg = _yaml.safe_load(_f)
+            _pats = set()
+            for _g in ['process_groups','signal_groups','data_groups']:
+                for _v in _cfg.get(_g,{}).values():
+                    if isinstance(_v,dict) and 'patterns' in _v:
+                        _pats.update(_v['patterns'])
+            if not _pats:
+                _pats = {'merged'}
+            for _p in _pats:
+                shutil.copy(str(region_pkl), f'{td}/{_p}.pkl')
+            args.input_folder = td
     # make_event_plots needs input_folder
     if not getattr(args, "input_folder", None):
         import os
@@ -653,8 +697,8 @@ def _trigger_plots(args):
     if not getattr(args, "regions", None):
         args.regions   = getattr(args, "plot_regions", None)
     if make_region_plots_flag:
-        logging.info("Producing region plots...")
-        args.mode = "region-from-events"
+        logging.info("Producing region plots (ROOT→PKL→plot)...")
+        args.mode = "region" if getattr(args, "region_results", None) else "region-from-events"
         make_event_plots(args)
     if make_evsel_flag:
         logging.info("Producing event-selection plots...")
@@ -685,7 +729,7 @@ def run_analyzer(args):
             if make_evsel_plots else
             "Running event selection (NanoAOD → EVENTSELECTION.root)..."
         ),
-        "region-analysis": "Running region analysis (EVENTSELECTION.root → region plots)...",
+        "region-analysis": "Running region analysis (EVENTSELECTION.root → region plots (ROOT→PKL→plot))...",
         "full":            "Running full pipeline (NanoAOD → event-selection + regions)...",
     }
     logging.info(mode_labels.get(mode, "Running analysis..."))
@@ -703,8 +747,12 @@ def run_analyzer(args):
 
     # region-analysis mode: delegate to _run_analyzer_from_eventselection then plot
     if mode == "region-analysis":
-        _run_analyzer_from_eventselection(args)
-        _trigger_plots(args)
+        if getattr(args, "region_results", None):
+            _trigger_plots(args)
+        else:
+            _run_analyzer_from_eventselection(args)
+            if not getattr(args, "skip_plots", False):
+                _trigger_plots(args)
         return
 
     # Unified pipeline flags
@@ -1863,7 +1911,7 @@ def make_stacked_plots(args):
 
 
 def make_event_plots(args):
-    """Create stacked event-selection or region plots."""
+    """Create stacked event-selection or region plots (ROOT→PKL→plot)."""
     import json
 
     config = load_config(args.config)
@@ -1976,6 +2024,7 @@ def make_event_plots(args):
         dnn_model=getattr(args, "dnn_model", None),
         dnn_config=getattr(args, "dnn_config", None),
         dnn_mass_scan=getattr(args, "dnn_mass_scan", None),
+        root_input_folder=getattr(args, "root_input_folder", None),
     )
     logging.info(f"analyze-regions: {len(out_files)} plot(s) written to {args.output_dir}")
 
@@ -2680,7 +2729,9 @@ Examples:
                                help="Produce systematic comparison plots (central+up+down per uncertainty) in outputs/plots/{version}/systematics/")
     # Plotting flags
     analyze_parser.add_argument("--make-region-plots", action="store_true", default=False,
-                               help="Produce stacked region plots (pdf/png/txt/root) — region-analysis and full modes")
+                               help="Produce stacked region plots (ROOT→PKL→plot) (pdf/png/txt/root) — region-analysis and full modes")
+    analyze_parser.add_argument("--skip-plots", action="store_true", default=False,
+                               help="Skip plot generation")
     analyze_parser.add_argument("--make-event-selection-plots", action="store_true", default=False,
                                help="Produce stacked event-selection plots (before region cuts)")
     analyze_parser.add_argument("--plot-config", default=None,
@@ -2693,6 +2744,8 @@ Examples:
                                help="Also save ROOT TH1 files for plots")
     analyze_parser.add_argument("--plot-variables", nargs="+", default=None, metavar="VAR",
                                help="Variables to plot (default: all)")
+    analyze_parser.add_argument("--region-results", default=None, metavar="PKL",
+                               help="Use pre-computed PKL")
     analyze_parser.add_argument("--plot-regions", nargs="+", default=None, metavar="REGION",
                                help="Regions to plot (default: all)")
     analyze_parser.add_argument("--version", default=None,
@@ -3082,7 +3135,7 @@ Examples:
     try:
         args.func(args)
     except Exception as e:
-        logging.error(f"Command failed: {e}")
+        import traceback; logging.error(f"Command failed: {e}"); logging.error(traceback.format_exc())
         sys.exit(1)
 
 

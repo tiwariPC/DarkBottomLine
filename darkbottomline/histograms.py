@@ -566,6 +566,98 @@ class HistogramManager:
         except Exception:
             pass
 
+        # ── Flat-branch fallback ──────────────────────────────────────────
+        # When called from process_from_eventselection (objects={}), all
+        # NanoAOD-object-based fills above are skipped.  Read the same
+        # variables directly from EVENTSELECTION flat branches instead.
+        _jets_ok = (jets is not None and len(jets) > 0 and len(ak.flatten(jets)) > 0)
+        if not _jets_ok:
+            _flat_fill = {
+                # (histogram_name, branch_name, sentinel_check)
+                ("met_phi",         "MET_phi",           True),
+                ("recoil",          "Recoil",            True),
+                ("jet_pt",          "Jet1Pt",            True),
+                ("jet_eta",         "Jet1Eta",           True),
+                ("jet_phi",         "Jet1Phi",           True),
+                ("jet2_pt",         "Jet2Pt",            True),
+                ("jet2_eta",        "Jet2Eta",           True),
+                ("jet2_phi",        "Jet2Phi",           True),
+                ("jet3_pt",         "Jet3Pt",            True),
+                ("jet3_eta",        "Jet3Eta",           True),
+                ("jet3_phi",        "Jet3Phi",           True),
+                ("btag_deepjet",    "Jet1BTagScore",     True),
+                ("jet2_deepcsv",    "Jet2BTagScore",     True),
+            }
+            # Per-event scalar variables (no sentinel check needed)
+            _scalar_fill = {
+                "min_dphi":       "dPhi_jetMET",
+                "dphi_jet12":     "dPhiJet12",
+                "deta_jet12":     "dEtaJet12",
+                "m_jet1jet2":     "M_Jet1Jet2",
+                "mt":             "mt",
+                "mll":            "mll",
+                "z_pt":           "Zpt",
+                "z_mass":         "mll",          # Z mass ≈ mll for Z CRs
+                "ratio_pt_jet21": "ratioPtJet21",
+            }
+            for _hname, _bname in _scalar_fill.items():
+                if _bname not in events.fields:
+                    continue
+                try:
+                    _arr = np.asarray(ak.to_numpy(events[_bname]), dtype="f8")
+                    _mask = _arr != SENTINEL
+                    if _mask.sum() > 0:
+                        histograms[_hname].fill(**{_hname: _arr[_mask]},
+                                                 weight=weights[_mask])
+                except Exception:
+                    pass
+
+            for _hname, _bname, _sentinelled in _flat_fill:
+                if _bname not in events.fields:
+                    continue
+                try:
+                    _arr = np.asarray(ak.to_numpy(events[_bname]), dtype="f8")
+                    if _sentinelled:
+                        _mask = _arr != SENTINEL
+                        _arr = _arr[_mask]
+                        _w = weights[_mask] if len(weights) == len(_mask) else weights[:len(_mask)]
+                    else:
+                        _w = weights
+                    if len(_arr) > 0:
+                        getattr(histograms[_hname], "fill")(**{_hname: _arr}, weight=_w)
+                except Exception:
+                    pass
+
+        _mu_ok = (tight_mu is not None and len(tight_mu) > 0 and len(ak.flatten(tight_mu)) > 0)
+        if not _mu_ok:
+            for _hname, _bname in [("muon_pt", "muon_lep1_pt"),
+                                    ("muon_eta", "muon_lep1_eta")]:
+                if _bname not in events.fields:
+                    continue
+                try:
+                    _arr = np.asarray(ak.to_numpy(events[_bname]), dtype="f8")
+                    _mask = _arr != SENTINEL
+                    if _mask.sum() > 0:
+                        histograms[_hname].fill(**{_hname: _arr[_mask]},
+                                                 weight=weights[_mask])
+                except Exception:
+                    pass
+
+        _el_ok = (tight_el is not None and len(tight_el) > 0 and len(ak.flatten(tight_el)) > 0)
+        if not _el_ok:
+            for _hname, _bname in [("electron_pt", "electron_lep1_pt"),
+                                    ("electron_eta", "electron_lep1_eta")]:
+                if _bname not in events.fields:
+                    continue
+                try:
+                    _arr = np.asarray(ak.to_numpy(events[_bname]), dtype="f8")
+                    _mask = _arr != SENTINEL
+                    if _mask.sum() > 0:
+                        histograms[_hname].fill(**{_hname: _arr[_mask]},
+                                                 weight=weights[_mask])
+                except Exception:
+                    pass
+
         return histograms
 
     def _fill_fallback_histograms(
