@@ -31,7 +31,10 @@ setup(
         "correctionlib==2.6.4",
         "coffea==2025.12.0",
         "fsspec-xrootd==0.5.1",
-        "xrootd==5.9.1",
+        # xrootd is intentionally NOT listed here: it's provided as a
+        # conda-forge binary via environment.yml (xrootd=5.9.1), which
+        # doesn't register as pip-visible, so pip would otherwise try to
+        # build it from source (requires cmake) and fail. See local_setup.sh.
         # Distributed computing
         "dask==2025.2.0",
         "distributed==2025.2.0",

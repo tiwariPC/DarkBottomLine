@@ -2210,7 +2210,6 @@ class PlotManager:
                             + ('...' if len(skipped_region_var) > 10 else ''))
         # Per-region cutflow waterfall plots
         try:
-            import uproot as _uproot_cf
             _proc_region_cf = {}
             for _proc_label, _elist in bkg_groups.items():
                 _cf_by_region = {}
@@ -2241,78 +2240,31 @@ class PlotManager:
                         if _steps:
                             _region_cf_per_proc[_proc_label] = _steps
                     if _region_cf_per_proc:
-                        _evtsel_cf = {}
-                        _all_evtsel_labels = []
                         _all_region_labels = list(next(iter(_region_cf_per_proc.values()), {}).keys()) if _region_cf_per_proc else []
+                        _all_cf_labels = _all_region_labels
 
-                        # Load evtsel cutflow from ROOT for each proc (moved from below)
-                        _root_input = root_input_folder if root_input_folder else input_folder
-                        for _proc_label in _region_cf_per_proc:
-                            _pat = process_groups.get(_proc_label, [])
-                            _root_files = self._resolve_group_files(_root_input, _pat)
-                            for _rf in _root_files[:1]:
-                                try:
-                                    with _uproot_cf.open(str(_rf)) as _f:
-                                        for _key in ("cutflow", "cutflow;1"):
-                                            if _key in _f:
-                                                _h = _f[_key]
-                                                _labels = [str(b) for b in _h.axes[0]]
-                                                _vals = _h.values()
-                                                _evtsel_cf[_proc_label] = dict(zip(_labels, _vals))
-                                                break
-                                except Exception:
-                                    pass
-                                break
-                        _all_evtsel_labels = list(next(iter(_evtsel_cf.values()), {}).keys()) if _evtsel_cf else []
-                        _all_cf_labels = _all_evtsel_labels + _all_region_labels
-
-                        # Data cutflow: evtsel from ROOT + region from PKL
+                        # Data cutflow: region cuts only (preselection dropped from region plots)
                         _data_cf_arr = None
                         _is_sr_cf = _rname.endswith(":SR")
                         if not _is_sr_cf:
-                            # Load evtsel cutflow from data ROOT files
-                            for _dlabel, _dinfo in data_loaded.items():
-                                _dpat = data_groups.get(_dlabel, [])
-                                _d_root_files = self._resolve_group_files(_root_input, _dpat)
-                                logging.info("  data %s: patterns=%s, root_files=%d", _dlabel, _dpat, len(_d_root_files))
-                                for _drf in _d_root_files[:1]:
-                                    try:
-                                        with _uproot_cf.open(str(_drf)) as _df:
-                                            for _key in ("cutflow", "cutflow;1"):
-                                                if _key in _df:
-                                                    _dh = _df[_key]
-                                                    _dlabels_data = [str(b) for b in _dh.axes[0]]
-                                                    _dvals_data = _dh.values()
-                                                    if _data_cf_arr is None:
-                                                        _data_cf_arr = np.zeros(len(_all_cf_labels), dtype=float)
-                                                    for _i, _lbl in enumerate(_all_evtsel_labels):
-                                                        if _lbl in _dlabels_data:
-                                                            _idx = _dlabels_data.index(_lbl)
-                                                            _data_cf_arr[_i] += float(_dvals_data[_idx])
-                                                    break
-                                    except Exception:
-                                        pass
-                                    break
                             # Load region cutflow from data PKLs
+                            _data_cf_arr = np.zeros(len(_all_cf_labels), dtype=float) if _all_cf_labels else None
                             for _dlabel, _dinfo in data_loaded.items():
                                 for _pkl in _dinfo.get("pkls", []):
                                     _dcf_steps = _pkl.get("region_cutflow_steps", {}).get(_rname, {})
                                     if _dcf_steps and _data_cf_arr is not None:
                                         for _i, _lbl in enumerate(_all_region_labels):
-                                            _data_cf_arr[len(_all_evtsel_labels) + _i] += float(_dcf_steps.get(_lbl, 0.0))
-                        elif _all_cf_labels and (_evtsel_cf or _region_cf_per_proc):
+                                            _data_cf_arr[_i] += float(_dcf_steps.get(_lbl, 0.0))
+                        elif _all_cf_labels and _region_cf_per_proc:
                             # Blinded SR: pseudo-data = MC sum
                             _data_cf_arr = np.zeros(len(_all_cf_labels), dtype=float)
-                            for _proc, _pcf in _evtsel_cf.items():
-                                for _i, _lbl in enumerate(_all_evtsel_labels):
-                                    _data_cf_arr[_i] += _pcf.get(_lbl, 0.0)
                             for _proc, _pcf in _region_cf_per_proc.items():
                                 for _i, _lbl in enumerate(_all_region_labels):
-                                    _data_cf_arr[len(_all_evtsel_labels) + _i] += _pcf.get(_lbl, 0.0)
+                                    _data_cf_arr[_i] += _pcf.get(_lbl, 0.0)
 
                         try:
                             cf_files = self._plot_cutflow(
-                                evtsel_cutflow_per_proc=_evtsel_cf,
+                                evtsel_cutflow_per_proc={},
                                 region_cutflow_per_proc=_region_cf_per_proc,
                                 region_name=_rname,
                                 output_dir=output_dir,
@@ -3280,7 +3232,7 @@ class PlotManager:
                 logging.error("Systematic plots failed: %s", _sp_exc, exc_info=True)
 
         # ---- per-region cutflow plots ----
-        if evtsel_cutflow_per_proc:
+        if target_regions:
             import awkward as _ak
             for region_name in target_regions:
                 region_obj = region_manager.regions.get(region_name)
@@ -3321,21 +3273,15 @@ class PlotManager:
                 # SR blinded unless --show-data: use bkg-sum pseudo-data instead.
                 data_cf_arr: Optional[np.ndarray] = None
                 _is_sr_cf = region_name.endswith(":SR")
-                _all_evtsel_labels = list(next(iter(evtsel_cutflow_per_proc.values()), {}).keys()) if evtsel_cutflow_per_proc else []
                 _all_region_labels = list(next(iter(region_cf_per_proc.values()), {}).keys()) if region_cf_per_proc else []
-                _all_cf_labels = _all_evtsel_labels + _all_region_labels
+                _all_cf_labels = _all_region_labels
                 if _is_sr_cf and not show_data:
                     # Pseudo-data = MC total
-                    if _all_cf_labels and (evtsel_cutflow_per_proc or region_cf_per_proc):
+                    if _all_cf_labels and region_cf_per_proc:
                         _bkg_total = np.zeros(len(_all_cf_labels), dtype=float)
-                        for _proc_cf in {**evtsel_cutflow_per_proc, **region_cf_per_proc}.values():
-                            pass  # already merged into evtsel/region dicts separately below
-                        for _proc, _pcf in evtsel_cutflow_per_proc.items():
-                            for _i, _lbl in enumerate(_all_evtsel_labels):
-                                _bkg_total[_i] += _pcf.get(_lbl, 0.0)
                         for _proc, _pcf in region_cf_per_proc.items():
                             for _i, _lbl in enumerate(_all_region_labels):
-                                _bkg_total[len(_all_evtsel_labels) + _i] += _pcf.get(_lbl, 0.0)
+                                _bkg_total[_i] += _pcf.get(_lbl, 0.0)
                         data_cf_arr = _bkg_total
                 elif _all_cf_labels and data_entries:
                     for _dlabel, _dinfo in data_entries.items():
@@ -3358,10 +3304,8 @@ class PlotManager:
                                         _ak_dict_d[k] = v
                                 _devents = _ak.Array(_ak_dict_d)
                                 _dw = np.ones(len(_devents), dtype=float)
-                                _d_evtsel_cf: Dict[str, float] = _load_cutflow_root(_dpath) or {}
                                 _d_region_cf = region_obj.apply_cuts_with_yields(_devents, objects={}, weight=_dw)
                                 _dcf_aligned = np.array(
-                                    [_d_evtsel_cf.get(l, 0.0) for l in _all_evtsel_labels] +
                                     [_d_region_cf.get(l, 0.0) for l in _all_region_labels],
                                     dtype=float,
                                 )
@@ -3374,7 +3318,7 @@ class PlotManager:
                                  region_name, len(evtsel_cutflow_per_proc), len(region_cf_per_proc))
                     try:
                         cf_files = self._plot_cutflow(
-                            evtsel_cutflow_per_proc=evtsel_cutflow_per_proc,
+                            evtsel_cutflow_per_proc={},
                             region_cutflow_per_proc=region_cf_per_proc,
                             region_name=region_name,
                             output_dir=output_dir,
@@ -3620,7 +3564,7 @@ class PlotManager:
         # ---- color map ----
         _PALETTE = ["#3f90da","#ffa90e","#bd1f01","#94a4a2","#832db6",
                     "#a96b59","#e76300","#b9ac70","#717581","#92dadd"]
-        all_procs = list(evtsel_cutflow_per_proc.keys())
+        all_procs = list(evtsel_cutflow_per_proc.keys()) if evtsel_cutflow_per_proc else list(region_cutflow_per_proc.keys())
         color_map: Dict[str, str] = {}
         if hasattr(self, '_group_colors'):
             color_map = dict(self._group_colors)

@@ -11,6 +11,17 @@ else
 fi
 
 conda activate darkbottomline
+
+# cmake is needed by pip to build some deps from source when they lack a
+# usable wheel for this platform/Python combo (e.g. xrootd previously did,
+# before it moved to environment.yml's conda-forge binary — kept here as a
+# safety net for any other package that ends up needing to compile).
+if ! command -v cmake &>/dev/null; then
+  echo "Installing cmake into ${CONDA_PREFIX:-darkbottomline env} (needed to build some deps from source)..."
+  conda install -y -n darkbottomline -c conda-forge cmake \
+    || { echo "Failed to install cmake!"; return 1; }
+fi
+
 # Install the local package in editable mode
 echo "Installing local package..."
 pip install -e "$(dirname "$0")" || { echo "pip install -e failed!"; return 1; }

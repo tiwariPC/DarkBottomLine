@@ -134,6 +134,10 @@ RAW_INPUT_DIR=${RAW_INPUT_DIR:-../TestingSamples/NanoAODv15_2024}
 EVENTSEL_DIR=${EVENTSEL_DIR:-outputs/eventsel}
 REGION_PLOTS_DIR=${REGION_PLOTS_DIR:-outputs/region_plots}
 VERSION=${VERSION:-$(date +%Y%m%d)_$(git rev-parse --short HEAD 2>/dev/null || echo local)_${YEAR}}
+# Per-sample + merged region-analysis PKLs (region_cutflow_steps etc.) —
+# saved by default so --region-results PKL replay always has something to
+# read without a separate opt-in run.
+REGION_RESULTS_DIR=${REGION_RESULTS_DIR:-${REGION_PLOTS_DIR}/${VERSION}/region_results/merged.pkl}
 
 DNN_OUTDIR=${DNN_OUTDIR:-data/dnn}
 DNN_PLOT_DIR=${DNN_PLOT_DIR:-outputs/dnn}
@@ -187,6 +191,7 @@ log "  Config          : ${CONFIG}"
 log "  Raw input dir   : ${RAW_INPUT_DIR}"
 log "  Event-sel dir   : ${EVENTSEL_DIR}"
 log "  Region-plots dir: ${REGION_PLOTS_DIR}"
+log "  Region PKL out  : ${REGION_RESULTS_DIR}"
 log "  Version         : ${VERSION}"
 [ $DRY_RUN -eq 1 ] && log "  Mode            : DRY RUN"
 log "=========================================="
@@ -232,6 +237,7 @@ if step_enabled region; then
         --config "${CONFIG}" \
         --regions-config "${REGIONS_CONFIG}" \
         --input "${EVENTSEL_DIR}" \
+        --output "${REGION_RESULTS_DIR}" \
         --output-dir "${REGION_PLOTS_DIR}" \
         --version "${VERSION}" \
         --xsection-json "${XSEC_BKG_JSON}" \
@@ -263,6 +269,7 @@ log "  Steps run       : ${STEPS}"
 log "  Event-selection : ${EVENTSEL_DIR}"
 log "  DNN model       : ${DNN_MODEL}"
 log "  Region plots    : ${REGION_PLOTS_DIR}/${VERSION}"
+log "  Region PKLs     : $(dirname "${REGION_RESULTS_DIR}")/per_sample, $(dirname "${REGION_RESULTS_DIR}")/merged.pkl"
 log "  Combine outputs : outputs/combine/"
 log "  Log             : ${LOG_FILE}"
 log "=========================================="
