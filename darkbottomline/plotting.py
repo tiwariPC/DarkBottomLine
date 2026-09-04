@@ -2167,12 +2167,19 @@ class PlotManager:
                                     else:
                                         _i += 1
                                 _pretty = ', '.join(_pairs) if _pairs else _mp_label
-                                _sig_rows.append((_pretty, _shv * signal_scale))
+                                _scale_prefix = f"×{signal_scale:g} " if signal_scale != 1.0 else ""
+                                # 4-tuple: (display_label, scaled_hv, raw_key, unscaled_hv) —
+                                # raw_key/unscaled_hv are the physical (signal_scale-free) yield,
+                                # matching the shape _plot_stacked_variable expects.
+                                _sig_rows.append((f"{_scale_prefix}{_pretty}", _shv * signal_scale,
+                                                  _mp_label, _shv))
                         else:
                             _shv, _ = np.histogram(np.clip(np.asarray(_svals_raw, dtype=float),
                                                            bins_ref[0], bins_ref[-1]),
                                                    bins=bins_ref, weights=np.ones(len(_svals_raw)) * _sscale_base)
-                            _sig_rows.append((_sfe['file_label'], _shv * signal_scale))
+                            _scale_suffix = f" ×{signal_scale:g}" if signal_scale != 1.0 else ""
+                            _sig_rows.append((f"{_sfe['file_label']}{_scale_suffix}", _shv * signal_scale,
+                                              _sfe['file_label'], _shv))
 
                 plot_kwargs = dict(
                     variable=var, bins=bins_ref,
@@ -3625,7 +3632,7 @@ class PlotManager:
                 has_data = True
                 ax1.errorbar(
                     x[mask], _dc[mask],
-                    xerr=np.full(mask.sum(), 0.4),
+                    xerr=np.full(mask.sum(), 0.5),
                     yerr=np.sqrt(_dc[mask]),
                     fmt="o", color=self.data_color,
                     markerfacecolor=self.data_color, markeredgecolor=self.data_color,
@@ -3679,7 +3686,7 @@ class PlotManager:
             if np.any(ratio_mask):
                 ax2.errorbar(
                     x[ratio_mask], ratio[ratio_mask],
-                    xerr=np.full(ratio_mask.sum(), 0.4),
+                    xerr=np.full(ratio_mask.sum(), 0.5),
                     yerr=ratio_err[ratio_mask],
                     fmt="o", color=self.data_color,
                     markerfacecolor=self.data_color, markeredgecolor=self.data_color,
