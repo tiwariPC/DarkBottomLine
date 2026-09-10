@@ -3,7 +3,7 @@
 # Model architecture
 model:
   type: "ParametricDNN"
-  input_features: 20  # Number of input features
+  input_features: 25  # Number of input features after correlation pruning
   hidden_layers: "128,64,32"  # Hidden layer sizes
   activation: "relu"  # Activation function
   dropout: 0.2  # Dropout rate
@@ -29,6 +29,29 @@ training:
   balance_classes: true
   balance_strength: 1.0  # [0,1]: 0=off, 1=full 50/50 equalization
   weight_clip: 100.0     # Maximum event weight
+  # After train/validation/test splitting, fit non-negative BCE weights on the
+  # training rows independently in each input ROOT file (one physical process /
+  # generator-pT slice per file). Apply that fixed mapping to validation/test;
+  # retain the original signed weights for physical score/yield diagnostics.
+  # Fine cells with insufficient training statistics merge to the next level.
+  negative_weight_handling:
+    mode: "local_cancellation"
+    min_events: 50
+    min_effective_events: 10.0
+    missing_sentinel: -9999.0
+    bins:
+      njets: [1.5, 2.5, 3.5, 4.5]
+      n_bjets: [0.5, 1.5]
+      costheta_star: [0.25, 0.5, 0.75]
+      Recoil: [200.0, 300.0, 400.0, 600.0]
+      JetHT: [200.0, 300.0, 500.0, 800.0]
+    levels:
+      - ["njets", "n_bjets", "costheta_star", "Recoil", "JetHT"]
+      - ["njets", "n_bjets", "costheta_star", "Recoil"]
+      - ["njets", "n_bjets", "costheta_star"]
+      - ["njets", "n_bjets"]
+      - ["njets"]
+      - []
   # Fractional systematic uncertainty on background for syst-aware Asimov Z (0 = pure stat)
   sig_syst: 0.20
   # Training is year-independent by design (lumi=1.0 always) unless this is set:
@@ -39,7 +62,7 @@ training:
 # Feature selection
 feature_selection:
   # Train final model on top-K features by Asimov significance (0 = keep all)
-  top_k_significance: 0  # 0 = keep all 25 features
+  top_k_significance: 0  # 0 = keep all features
   # Epochs for per-feature 1D DNN scans
   single_feature_epochs: 20
   # Drop near-constant features (useful for LHEF inputs with placeholder btag)
@@ -66,34 +89,26 @@ features:
   - "costheta_star"
   - "JetHT"
   - "Jet1BTagScore"
-  - "dRJet12"
   - "dPhiJet12"
-  - "Jet1Pt"
   - "Jet2BTagScore"
   - "Jet2Eta"
-  - "Jet2Pt"
   - "Jet3BTagScore"
   - "Jet3Eta"
-  - "Jet3Pt"
-  - "eta_Jet1Jet2"
   - "M_Jet1Jet2"
   - "dPhi_jetMET"
-  - "dEtaJet12"
   - "MET_significance"
-  - "pT_Jet1Jet2"
   - "ratioJet1PtMET"
   - "ratioPtJet21"
   - "del_plus"
   - "Jet1Eta"
-  - "del_minus"
   - "MET_phi"
-  - "Jet1Phi"
 #   - "MET_pt"
   - "Jet2Phi"
-  - "phi_Jet1Jet2"
   - "Recoil"
   - "njets"
   - "n_bjets"
+  - "n_muons"
+  - "n_electrons"
   - "RecoilPhi"
   - "dPhiJet13"
   - "M_Jet1Jet3"
@@ -133,6 +148,8 @@ variable_labels:
   RecoilPhi:          "Recoil $\\phi$"
   njets:              "Number of jets"
   n_bjets:            "Number of b-jets"
+  n_muons:            "Number of muons"
+  n_electrons:        "Number of electrons"
   dPhiJet13:          "$\\Delta\\phi(\\mathrm{Jet1}, \\mathrm{Jet3})$"
   M_Jet1Jet3:         "$M_{\\mathrm{Jet1,Jet3}}$ [GeV]"
 

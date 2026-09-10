@@ -11,12 +11,124 @@ reuse the same ROOT IO logic.
 from __future__ import annotations
 
 import datetime as dt
+import logging
 import re
 from typing import Iterable
 from pathlib import Path
 
 import numpy as np
 import uproot
+
+
+def read_branch_as_array(
+    tree,
+    branch_name: str,
+    max_events: int | None = None,
+    entry_mask=None,
+) -> np.ndarray:
+    """Read one flat branch through aligned basket payloads.
+
+    Some event-selection files have a corrupt TBranch ``fEntries`` value even
+    though their basket entry offsets and payloads are valid. Uproot's regular
+    ``array`` path can fail or stall on those files. This reader is DNN-local,
+    read-only, and stops before the first malformed or non-contiguous basket.
+
+    When *entry_mask* (a boolean array aligned to tree entries) is provided,
+    only entries whose mask value is true are kept. This is used for random
+    event subsampling without materializing the full branch array.
+    """
+    branch = tree[branch_name]
+    tree_entries = int(tree.num_entries)
+    target = tree_entries if max_events is None else min(tree_entries, int(max_events))
+    if target <= 0:
+        return np.empty(0, dtype="f8")
+
+    if entry_mask is not None:
+        mask = np.asarray(entry_mask, dtype=bool)
+        parts = []
+        expected = 0
+        for ibasket in range(branch.num_baskets):
+            start, stop = map(int, branch.basket_entry_start_stop(ibasket))
+            if start >= target:
+                break
+            if start != expected:
+                break
+            stop = min(stop, target)
+            try:
+                values = np.asarray(
+                    branch.basket(ibasket).array(branch.interpretation, library="np")
+                )
+            except Exception:
+                break
+            required = stop - start
+            if len(values) < required:
+                break
+            parts.append(values[:required][mask[start:stop]])
+            expected = stop
+
+        if expected < target:
+            logging.warning(
+                "DNN basket read truncated %s/%s to %d/%d aligned entries",
+                getattr(tree.file, "file_path", "<ROOT>"),
+                branch_name,
+                expected,
+                target,
+            )
+        if not parts:
+            return np.empty(0, dtype="f8")
+        return np.concatenate(parts)
+
+    out = None
+    expected = 0
+    for ibasket in range(branch.num_baskets):
+        start, stop = map(int, branch.basket_entry_start_stop(ibasket))
+        if start >= target:
+            break
+        if start != expected:
+            break
+        stop = min(stop, target)
+        try:
+            values = np.asarray(
+                branch.basket(ibasket).array(branch.interpretation, library="np")
+            )
+        except Exception:
+            break
+        required = stop - start
+        if len(values) < required:
+            break
+        if out is None:
+            out = np.empty(target, dtype=values.dtype)
+        out[start:stop] = values[:required]
+        expected = stop
+
+    if out is None:
+        return np.empty(0, dtype="f8")
+    if expected < target:
+        logging.warning(
+            "DNN basket read truncated %s/%s to %d/%d aligned entries",
+            getattr(tree.file, "file_path", "<ROOT>"),
+            branch_name,
+            expected,
+            target,
+        )
+    return out[:expected]
+
+
+def read_tree_branches_as_arrays(
+    tree,
+    branches: list[str],
+    max_events: int | None = None,
+    entry_mask=None,
+) -> dict[str, np.ndarray]:
+    """Read flat branches and trim all arrays to their common aligned prefix."""
+    arrays = {
+        name: read_branch_as_array(tree, name, max_events=max_events, entry_mask=entry_mask)
+        for name in branches
+    }
+    if not arrays:
+        return {}
+    common = min(len(values) for values in arrays.values())
+    return {name: np.asarray(values)[:common] for name, values in arrays.items()}
 
 
 def list_sample_region_trees(root_file: uproot.ReadOnlyFile, region: str) -> list[tuple[str, str]]:
@@ -51,12 +163,7 @@ def read_tree_as_arrays(
     if missing:
         raise KeyError(f"Tree '{tree_path}' missing branches: {missing}")
 
-    arrays = tree.arrays(present, library="np")
-    n = len(next(iter(arrays.values()))) if arrays else 0
-    if max_events is not None:
-        n = min(n, int(max_events))
-        arrays = {k: np.asarray(v)[:n] for k, v in arrays.items()}
-    return arrays
+    return read_tree_branches_as_arrays(tree, present, max_events=max_events)
 
 
 def _parse_date_like_dir_name(name: str, *, today: dt.date | None = None) -> dt.date | None:

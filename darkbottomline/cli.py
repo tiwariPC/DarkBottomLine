@@ -412,7 +412,7 @@ def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args,
     # Weights, filtered to non-data events
     if "full_event_weight" in events.fields:
         w_full = np.asarray(ak.to_numpy(events["full_event_weight"]), dtype="f8")
-        w_full = np.where(np.isfinite(w_full), np.maximum(w_full, 0.0), 0.0)
+        w_full = np.where(np.isfinite(w_full), w_full, 0.0)
         w = w_full[keep]
     else:
         w = np.ones(n_keep, dtype="f8")
@@ -1270,8 +1270,9 @@ def _load_one_eventsel_file(task: tuple):
     file, so this is dispatched across CPU cores instead of the serial
     per-file loop in ``_load_training_data_from_eventsel``.
 
-    Returns either ("ok", fpath, sample, df, y_arr, w_arr, mass_arr, src, n)
-    or ("skip", fpath, reason) or ("data", fpath) for a data file to skip silently.
+    Returns either ("ok", fpath, sample, df, y_arr, signed_weight, mass_arr,
+    src, n, weight_stats), ("skip", fpath, reason), or ("data", fpath) for a
+    data file to skip silently.
     """
     import os
     os.environ["OMP_NUM_THREADS"] = "1"
@@ -1279,6 +1280,7 @@ def _load_one_eventsel_file(task: tuple):
 
     import uproot
     from dnn.make_trees import _sample_name, _is_data, _is_signal_heuristic
+    from dnn.data import read_branch_as_array, read_tree_branches_as_arrays
     from dnn.feature_engineering import build_feature_frame_from_tree
     from dnn.common import sanitize_feature_frame
     from .plotting import _find_xsec
@@ -1313,17 +1315,28 @@ def _load_one_eventsel_file(task: tuple):
             if "Events" not in in_f:
                 return ("skip", fpath, "No Events tree")
             tree = in_f["Events"]
+            # Randomly sample ~half of each ROOT file's events for training
+            # (signal and background only; data files are skipped above).
+            # Deterministic per (run seed, file index); the CLI
+            # --max-events-per-sample cap is intentionally not applied here.
+            n_total = int(tree.num_entries)
+            sampling_rng = np.random.default_rng((seed, file_index, 0))
+            keep = sampling_rng.random(n_total) < 0.5
+
             df, src, _ = build_feature_frame_from_tree(
                 tree, feat_list,
-                max_events=max_events_per_file,
+                max_events=None,
+                entry_mask=keep,
             )
             df = sanitize_feature_frame(df)
             n = len(df)
 
             avail = set(tree.keys())
             if weight_branch in avail:
-                w_arr = tree[weight_branch].array(entry_stop=n, library="np").astype("f8")
-                w_arr = np.where(np.isfinite(w_arr), np.maximum(w_arr, 0.0), 0.0)
+                w_arr = read_branch_as_array(
+                    tree, weight_branch, max_events=None, entry_mask=keep
+                ).astype("f8")
+                w_arr = np.where(np.isfinite(w_arr), w_arr, 0.0)
             else:
                 w_arr = np.ones(n, dtype="f8")
 
@@ -1343,7 +1356,9 @@ def _load_one_eventsel_file(task: tuple):
                 gm_cols = sorted(k for k in avail if str(k).startswith("GenModel_"))
                 if gm_cols:
                     if wte > 0:
-                        gm_arr = tree.arrays(gm_cols, entry_stop=n, library="np")
+                        gm_arr = read_tree_branches_as_arrays(
+                            tree, gm_cols, max_events=None, entry_mask=keep
+                        )
                         mp_scale = np.ones(n, dtype="f8")
                         for gmc in gm_cols:
                             mask = gm_arr[gmc][:n].astype(bool)
@@ -1368,13 +1383,21 @@ def _load_one_eventsel_file(task: tuple):
                         "(sample=%s) — using raw weight_branch only", Path(fpath).name, sample,
                     )
 
+            w_arr = np.where(np.isfinite(w_arr[:n]), w_arr[:n], 0.0)
+            weight_stats = {
+                "negative_events": int(np.count_nonzero(w_arr < 0.0)),
+                "sum_signed": float(np.sum(w_arr, dtype="f8")),
+            }
+
             mass_arr = None
             if parametric_input:
                 if sig_flag:
                     gm_cols_mass = sorted(k for k in avail if str(k).startswith("GenModel_"))
                     mass_arr = np.full((n, 2), np.nan, dtype="f8")
                     if gm_cols_mass:
-                        gm_arr_mass = tree.arrays(gm_cols_mass, entry_stop=n, library="np")
+                        gm_arr_mass = read_tree_branches_as_arrays(
+                            tree, gm_cols_mass, max_events=None, entry_mask=keep
+                        )
                         for gmc in gm_cols_mass:
                             parsed = _parse_masspoint_label(gmc[len("GenModel_"):])
                             if parsed is None:
@@ -1395,7 +1418,10 @@ def _load_one_eventsel_file(task: tuple):
     except Exception as _exc:
         return ("error", fpath, str(_exc)[:120])
 
-    return ("ok", fpath, sample, df.iloc[:n], int(sig_flag), w_arr[:n], mass_arr, src, n)
+    return (
+        "ok", fpath, sample, df.iloc[:n], int(sig_flag), w_arr[:n],
+        mass_arr, src, n, weight_stats,
+    )
 
 
 def _load_training_data_from_eventsel(
@@ -1416,8 +1442,9 @@ def _load_training_data_from_eventsel(
 ) -> tuple:
     """In-memory conversion of flat Events ROOT files to labelled numpy arrays.
 
-    Returns (X_df, y, w, feature_sources) — same format train_from_root expects
-    after the data-loading phase, bypassing the intermediate ppbbchichi-trees.root.
+    Returns (X_df, y, signed_weight, feature_sources, mass, sample_ids),
+    bypassing the intermediate ppbbchichi-trees.root. Each input ROOT file is
+    a separate sample ID for train-only local cancellation fitting.
 
     When *signal_cross_sections* is given, signal files with GenModel_* masspoint
     branches get their per-event weight additionally scaled by
@@ -1464,7 +1491,7 @@ def _load_training_data_from_eventsel(
             for row in reader:
                 label_map[str(row["path"]).strip()] = int(row["label"])
 
-    X_parts, y_parts, w_parts = [], [], []
+    X_parts, y_parts, w_parts, sample_parts = [], [], [], []
     mass_parts: list = []
     feature_sources: dict = {}
     skipped_files: list = []  # (filepath, reason)
@@ -1511,18 +1538,25 @@ def _load_training_data_from_eventsel(
             logging.warning("Failed to read %s — skipping (%s)", fpath, reason)
             skipped_files.append((fpath, reason))
             continue
-
-        _, fpath, sample, df, sig_flag_int, w_arr, mass_arr, src, n = result
+        _, fpath, sample, df, sig_flag_int, w_arr, mass_arr, src, n, weight_stats = result
         X_parts.append(df)
         y_parts.append(np.full(n, sig_flag_int, dtype="i4"))
         w_parts.append(w_arr)
+        sample_parts.append(np.full(n, str(fpath), dtype=object))
         if parametric_input:
             mass_parts.append(mass_arr)
         for feat in df.columns:
             if feat not in feature_sources:
                 feature_sources[feat] = src.get(feat, "unknown")
 
-        logging.info("Loaded %s: n=%d signal=%d", sample, n, sig_flag_int)
+        logging.info(
+            "Loaded %s: n=%d signal=%d signed_negative=%d sum_signed=%.6g",
+            sample,
+            n,
+            sig_flag_int,
+            weight_stats["negative_events"],
+            weight_stats["sum_signed"],
+        )
 
     if not X_parts:
         logging.error("No training events loaded — check input files and signal/background flags.")
@@ -1547,7 +1581,8 @@ def _load_training_data_from_eventsel(
     y = np.concatenate(y_parts)
     w = np.concatenate(w_parts)
     mass = np.concatenate(mass_parts, axis=0) if parametric_input else None
-    return X, y, w, feature_sources, mass
+    sample_ids = np.concatenate(sample_parts)
+    return X, y, w, feature_sources, mass, sample_ids
 
 
 def train_dnn(args):
@@ -1612,7 +1647,7 @@ def train_dnn(args):
             )
 
     # Load feature matrix directly from flat Events trees — no ppbbchichi-trees.root written
-    X, y, w, feature_sources, mass = _load_training_data_from_eventsel(
+    X, y, w, feature_sources, mass, sample_ids = _load_training_data_from_eventsel(
         input_files=input_files,
         region=getattr(args, "region", "preselection"),
         signal_patterns=(args.signal_pattern or None),
@@ -1633,6 +1668,7 @@ def train_dnn(args):
         X=X,
         y=y,
         w=w,
+        sample_ids=sample_ids,
         feature_sources=feature_sources,
         outdir=args.outdir,
         plot_dir=args.plot_dir,
