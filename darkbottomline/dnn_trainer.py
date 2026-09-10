@@ -417,7 +417,7 @@ def fit_dnn_weight_models(
     cfg = dict(config or {})
     mode = str(cfg.get("mode", "clip_negative")).strip().lower()
     w = np.asarray(signed_weights, dtype="f8")
-    samples = np.asarray(sample_ids).astype(str)
+    samples = np.asarray(sample_ids, dtype=object)
     if len(features) != w.size or samples.size != w.size:
         raise ValueError("Feature, signed-weight, and sample-ID lengths must match.")
 
@@ -459,7 +459,7 @@ def apply_dnn_weight_models(
     cfg = dict(config or {})
     mode = str(cfg.get("mode", "clip_negative")).strip().lower()
     w = np.asarray(signed_weights, dtype="f8")
-    samples = np.asarray(sample_ids).astype(str)
+    samples = np.asarray(sample_ids, dtype=object)
     if len(features) != w.size or samples.size != w.size:
         raise ValueError("Feature, signed-weight, and sample-ID lengths must match.")
 
@@ -1032,7 +1032,7 @@ def _split_weight_summary(
     signed = np.asarray(signed_weights, dtype="f8")
     local = np.asarray(local_weights, dtype="f8")
     loss = np.asarray(loss_weights, dtype="f8") if loss_weights is not None else local
-    samples = np.asarray(sample_ids).astype(str)
+    samples = np.asarray(sample_ids, dtype=object)
 
     def _one(mask: np.ndarray) -> Dict[str, Any]:
         return {
@@ -1591,7 +1591,7 @@ class DNNTrainer:
         y = np.asarray(y, dtype="i4")
         w_signed = np.asarray(w, dtype="f8")
         w_signed = np.where(np.isfinite(w_signed), w_signed, 0.0)
-        sample_ids = np.asarray(sample_ids).astype(str)
+        sample_ids = np.asarray(sample_ids, dtype=object)
         if y.size != n_events or w_signed.size != n_events or sample_ids.size != n_events:
             raise ValueError("X, y, signed weights, and sample IDs must have equal lengths.")
 

@@ -85,10 +85,15 @@ from darkbottomline.dnn_trainer import (  # noqa: E402
 
 MODES = ("absolute", "local_cancellation", "clip_negative")
 SIGNAL_NAME = "BBDM-2HDMa-5f_TuneCP5_13p6TeV_madgraph-pythia8-RunIII2024Summer24NanoAODv15-FSMiniv6_FSNanov15_150X_mcRun3_2024_realistic_v2-v2_EVENTSELECTION"
-BKG_GLOBS = (
-    "DYto2L-2Jets_Bin-2J*_EVENTSELECTION.root",
-    "WtoLNu-2Jets_Bin-2J*_EVENTSELECTION.root",
-    "Zto2Nu-2Jets_Bin-2J*_EVENTSELECTION.root",
+# Full background composition of the analysis (everything in eventsel-merged
+# that is MC and not signal), except two files that uproot cannot read:
+#   TTto2L2Nu              — unrecognized compression algorithm b'\x00L'
+#   TbarWplustoLNu2Q       — basket-entry structure unsupported by uproot
+BKG_GLOBS = ("*_EVENTSELECTION.root",)
+BKG_EXCLUDE_PREFIXES = (
+    "EGamma", "JetMET",          # data
+    "BBDM",                      # signal (incl. the dedicated MH3=500 point)
+    "TTto2L2Nu", "TbarWplustoLNu2Q",  # unreadable by uproot 5.6.x
 )
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -150,6 +155,9 @@ def load_dataset(
     file_specs.append((str(sig_path), 1, max_events_signal))
     for pat in BKG_GLOBS:
         for fp in sorted(glob.glob(str(Path(events_dir) / pat))):
+            stem = Path(fp).stem
+            if any(stem.startswith(p) for p in BKG_EXCLUDE_PREFIXES):
+                continue
             file_specs.append((fp, 0, max_events_bkg))
     if not file_specs:
         raise FileNotFoundError("No background files matched.")
@@ -523,6 +531,12 @@ def evaluate_scheme(
         result["best_z_syst"]["limit_mu95"] = _cl95_upper_limit(s_b, b_b, sig_syst)
     if at20:
         result["at_eff_s_20"]["limit_mu95"] = _cl95_upper_limit(at20["s"], at20["b"], sig_syst)
+
+    # Persist raw test scores + weights so distribution plots can use fine bins
+    np.savez(
+        outdir / "test_scores.npz",
+        scores=scores, y=y_test, w_signed=w_test, w_local=w_test_local,
+    )
     return result
 
 
@@ -592,6 +606,397 @@ def make_plots(results: Dict[str, Dict], outdir: Path, sig_syst: float):
     fig.tight_layout(); fig.savefig(outdir / "neff_sigma_vs_cut.png", dpi=300); plt.close(fig)
 
 
+def make_delta_plots(results: Dict[str, Dict], outdir: Path):
+    """Relative-advantage diagnostics.
+
+    The raw Z-vs-efficiency plot hides a 3-12% scheme difference on its
+    linear 0-12 scale, so these panels show the difference directly:
+      (1) dZ = Z_bin(mode) - Z_bin(|w|)  vs signal efficiency
+      (2) background efficiency vs signal efficiency on a LOG scale
+          (background rejection is where the local scheme wins)
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    colors = {"absolute": "#1f77b4", "local_cancellation": "#2ca02c", "clip_negative": "#d62728"}
+    labels = {"absolute": "|w| training", "local_cancellation": "local aggregation", "clip_negative": "positive-only"}
+
+    grid = np.linspace(0.02, 0.95, 400)
+
+    def _curve(mode: str, key: str) -> np.ndarray:
+        rows = sorted(results[mode]["scan"], key=lambda r: r["eff_s"])
+        e = np.array([r["eff_s"] for r in rows])
+        v = np.array([r[key] for r in rows])
+        return np.interp(grid, e, v)
+
+    z_ref = _curve("absolute", "z_bin_syst")
+    fig, axes = plt.subplots(2, 1, figsize=(9.5, 10.5), sharex=True)
+
+    # (1) delta Z vs |w| training
+    ax = axes[0]
+    for mode, c in (("local_cancellation", colors["local_cancellation"]), ("clip_negative", colors["clip_negative"])):
+        dz = _curve(mode, "z_bin_syst") - z_ref
+        ax.plot(grid, dz, color=c, lw=2, label=f"{labels[mode]} − |w| training")
+    ax.axhline(0.0, color="gray", lw=0.8)
+    ax.axvspan(0.02, 0.15, color="gray", alpha=0.15, label="MC-noise-dominated tail (B≲20)")
+    ax.set_ylabel(r"$\Delta Z_{\mathrm{binned}}$")
+    ax.set_title("Binned Asimov Z advantage relative to |w| training (20% bkg syst)")
+    ax.legend(loc="lower left"); ax.grid(alpha=0.3)
+
+    # (2) background rejection, log scale
+    ax = axes[1]
+    for mode, c in colors.items():
+        eb = 100.0 * _curve(mode, "eff_b")
+        ax.semilogy(grid, eb, color=c, lw=2, label=labels[mode])
+    ax.axvspan(0.02, 0.15, color="gray", alpha=0.15)
+    ax.set_xlabel("Signal efficiency")
+    ax.set_ylabel(r"Background efficiency $\varepsilon_b$ [%] (log)")
+    ax.set_title("Background rejection vs signal efficiency — local advantage lives in the high-purity tail")
+    ax.legend(); ax.grid(alpha=0.3, which="both")
+
+    fig.tight_layout()
+    fig.savefig(outdir / "z_delta_and_rejection.png", dpi=300)
+    plt.close(fig)
+
+
+def make_weighted_score_plots(results: Dict[str, Dict], outdir: Path):
+    """Normalized, WEIGHTED DNN-score distributions — the key physics figure.
+
+    Panels (all normalized, all with weights):
+      (0,0) signal,   SIGNED weights, linear
+      (0,1) background, SIGNED weights, log y
+      (1,0) background, SIGNED weights, log y, zoomed to the high-score tail
+            with each scheme's eps_sig=20% working-point cut drawn
+      (1,1) background, each scheme's OWN training weights (|w| / max(w,0) /
+            local-cell weights) vs the signed physical shape — this is the
+            density each network actually learned from, and why |w| inflates
+            cancellation regions while local tracks the signed shape.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    colors = {"absolute": "#1f77b4", "local_cancellation": "#2ca02c", "clip_negative": "#d62728"}
+    labels = {"absolute": "|w| training", "local_cancellation": "local aggregation", "clip_negative": "positive-only"}
+
+    def _norm_hist(x, w, bins):
+        h, _ = np.histogram(x, bins=bins, weights=w)
+        s = h.sum()
+        return h / s if abs(s) > 1e-12 else np.zeros_like(h)
+
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    bins_full = np.linspace(0.0, 1.0, 101)
+    bins_tail = np.linspace(0.70, 1.0, 61)
+    centers_full = 0.5 * (bins_full[:-1] + bins_full[1:])
+    centers_tail = 0.5 * (bins_tail[:-1] + bins_tail[1:])
+
+    # (0,0) signal, signed, linear
+    ax = axes[0, 0]
+    for mode in MODES:
+        z = np.load(outdir / mode / "test_scores.npz")
+        m = z["y"] == 1
+        ax.step(centers_full, _norm_hist(z["scores"][m], z["w_signed"][m], bins_full),
+                where="mid", color=colors[mode], lw=1.8, label=labels[mode])
+    ax.set_xlabel("DNN score"); ax.set_ylabel("Normalized signed yield")
+    ax.set_title("Signal score distribution (signed weights)")
+    ax.legend(fontsize=9); ax.grid(alpha=0.3, which="both")
+
+    # (0,1) background, signed, log y
+    ax = axes[0, 1]
+    for mode in MODES:
+        z = np.load(outdir / mode / "test_scores.npz")
+        m = z["y"] == 0
+        h = _norm_hist(z["scores"][m], z["w_signed"][m], bins_full)
+        ax.step(centers_full, np.maximum(h, 1e-6), where="mid", color=colors[mode], lw=1.8, label=labels[mode])
+    ax.set_yscale("log")
+    ax.set_xlabel("DNN score"); ax.set_ylabel("Normalized signed yield (log)")
+    ax.set_title("Background score distribution (signed weights, log)")
+    ax.legend(fontsize=9); ax.grid(alpha=0.3, which="both")
+
+    # (1,0) background tail zoom, signed, with eps_sig=20% cuts
+    ax = axes[1, 0]
+    for mode in MODES:
+        z = np.load(outdir / mode / "test_scores.npz")
+        m = z["y"] == 0
+        h = _norm_hist(z["scores"][m], z["w_signed"][m], bins_tail)
+        ax.step(centers_tail, np.maximum(h, 1e-6), where="mid", color=colors[mode], lw=1.8, label=labels[mode])
+        thr = results[mode]["at_eff_s_20"]["threshold"]
+        ax.axvline(thr, color=colors[mode], ls="--", lw=1.0, alpha=0.7,
+                   label=f"{labels[mode]} cut @ε_sig=20% ({thr:.3f})")
+    ax.set_yscale("log")
+    ax.set_xlabel("DNN score"); ax.set_ylabel("Normalized signed yield (log)")
+    ax.set_title("Background tail zoom (signed weights) — the region that decides ε_bkg")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3, which="both")
+
+    # (1,1) training-weight density vs signed shape (background, tail)
+    ax = axes[1, 1]
+    z0 = np.load(outdir / "absolute" / "test_scores.npz")
+    m0 = z0["y"] == 0
+    h_ref = _norm_hist(z0["scores"][m0], z0["w_signed"][m0], bins_tail)
+    ax.step(centers_tail, np.maximum(h_ref, 1e-6), where="mid", color="black", lw=2.2,
+            label="signed physical shape (reference)")
+    for mode in MODES:
+        z = np.load(outdir / mode / "test_scores.npz")
+        m = z["y"] == 0
+        h = _norm_hist(z["scores"][m], z["w_local"][m], bins_tail)
+        ax.step(centers_tail, np.maximum(h, 1e-6), where="mid", color=colors[mode], lw=1.6,
+                ls="--", label=f"{labels[mode]} training weights")
+    ax.set_yscale("log")
+    ax.set_xlabel("DNN score"); ax.set_ylabel("Normalized density (log)")
+    ax.set_title("Background: density each network was trained on vs signed truth")
+    ax.legend(fontsize=8); ax.grid(alpha=0.3, which="both")
+
+    fig.suptitle("Normalized weighted DNN-score distributions (test split)", fontsize=13)
+    fig.tight_layout(rect=[0, 0, 1, 0.97])
+    fig.savefig(outdir / "score_distributions_weighted.png", dpi=300)
+    plt.close(fig)
+
+
+def make_scheme_vs_signed_summary_plots(outdir: Path):
+    """2x3 figure, one column per scheme. Each column:
+
+      TOP panel (log y), three area-normalized curves of THAT scheme's model:
+        orange = background with the scheme's own training weights (|w| / local / max(w,0))
+        blue   = background with SIGNED weights
+        green  = signal with SIGNED weights
+      BOTTOM panel: per-bin ratio of the normalized scheme-weight background
+        histogram to the normalized signed background histogram (dashed line = 1).
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    schemes = (
+        ("absolute", "|w| training model"),
+        ("local_cancellation", "local aggregation model"),
+        ("clip_negative", "positive-only model"),
+    )
+    fig, axes = plt.subplots(2, 3, figsize=(18, 11), sharex=True, sharey="row")
+    bins = np.linspace(0.0, 1.0, 51)
+    centers = 0.5 * (bins[:-1] + bins[1:])
+
+    def _norm_hist(x, w):
+        h, _ = np.histogram(x, bins=bins, weights=w)
+        tot = h.sum()
+        return h / tot if abs(tot) > 1e-12 else np.zeros_like(h)
+
+    for j, (mode, title) in enumerate(schemes):
+        z = np.load(outdir / mode / "test_scores.npz")
+        s = z["scores"]
+        y = z["y"].astype(bool)
+        w_signed = z["w_signed"]
+        w_scheme = z["w_local"]
+
+        h_sig = _norm_hist(s[y], w_signed[y])
+        h_bkg_signed = _norm_hist(s[~y], w_signed[~y])
+        h_bkg_scheme = _norm_hist(s[~y], w_scheme[~y])
+
+        ax = axes[0, j]
+        ax.set_yscale("log")
+        ax.step(centers, np.maximum(h_bkg_scheme, 1e-6), where="mid", color="#e76300",
+                lw=2.0, label=f"{mode} weights (bkg)")
+        ax.step(centers, np.maximum(h_bkg_signed, 1e-6), where="mid", color="#3f90da",
+                lw=1.8, label="signed (bkg)")
+        ax.step(centers, np.maximum(h_sig, 1e-6), where="mid", color="#2ca02c",
+                lw=1.8, label="signed (sig)")
+        ax.set_ylabel("Normalized density (log)")
+        ax.set_title(title)
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3, which="both")
+
+        ax = axes[1, j]
+        ratio = np.divide(
+            h_bkg_scheme, h_bkg_signed,
+            out=np.full_like(h_bkg_signed, np.nan),
+            where=np.abs(h_bkg_signed) > 1e-9,
+        )
+        ax.axhline(1.0, color="black", lw=0.9, ls="--")
+        ax.plot(centers, ratio, color="#e76300", marker="o", ms=3, lw=1.2,
+                label=f"{mode} bkg / signed bkg")
+        ax.set_ylim(0.5, 1.5)
+        ax.set_xlabel("DNN score")
+        ax.set_ylabel("Ratio (norm.)")
+        ax.legend(fontsize=8)
+        ax.grid(alpha=0.3)
+
+    fig.suptitle("Per-scheme DNN-score distributions: own weights vs signed (test split)",
+                 fontsize=13)
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.savefig(outdir / "score_distribution_scheme_vs_signed_summary.png", dpi=300)
+    plt.close(fig)
+
+
+def make_yield_closure_plots(outdir: Path):
+    """Cut-based yield closure curve, three schemes side by side in ONE figure:
+
+        R(t) = [sum_{score>t} w_own] / [sum_{score>t} w_signed]   (background)
+
+    as a function of the DNN-score threshold t. R(t) = 1 means the scheme's
+    effective non-negative weights reproduce the physical signed yield of the
+    cut region. Signal is trivial (no negative weights -> exactly 1) and is
+    not plotted.
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    schemes = (
+        ("absolute", "|w| training"),
+        ("local_cancellation", "local aggregation"),
+        ("clip_negative", "positive-only"),
+    )
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5.2), sharex=True, sharey=True)
+    grid = np.linspace(0.0, 0.9995, 500)
+    for ax, (mode, title) in zip(axes, schemes):
+        z = np.load(outdir / mode / "test_scores.npz")
+        s, y, w, wl = z["scores"], z["y"].astype(bool), z["w_signed"], z["w_local"]
+        b = ~y
+        sb, wb, wlb = s[b], w[b], wl[b]
+        # ascending scores; suffix sums = yields of events with score > t
+        order = np.argsort(sb)
+        xs = sb[order]
+        suf_own = np.cumsum(wlb[order][::-1])[::-1]
+        suf_sig = np.cumsum(wb[order][::-1])[::-1]
+        n_above = np.arange(len(xs), 0, -1)
+        idx = np.searchsorted(xs, grid, side="right")
+        ok = idx < len(xs)
+        ratio = np.where(ok, suf_own[np.minimum(idx, len(xs) - 1)] / suf_sig[np.minimum(idx, len(xs) - 1)], np.nan)
+        n_ab = np.where(ok, n_above[np.minimum(idx, len(xs) - 1)], 0)
+        keep = n_ab >= 50
+        ax.plot(grid[keep], ratio[keep], color="#1f6fb2", lw=1.6)
+        ax.axhline(1.0, color="black", ls="--", lw=0.8, alpha=0.6)
+        ax.set_xlabel("DNN score threshold $t$")
+        ax.set_ylim(0.9, 1.6)
+        ax.set_title(title)
+        ax.grid(alpha=0.3, which="both")
+        ax.axhline(1.0, color="black", ls="--", lw=0.8, alpha=0.6)
+        ax.set_xlabel("DNN score threshold $t$")
+        ax.set_ylim(0.9, 1.6)
+        ax.set_title(title)
+        ax.grid(alpha=0.3, which="both")
+
+    axes[0].set_ylabel(r"$\sum_{D>t} w_{\rm own}\;/\;\sum_{D>t} w_{\rm signed}$ (background)")
+    fig.suptitle("Cut-based yield closure (background, test split)", fontsize=13)
+    fig.tight_layout(rect=[0, 0, 1, 0.95])
+    fig.savefig(outdir / "yield_closure_summary.png", dpi=300)
+    plt.close(fig)
+
+
+def make_cell_alpha_plots(outdir: Path, X, y, w, sample_ids):
+    """Cell-level cancellation structure of the local scheme's cells.
+
+    Cells C_k in (njets, n_bjets, costheta_star, Recoil, JetHT), as used by
+    local_cancellation. Per cell, on background TRAIN rows:
+
+        alpha_k = sum_{i in C_k} w_i / sum_{i in C_k} |w_i|
+
+    alpha = 1 for all-positive cells; alpha < 1 measures the local cancellation.
+
+      left  : |w|-weighted histogram of alpha_k  (log y)
+      right : alpha_k vs the cell's mean DNN score (local model, test rows),
+              i.e. how strong the cancellation is in cells near the boundary
+
+    Scheme implication per cell (annotated):
+      local  : w~ = |w| * alpha_k          -> cell yield ratio = 1 (closure)
+      |w|    : w~ = |w|                    -> cell yield ratio = 1/alpha_k
+      positive-only: w~ = max(w,0)         -> cell yield ratio = 1 + sum|w^-|/sum w
+    """
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from sklearn.model_selection import train_test_split
+    from darkbottomline.dnn_trainer import _local_weight_cell_codes, _DEFAULT_LOCAL_WEIGHT_BINS
+
+    tc = yaml.safe_load(Path("configs/dnn.yaml").read_text()).get("training", {})
+    seed = int(tc.get("seed", 7))
+    val_size = float(tc.get("val_size", 0.2))
+    test_size = float(tc.get("test_size", 0.3))
+    indices = np.arange(len(X), dtype="i8")
+    train_idx, temp_idx = train_test_split(
+        indices, test_size=val_size + test_size, random_state=seed, stratify=y,
+    )
+    val_idx, test_idx = train_test_split(
+        temp_idx, test_size=test_size / (val_size + test_size),
+        random_state=seed, stratify=y[temp_idx],
+    )
+
+    required = {"njets", "n_bjets", "costheta_star", "Recoil", "JetHT"}
+    bins = _DEFAULT_LOCAL_WEIGHT_BINS
+
+    def cell_key(frame):
+        codes = _local_weight_cell_codes(frame, bins, required, missing_sentinel=-9999.0)
+        return np.column_stack([codes[n] for n in sorted(required - {"has_jet2"})])
+
+    # ---- train background cells: alpha_k = sum w / sum |w| -------------------
+    Xtr = X.iloc[train_idx]
+    wtr = np.asarray(w, dtype="f8")[train_idx]
+    mtr = (np.asarray(y, dtype="i4")[train_idx] == 0)
+    key_tr = cell_key(Xtr[mtr])
+    uniq, inv = np.unique(key_tr, axis=0, return_inverse=True)
+    sum_w = np.bincount(inv, weights=wtr[mtr], minlength=len(uniq))
+    sum_abs = np.bincount(inv, weights=np.abs(wtr[mtr]), minlength=len(uniq))
+    alpha_k = np.divide(sum_w, sum_abs, out=np.zeros_like(sum_w), where=sum_abs > 0)
+    wcell = sum_abs
+    use = (wcell > 1e-9) & (np.bincount(inv, minlength=len(uniq)) >= 10)
+    alpha_use = alpha_k[use]
+    wcell_use = wcell[use]
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 5.5))
+
+    ax = axes[0]
+    h, edges, _ = ax.hist(alpha_use, bins=40, range=(0.0, 1.0), weights=wcell_use,
+                          color="#1f6fb2", alpha=0.8, edgecolor="white", linewidth=0.4)
+    ax.set_yscale("log")
+    ax.axvline(alpha_use.sum() and float(np.sum(sum_w) / max(np.sum(sum_abs), 1e-12)),
+               color="#d62728", ls="--", lw=1.4,
+               label=f"global $\\alpha$ = {np.sum(sum_w)/max(np.sum(sum_abs),1e-12):.3f}")
+    ax.set_xlabel(r"$\alpha_{k} = \sum_{C_k}w / \sum_{C_k}|w|$")
+    ax.set_ylabel(r"$\sum_{C_k}|w|$ per bin (log)")
+    ax.set_title(f"Cell cancellation structure (train background cells)")
+    ax.legend()
+    ax.grid(alpha=0.3, which="both")
+
+    # ---- alpha vs cell mean score (local model, test rows) -------------------
+    zl = np.load(outdir / "local_cancellation" / "test_scores.npz")
+    s_te, y_te = zl["scores"], zl["y"].astype(bool)
+    Xte = X.iloc[test_idx]
+    key_te = cell_key(Xte[~y_te])
+    # match test cells to train alpha
+    idx_map = {tuple(int(v) for v in u.tolist()): i for i, u in enumerate(uniq)}
+    a_te = np.array([alpha_k[idx_map.get(tuple(int(v) for v in k.tolist()), -1)]
+                     if tuple(int(v) for v in k.tolist()) in idx_map else np.nan for k in key_te])
+    ok = np.isfinite(a_te)
+    ax = axes[1]
+    # per-cell mean score
+    key_te2, inv_te = np.unique(key_te[ok], axis=0, return_inverse=True)
+    ms = np.bincount(inv_te, weights=s_te[~y_te][ok], minlength=len(key_te2))
+    cnt = np.bincount(inv_te, minlength=len(key_te2))
+    ms = np.divide(ms, cnt, out=np.full_like(ms, np.nan), where=cnt > 0)
+    a_mean = np.array([
+        alpha_k[idx_map[tuple(int(v) for v in k.tolist())]] if tuple(int(v) for v in k.tolist()) in idx_map else np.nan
+        for k in key_te2])
+    m_ok = np.isfinite(a_mean) & np.isfinite(ms) & (cnt >= 30)
+    m_neg = m_ok & (a_mean < 0.0)
+    ax.scatter(ms[m_ok & ~m_neg], a_mean[m_ok & ~m_neg], s=8, color="#1f6fb2", alpha=0.6)
+    ax.scatter(ms[m_neg], a_mean[m_neg], s=18, color="#d62728", alpha=0.9)
+    ax.axhline(1.0, color="#2ca02c", ls="--", lw=1.0, label=r"$\alpha=1$ (no negatives)")
+    ax.set_ylim(-0.1, 1.05)
+    ax.set_xlabel("Cell mean DNN score (local model, test)")
+    ax.set_ylabel(r"$\alpha_{k}$ (train-fitted)")
+    ax.set_title("Cancellation vs distance to decision boundary")
+    ax.legend()
+    ax.grid(alpha=0.3)
+
+    fig.suptitle(
+        "Cell-level cancellation: local keeps cell yield ratio = 1; |w| inflates by 1/alpha; "
+        "positive-only adds sum|w-|/sum w per cell", fontsize=11)
+    fig.tight_layout(rect=[0, 0, 1, 0.94])
+    fig.savefig(outdir / "cell_alpha_distribution.png", dpi=300)
+    plt.close(fig)
+
+
 def _fmt(v, nd=3):
     if v is None:
         return "—"
@@ -607,7 +1012,7 @@ def write_comparison(results: Dict[str, Dict], outdir: Path, sig_syst: float):
     row_names = [
         "Test events N", "Test AUC (local w)",
         "Score dist. agreement TV (sig / bkg)",
-        "Shape chi2/Nbins (sig / bkg)",
+        "Shape chi2/Nbins: own-w shape vs signed (sig / bkg)",
         "Yield bias (sig / bkg) [%]",
         "eps_bkg @ eps_sig=20% [%]", "eps_sig @ eps_bkg=1% [%]",
         "sum w^2 background (incl / @WP)",
@@ -701,7 +1106,9 @@ def parse_args():
 def main():
     args = parse_args()
     torch.set_num_threads(args.threads)
-    os.environ["DNN_SCAN_WORKERS"] = "1"
+    # Two scan workers x 1 torch thread each keeps the total thread budget at 2
+    # (the main process is idle while the per-feature scans run).
+    os.environ["DNN_SCAN_WORKERS"] = "2"
 
     base_config = yaml.safe_load(Path(args.config).read_text())
     if args.epochs is not None:
@@ -742,6 +1149,10 @@ def main():
         )
 
     make_plots(results, outdir, args.sig_syst)
+    make_delta_plots(results, outdir)
+    make_weighted_score_plots(results, outdir)
+    make_scheme_vs_signed_summary_plots(outdir)
+    make_cell_alpha_plots(outdir, X, y, w, sample_ids)
     write_comparison(results, outdir, args.sig_syst)
 
     payload = {

@@ -1254,16 +1254,27 @@ def _load_one_eventsel_file(task: tuple):
             if "Events" not in in_f:
                 return ("skip", fpath, "No Events tree")
             tree = in_f["Events"]
+            # Randomly sample ~half of each ROOT file's events for training
+            # (signal and background only; data files are skipped above).
+            # Deterministic per (run seed, file index); the CLI
+            # --max-events-per-sample cap is intentionally not applied here.
+            n_total = int(tree.num_entries)
+            sampling_rng = np.random.default_rng((seed, file_index, 0))
+            keep = sampling_rng.random(n_total) < 0.5
+
             df, src, _ = build_feature_frame_from_tree(
                 tree, feat_list,
-                max_events=max_events_per_file,
+                max_events=None,
+                entry_mask=keep,
             )
             df = sanitize_feature_frame(df)
             n = len(df)
 
             avail = set(tree.keys())
             if weight_branch in avail:
-                w_arr = read_branch_as_array(tree, weight_branch, max_events=n).astype("f8")
+                w_arr = read_branch_as_array(
+                    tree, weight_branch, max_events=None, entry_mask=keep
+                ).astype("f8")
                 w_arr = np.where(np.isfinite(w_arr), w_arr, 0.0)
             else:
                 w_arr = np.ones(n, dtype="f8")
@@ -1284,7 +1295,9 @@ def _load_one_eventsel_file(task: tuple):
                 gm_cols = sorted(k for k in avail if str(k).startswith("GenModel_"))
                 if gm_cols:
                     if wte > 0:
-                        gm_arr = read_tree_branches_as_arrays(tree, gm_cols, max_events=n)
+                        gm_arr = read_tree_branches_as_arrays(
+                            tree, gm_cols, max_events=None, entry_mask=keep
+                        )
                         mp_scale = np.ones(n, dtype="f8")
                         for gmc in gm_cols:
                             mask = gm_arr[gmc][:n].astype(bool)
@@ -1322,7 +1335,7 @@ def _load_one_eventsel_file(task: tuple):
                     mass_arr = np.full((n, 2), np.nan, dtype="f8")
                     if gm_cols_mass:
                         gm_arr_mass = read_tree_branches_as_arrays(
-                            tree, gm_cols_mass, max_events=n
+                            tree, gm_cols_mass, max_events=None, entry_mask=keep
                         )
                         for gmc in gm_cols_mass:
                             parsed = _parse_masspoint_label(gmc[len("GenModel_"):])

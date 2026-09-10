@@ -60,6 +60,7 @@ def build_feature_frame_from_tree(
     tree,
     features: list[str],
     max_events: int | None = None,
+    entry_mask=None,
 ):
     """Build a feature DataFrame from a tree by exact branch name.
 
@@ -77,7 +78,7 @@ def build_feature_frame_from_tree(
     to_read = sorted(b for b in features if b in available)
 
     arrays_raw = (
-        read_tree_branches_as_arrays(tree, to_read, max_events=max_events)
+        read_tree_branches_as_arrays(tree, to_read, max_events=max_events, entry_mask=entry_mask)
         if to_read else {}
     )
     arrays = _trim_arrays(arrays_raw, max_events=max_events)
@@ -86,7 +87,10 @@ def build_feature_frame_from_tree(
         n = len(next(iter(arrays.values())))
     else:
         n_entries = int(tree.num_entries)
-        n = min(n_entries, int(max_events)) if max_events is not None else n_entries
+        if entry_mask is not None:
+            n = int(np.count_nonzero(np.asarray(entry_mask, dtype=bool)[:n_entries]))
+        else:
+            n = min(n_entries, int(max_events)) if max_events is not None else n_entries
 
     nan_vec = np.full(n, np.nan, dtype="f8")
 
