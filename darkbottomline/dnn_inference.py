@@ -118,25 +118,42 @@ class DNNInference:
             if isinstance(cfg_grid, list) and cfg_grid:
                 self.mass_grid = [list(m) for m in cfg_grid]
 
-        # Feature list, in priority order: dnn.yaml config -> features.json
-        # sidecar (written by the trainer next to the checkpoint, the true
-        # record of what this specific model was trained on). No further
-        # fallback — an unresolvable feature list is a config problem, not
-        # something to silently guess around.
-        self.features: List[str] = list(self.config.get("features") or [])
-        if not self.features:
-            features_path = Path(model_path).parent / "features.json"
-            if features_path.exists():
-                try:
-                    self.features = json.loads(features_path.read_text())
-                except Exception:
-                    self.features = []
+        # Feature list: the checkpoint's own features.json sidecar is
+        # authoritative — it records exactly the features this model was
+        # trained on. The yaml config is only a fallback (and is checked for
+        # consistency) so a mismatched --dnn-config cannot silently turn into
+        # a broadcast/shape error at scoring time.
+        sidecar_features: List[str] = []
+        features_path = Path(model_path).parent / "features.json"
+        if features_path.exists():
+            try:
+                sidecar_features = [str(f) for f in json.loads(features_path.read_text())]
+            except Exception:
+                sidecar_features = []
+        cfg_features: List[str] = [str(f) for f in (self.config.get("features") or [])]
+
+        self.features: List[str] = sidecar_features or cfg_features
         if not self.features:
             raise ValueError(
                 f"Could not determine feature list for {model_path}: "
                 f"no 'features' in config_path={config_path!r} and no "
                 f"features.json next to the checkpoint. Pass --dnn-config "
                 f"with a features: list, or ensure features.json exists."
+            )
+        if sidecar_features and cfg_features and cfg_features != sidecar_features:
+            logging.warning(
+                "DNNInference: --dnn-config features (%d) differ from the "
+                "checkpoint's features.json (%d) — using the checkpoint's own "
+                "feature list.",
+                len(cfg_features), len(sidecar_features),
+            )
+        if self._scaler is not None and len(self._scaler.mean) != len(self.features):
+            raise ValueError(
+                f"DNNInference: checkpoint {model_path} scaler expects "
+                f"{len(self._scaler.mean)} features but the resolved feature "
+                f"list has {len(self.features)} — model/config mismatch "
+                f"(did you pass --dnn-model from a different feature set than "
+                f"--dnn-config?)."
             )
 
         logging.info(
