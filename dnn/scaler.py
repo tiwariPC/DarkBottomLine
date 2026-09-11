@@ -23,7 +23,7 @@ class StandardScaler:
 
     @staticmethod
     def fit(X: np.ndarray, *, missing_sentinel: float = -9999.0) -> "StandardScaler":
-        X = np.asarray(X, dtype="f8")
+        X = np.asarray(X)
         if X.ndim != 2:
             raise ValueError(f"Expected 2D array, got shape={X.shape}")
 
@@ -46,11 +46,13 @@ class StandardScaler:
         return StandardScaler(mean=mean, std=std, missing_sentinel=float(missing_sentinel))
 
     def transform(self, X: np.ndarray) -> np.ndarray:
-        X = np.asarray(X, dtype="f8")
+        X = np.asarray(X)
         if X.ndim != 2:
             raise ValueError(f"Expected 2D array, got shape={X.shape}")
 
-        Xn = (X - self.mean[None, :]) / self.std[None, :]
+        mean = self.mean.astype(X.dtype, copy=False)
+        std = self.std.astype(X.dtype, copy=False)
+        Xn = (X - mean[None, :]) / std[None, :]
         missing = (~np.isfinite(X)) | (X == float(self.missing_sentinel))
         if np.any(missing):
             Xn = Xn.copy()
