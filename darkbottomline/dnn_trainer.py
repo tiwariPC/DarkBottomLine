@@ -781,6 +781,23 @@ def _weighted_corrcoef(sx: np.ndarray, sy: np.ndarray, sw: np.ndarray) -> float:
     return cov_xy / np.sqrt(cov_xx * cov_yy)
 
 
+def _batched_predict_logits(net, X, batch_size: int):
+    """Forward pass in chunks, returning concatenated logits without ever
+    materializing the full (N x hidden) activation tensor at once."""
+    outs = []
+    bs = int(batch_size)
+    for start in range(0, int(X.shape[0]), bs):
+        outs.append(net(X[start:start + bs]).squeeze(1))
+    if not outs:
+        return torch.empty(0, device=X.device)
+    return torch.cat(outs)
+
+
+def _batched_predict_sigmoid(net, X, batch_size: int) -> np.ndarray:
+    """Batched forward pass returning sigmoid scores as a numpy array."""
+    return torch.sigmoid(_batched_predict_logits(net, X, batch_size)).cpu().numpy()
+
+
 def _plot_feature_correlation(
     X_df,
     features: list[str],
@@ -807,7 +824,7 @@ def _plot_feature_correlation(
     CMSPlotStyle().set_style()
 
     n = len(features)
-    X = np.asarray(X_df[features].to_numpy(), dtype="f8")
+    X = np.asarray(X_df[features].to_numpy())
     X = np.where((X == SENTINEL) | ~np.isfinite(X), np.nan, X)
     w_all = np.maximum(np.asarray(weights, dtype="f8"), 0.0) if weights is not None else None
 
@@ -1588,6 +1605,10 @@ class DNNTrainer:
         from sklearn.metrics import roc_auc_score, roc_curve
 
         n_events = len(X)
+        # Keep feature matrices in float32 throughout; the model is trained
+        # in float32 anyway, and float64 copies of a ~10M-row frame are what
+        # exhaust memory on shared hosts.
+        X = X.astype("float32", copy=False)
         y = np.asarray(y, dtype="i4")
         w_signed = np.asarray(w, dtype="f8")
         w_signed = np.where(np.isfinite(w_signed), w_signed, 0.0)
@@ -1766,9 +1787,9 @@ class DNNTrainer:
             w_test_loss *= np.where(y_test_i == 1, f_s, f_b)
 
         # Scale
-        X_train_np = X_train.to_numpy(dtype="f8")
-        X_val_np = X_val.to_numpy(dtype="f8")
-        X_test_np = X_test.to_numpy(dtype="f8")
+        X_train_np = X_train.to_numpy(dtype="f4")
+        X_val_np = X_val.to_numpy(dtype="f4")
+        X_test_np = X_test.to_numpy(dtype="f4")
         self._dnn_scaler = _StandardScaler.fit(X_train_np, missing_sentinel=-9999.0)
         X_train_np = self._dnn_scaler.transform(X_train_np).astype("float32")
         X_val_np = self._dnn_scaler.transform(X_val_np).astype("float32")
@@ -1844,7 +1865,7 @@ class DNNTrainer:
             net.eval()
             with torch.no_grad():
                 Xva_in = torch.cat([Xva.to(self.device), Mva.to(self.device)], dim=-1) if parametric else Xva.to(self.device)
-                logits_va = net(Xva_in).squeeze(1)
+                logits_va = _batched_predict_logits(net, Xva_in, batch_size)
                 y_score_va = torch.sigmoid(logits_va).cpu().numpy()
                 wva_d = wva_t.to(self.device)
                 loss_val = float(
@@ -1888,9 +1909,9 @@ class DNNTrainer:
                 Xte_in = Xte.to(self.device)
                 Xtr_in = Xtr.to(self.device)
                 Xva_in = Xva.to(self.device)
-            y_score_test = torch.sigmoid(net(Xte_in).squeeze(1)).cpu().numpy()
-            y_score_train = torch.sigmoid(net(Xtr_in).squeeze(1)).cpu().numpy()
-            y_score_val = torch.sigmoid(net(Xva_in).squeeze(1)).cpu().numpy()
+            y_score_test = _batched_predict_sigmoid(net, Xte_in, batch_size)
+            y_score_train = _batched_predict_sigmoid(net, Xtr_in, batch_size)
+            y_score_val = _batched_predict_sigmoid(net, Xva_in, batch_size)
 
         auc_test = float(roc_auc_score(y_test_i, y_score_test, sample_weight=w_test_local))
         auc_train = float(roc_auc_score(y_train_i, y_score_train, sample_weight=w_train_local))
@@ -2048,40 +2069,42 @@ class DNNTrainer:
         # independent model, so dispatch across CPU cores instead of one at a
         # time (this loop was previously the single largest wall-time stage
         # of train-dnn: N features x their own epoch loop, serial, one core).
-        dropout_val = float(self.model_config.get("dropout", 0.1))
-        variable_labels = self.config.get("variable_labels")
-        scan_tasks = []
-        for feat in list(features):
-            xtr_f = np.asarray(X_train[feat].to_numpy(), dtype="f8")
-            xva_f = np.asarray(X_val[feat].to_numpy(), dtype="f8")
-            xte_f = np.asarray(X_test[feat].to_numpy(), dtype="f8")
-            safe_feat = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in str(feat))
-            feat_signif = next((r for r in signif_rows if str(r.get("feature")) == str(feat)), None)
-            scan_tasks.append((
-                feat, xtr_f, xva_f, xte_f, y_train_i, y_val_i, y_test_i,
-                w_train_loss, w_train_local, w_val_local, w_test_local, w_signed_test,
-                seed, single_feat_epochs, batch_size, lr, patience, dropout_val,
-                variable_labels, feature_sources, feat_signif,
-                str(plot_dir_p), safe_feat,
-            ))
+        # Diagnostic-only; skip when single_feature_epochs <= 0.
+        if single_feat_epochs > 0:
+            dropout_val = float(self.model_config.get("dropout", 0.1))
+            variable_labels = self.config.get("variable_labels")
+            scan_tasks = []
+            for feat in list(features):
+                xtr_f = np.asarray(X_train[feat].to_numpy(), dtype="f8")
+                xva_f = np.asarray(X_val[feat].to_numpy(), dtype="f8")
+                xte_f = np.asarray(X_test[feat].to_numpy(), dtype="f8")
+                safe_feat = "".join(ch if ch.isalnum() or ch in ("_", "-") else "_" for ch in str(feat))
+                feat_signif = next((r for r in signif_rows if str(r.get("feature")) == str(feat)), None)
+                scan_tasks.append((
+                    feat, xtr_f, xva_f, xte_f, y_train_i, y_val_i, y_test_i,
+                    w_train_loss, w_train_local, w_val_local, w_test_local, w_signed_test,
+                    seed, single_feat_epochs, batch_size, lr, patience, dropout_val,
+                    variable_labels, feature_sources, feat_signif,
+                    str(plot_dir_p), safe_feat,
+                ))
 
-        num_workers = int(os.environ.get("DNN_SCAN_WORKERS", max(1, (os.cpu_count() or 1))))
-        num_workers = max(1, min(num_workers, len(scan_tasks)))
+            num_workers = int(os.environ.get("DNN_SCAN_WORKERS", max(1, (os.cpu_count() or 1))))
+            num_workers = max(1, min(num_workers, len(scan_tasks)))
 
-        if num_workers > 1 and len(scan_tasks) > 1:
-            import multiprocessing as mp
+            if num_workers > 1 and len(scan_tasks) > 1:
+                import multiprocessing as mp
 
-            logging.info(f"Running per-feature DNN scan for {len(scan_tasks)} feature(s) with {num_workers} worker processes")
-            ctx = mp.get_context("spawn")
-            with ctx.Pool(processes=num_workers) as pool:
-                top_feature_scan_rows = pool.map(_feature_scan_worker, scan_tasks)
-        else:
-            top_feature_scan_rows = [_feature_scan_worker(t) for t in scan_tasks]
+                logging.info(f"Running per-feature DNN scan for {len(scan_tasks)} feature(s) with {num_workers} worker processes")
+                ctx = mp.get_context("spawn")
+                with ctx.Pool(processes=num_workers) as pool:
+                    top_feature_scan_rows = pool.map(_feature_scan_worker, scan_tasks)
+            else:
+                top_feature_scan_rows = [_feature_scan_worker(t) for t in scan_tasks]
 
-        if top_feature_scan_rows:
-            pd.DataFrame(top_feature_scan_rows).to_csv(plot_dir_p / "top_feature_dnn_scores.csv", index=False)
-            metrics["top_feature_dnn_scores"] = top_feature_scan_rows
-            (outdir_p / "train_metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
+            if top_feature_scan_rows:
+                pd.DataFrame(top_feature_scan_rows).to_csv(plot_dir_p / "top_feature_dnn_scores.csv", index=False)
+                metrics["top_feature_dnn_scores"] = top_feature_scan_rows
+                (outdir_p / "train_metrics.json").write_text(json.dumps(metrics, indent=2) + "\n")
 
         logging.info("[OK] AUC(val)=%.4f  AUC(test)=%.4f  AUC(train)=%.4f", auc_val, auc_test, auc_train)
         return metrics

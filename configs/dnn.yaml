@@ -64,7 +64,7 @@ feature_selection:
   # Train final model on top-K features by Asimov significance (0 = keep all)
   top_k_significance: 0  # 0 = keep all features
   # Epochs for per-feature 1D DNN scans
-  single_feature_epochs: 20
+  single_feature_epochs: 0
   # Drop near-constant features (useful for LHEF inputs with placeholder btag)
   drop_constant_features: false
 
