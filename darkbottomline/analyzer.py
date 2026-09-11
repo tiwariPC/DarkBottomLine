@@ -141,11 +141,13 @@ class DarkBottomLineAnalyzer:
         if regions_config_path:
             self.region_manager = RegionManager(regions_config_path)
             self.histogram_manager = HistogramManager()
-            self.region_histograms = self._create_region_histograms()
         else:
             self.region_manager = None
             self.histogram_manager = None
-            self.region_histograms = {}
+        # Placeholder — always replaced by _fill_region_histograms()'s real
+        # {"values", "weight"} output before being read (raw per-event
+        # arrays now, not pre-binned hist.Hist; see _fill_region_histograms).
+        self.region_histograms: Dict[str, Dict[str, Any]] = {}
 
         # Initialize accumulator
         self.accumulator = {
@@ -765,18 +767,28 @@ class DarkBottomLineAnalyzer:
         event_weights_nominal: Optional[Union[ak.Array, np.ndarray]] = None,
     ) -> Dict[str, Dict[str, Any]]:
         """
-        Fill histograms for all regions with nominal total weight.
+        Store raw per-event values for all regions, with the nominal total
+        weight — no binning happens here. Binning is entirely plotting.py's
+        job, driven by configs/plotting.yaml at plot time; storing raw
+        values means any display-binning choice can be applied later
+        without ever needing to re-derive or rebin a fixed analyzer-time
+        axis (the previous design pre-binned via HistogramManager, which is
+        the root cause of every axis-mismatch bug between the analyzer's
+        fixed hist.Hist axes and plotting.yaml's display bins).
 
         Args:
             events: Awkward Array of events
-            objects: Dictionary containing selected objects
+            objects: Dictionary containing selected objects (unused — kept
+                for signature compatibility; region_events already carries
+                every flat scalar field variables.py computed, including
+                ml_score when DNN scoring ran before this call)
             region_masks: Dictionary of region masks
             event_weights_nominal: Per-event nominal total weight (optional); if None, use ones.
 
         Returns:
-            Dictionary of filled region histograms
+            {region_name: {"values": {field: np.ndarray}, "weight": np.ndarray}}
         """
-        filled_histograms = {}
+        filled_histograms: Dict[str, Dict[str, Any]] = {}
         n_ev = len(events)
         # Convert to numpy once for slicing per region
         if event_weights_nominal is not None:
@@ -787,59 +799,45 @@ class DarkBottomLineAnalyzer:
         else:
             w_full = np.ones(n_ev, dtype=np.float64)
 
+        def _empty_region() -> Dict[str, Any]:
+            return {"values": {}, "weight": np.zeros(0, dtype=np.float64)}
+
         for region_name, region_mask in region_masks.items():
-            # Check if region mask is valid and has any passing events
             n_passing = ak.sum(region_mask) if hasattr(region_mask, '__len__') else 0
-
-            # Handle empty regions
             if n_passing == 0:
-                # Create empty objects for empty regions
-                region_objects = {}
-                for obj_name, obj_data in objects.items():
-                    if isinstance(obj_data, ak.Array):
-                        region_objects[obj_name] = ak.Array([])
-                    else:
-                        region_objects[obj_name] = obj_data
+                filled_histograms[region_name] = _empty_region()
+                continue
 
-                filled_histograms[region_name] = self.histogram_manager.define_histograms()
-            else:
-                # Apply region mask to events
+            try:
+                region_events = events[region_mask]
+            except Exception as e:
+                logging.warning(f"Error slicing events for region {region_name}: {e}, skipping")
+                filled_histograms[region_name] = _empty_region()
+                continue
+
+            if len(region_events) == 0:
+                filled_histograms[region_name] = _empty_region()
+                continue
+
+            n_r = len(region_events)
+            try:
+                mask_np = np.asarray(ak.to_numpy(region_mask))
+                w = w_full[mask_np].astype(np.float64)
+            except (Exception, BaseException):
+                w = np.ones(n_r, dtype=np.float64)
+
+            region_values: Dict[str, np.ndarray] = {}
+            for field in region_events.fields:
                 try:
-                    region_events = events[region_mask]
-                except Exception as e:
-                    logging.warning(f"Error slicing events for region {region_name}: {e}, skipping")
-                    filled_histograms[region_name] = self.histogram_manager.define_histograms()
+                    arr = ak.to_numpy(region_events[field])
+                except Exception:
+                    continue  # jagged/non-flat field — not plottable as a scalar histogram
+                arr = np.asarray(arr)
+                if arr.ndim != 1 or arr.shape[0] != n_r:
                     continue
+                region_values[field] = arr
 
-                # Extract objects for non-empty regions
-                region_objects = {}
-                for obj_name, obj_data in objects.items():
-                    if isinstance(obj_data, ak.Array):
-                        try:
-                            region_objects[obj_name] = obj_data[region_mask]
-                        except Exception as e:
-                            logging.warning(f"Error slicing {obj_name} for region {region_name}: {e}, using empty array")
-                            region_objects[obj_name] = ak.Array([])
-                    else:
-                        region_objects[obj_name] = obj_data
-
-                # Fill histograms with nominal total weight (sliced for this region)
-                if len(region_events) > 0:
-                    n_r = len(region_events)
-                    try:
-                        mask_np = np.asarray(ak.to_numpy(region_mask))
-                        w = w_full[mask_np].astype(np.float64)
-                    except (Exception, BaseException):
-                        w = np.ones(n_r, dtype=np.float64)
-                    filled = self.histogram_manager.fill_histograms(
-                        region_events, region_objects, w
-                    )
-                    if "ml_score" in region_events.fields and "dnn_score" in filled:
-                        scores = np.clip(ak.to_numpy(region_events["ml_score"]).astype("f8"), 0., 1.)
-                        filled["dnn_score"].fill(dnn_score=scores, weight=w)
-                    filled_histograms[region_name] = filled
-                else:
-                    filled_histograms[region_name] = self.histogram_manager.define_histograms()
+            filled_histograms[region_name] = {"values": region_values, "weight": w}
 
         return filled_histograms
 
@@ -997,10 +995,21 @@ class DarkBottomLineAnalyzer:
             if outdir:
                 os.makedirs(outdir, exist_ok=True)
             with uproot.recreate(output_file) as f:
-                # Save region histograms
-                for region_name, histograms in self.accumulator.get("region_histograms", {}).items():
-                    for hist_name, hist in histograms.items():
-                        f[f"{region_name}_{hist_name}"] = hist
+                # region_histograms now stores raw per-event {"values", "weight"}
+                # arrays (no fixed binning at analyzer time — see
+                # _fill_region_histograms) rather than pre-binned hist.Hist
+                # objects, so there is no single "the" binning to write here
+                # without duplicating plotting.yaml's display-binning logic.
+                # Region-analysis output is pkl in every real workflow (this
+                # ROOT writer is only reachable via an explicit
+                # --output-format root override); skip with a warning rather
+                # than silently writing something misleading.
+                if self.accumulator.get("region_histograms"):
+                    logging.warning(
+                        "region_histograms is stored as raw per-event arrays "
+                        "and is not written to ROOT by _save_root — use the "
+                        "pkl output and plot from it instead."
+                    )
 
                 # Save cutflow histograms in a ROOT directory named Metadata
                 for region_name, hist in self.accumulator.get("region_cutflow_histograms", {}).items():
@@ -1434,20 +1443,28 @@ if COFFEA_AVAILABLE:
                             except Exception:
                                 pass
 
-                # region_histograms: add hist objects with +
-                for region, hists in chunk.get("region_histograms", {}).items():
-                    if region not in merged["region_histograms"]:
-                        merged["region_histograms"][region] = {}
-                    for hname, h in hists.items():
-                        if hname not in merged["region_histograms"][region]:
-                            merged["region_histograms"][region][hname] = h
-                        else:
-                            try:
-                                merged["region_histograms"][region][hname] = (
-                                    merged["region_histograms"][region][hname] + h
-                                )
-                            except Exception as e:
-                                logging.warning(f"Failed to merge histogram {hname}/{region}: {e}")
+                # region_histograms: raw per-event {"values", "weight"} arrays
+                # (no binning at this stage) — concatenate across chunks
+                # rather than summing bin contents, mirroring the
+                # regions[region]["variables"] concatenate pattern above.
+                for region, payload in chunk.get("region_histograms", {}).items():
+                    chunk_values = payload.get("values", {}) if isinstance(payload, dict) else {}
+                    chunk_weight = payload.get("weight") if isinstance(payload, dict) else None
+                    dest = merged["region_histograms"].setdefault(region, {"values": {}, "weight": np.zeros(0)})
+                    if chunk_weight is not None:
+                        try:
+                            dest["weight"] = np.concatenate([dest["weight"], np.asarray(chunk_weight)])
+                        except Exception as e:
+                            logging.warning(f"Failed to merge region_histograms weight/{region}: {e}")
+                    for field, arr in chunk_values.items():
+                        try:
+                            arr = np.asarray(arr)
+                            if field not in dest["values"]:
+                                dest["values"][field] = arr
+                            else:
+                                dest["values"][field] = np.concatenate([dest["values"][field], arr])
+                        except Exception as e:
+                            logging.warning(f"Failed to merge region_histograms {field}/{region}: {e}")
 
                 # region_cutflow_histograms: add hist objects with +
                 for region, h in chunk.get("region_cutflow_histograms", {}).items():

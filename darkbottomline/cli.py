@@ -488,17 +488,27 @@ def _run_analyzer_from_eventselection(args):
         from darkbottomline.plotting import PlotManager
         cross_sections = PlotManager._normalize_cross_sections(_raw_xsec)
 
+    apply_dnn_flag = getattr(args, "apply_dnn", False)
     dnn_model  = getattr(args, "dnn_model",  None)
     dnn_config = getattr(args, "dnn_config", None)
 
     # Build the DNN model once (checkpoint + scaler load) instead of per-file —
     # process_from_eventselection is called once per input file below.
+    # --apply-dnn is the real on/off toggle (matches the region-from-events
+    # plotting path's apply_dnn parameter) — a --dnn-model path alone no
+    # longer silently triggers scoring, since that made the flag look like
+    # a toggle without behaving like one.
     dnn_inference = None
     dnn_mass_scan = None
-    if dnn_model:
+    if apply_dnn_flag and dnn_model:
         from darkbottomline.dnn_inference import DNNInference
         dnn_inference = DNNInference(dnn_model, config_path=dnn_config)
         dnn_mass_scan = _resolve_mass_scan(getattr(args, "dnn_mass_scan", None), dnn_inference)
+    elif dnn_model and not apply_dnn_flag:
+        logging.warning(
+            "--dnn-model given without --apply-dnn — DNN scoring skipped. "
+            "Pass --apply-dnn to enable it."
+        )
 
     raw_inputs = _get_input_files(args.input)
     # Expand any directories to their ROOT files
@@ -606,28 +616,52 @@ def _run_analyzer_from_eventselection(args):
         _out_dir2 = args.output if _os2.path.isdir(args.output) else _os2.path.dirname(args.output) or '.'
         _merged_out = _os2.path.join(_out_dir2, 'merged.pkl')
         analyzer.accumulator = merged_result
-        analyzer.save_results(_merged_out, output_format=args.output_format)
-        logging.info("Region analysis saved: merged=%s, per_sample=%s", _merged_out, _os2.path.join(_out_dir2, 'per_sample'))
+        logging.info("Saved region results to %s", _out_dir2)
+        # save_results()/_save_pickle() logs its own "Saved region results to
+        # <file>" line — suppressed here so only the dir-level line above and
+        # the two explicit lines below appear, in that order.
+        _root_logger = logging.getLogger()
+        _prev_level = _root_logger.level
+        _root_logger.setLevel(logging.WARNING)
+        try:
+            analyzer.save_results(_merged_out, output_format=args.output_format)
+        finally:
+            _root_logger.setLevel(_prev_level)
+        logging.info("Per-sample PKLs written to %s", _os2.path.join(_out_dir2, 'per_sample'))
+        logging.info("Per-sample PKLs merged into %s", _merged_out)
 
 
 def _merge_region_results(a: Dict, b: Dict) -> Dict:
     """Shallow-merge two region-analysis result dicts (add histogram counts)."""
     import copy
     merged = copy.deepcopy(a)
-    for region, hists in b.get("region_histograms", {}).items():
-        if region not in merged.setdefault("region_histograms", {}):
-            merged["region_histograms"][region] = hists
-        else:
-            for hname, hdata in hists.items():
-                if hname not in merged["region_histograms"][region]:
-                    merged["region_histograms"][region][hname] = hdata
+    # region_histograms: raw per-event {"values": {field: array}, "weight":
+    # array} — no binning here, so merging means concatenating the raw
+    # arrays across files, not summing bin contents.
+    for region, payload in b.get("region_histograms", {}).items():
+        b_values = payload.get("values", {}) if isinstance(payload, dict) else {}
+        b_weight = payload.get("weight") if isinstance(payload, dict) else None
+        dest = merged.setdefault("region_histograms", {}).setdefault(
+            region, {"values": {}, "weight": np.zeros(0)}
+        )
+        if b_weight is not None:
+            try:
+                dest["weight"] = np.concatenate([dest["weight"], np.asarray(b_weight)])
+            except Exception:
+                pass
+        for field, arr in b_values.items():
+            try:
+                arr = np.asarray(arr)
+                if field not in dest["values"]:
+                    dest["values"][field] = arr
                 else:
-                    try:
-                        merged["region_histograms"][region][hname] = (
-                            merged["region_histograms"][region][hname] + hdata
-                        )
-                    except Exception:
-                        pass
+                    dest["values"][field] = np.concatenate([dest["values"][field], arr])
+            except Exception:
+                pass
+    for region, steps in b.get("region_cutflow_steps", {}).items():
+        dest = merged.setdefault("region_cutflow_steps", {}).setdefault(region, {})
+        for cut_label, val in steps.items():
+            dest[cut_label] = dest.get(cut_label, 0.0) + float(val)
     for region, res in b.get("regions", {}).items():
         merged.setdefault("regions", {})[region] = res
     wte_a = merged.get("metadata", {}).get("weighted_total_events", 0.0)
@@ -697,8 +731,12 @@ def _trigger_plots(args):
     if not getattr(args, "regions", None):
         args.regions   = getattr(args, "plot_regions", None)
     if make_region_plots_flag:
-        logging.info("Producing region plots (ROOT→PKL→plot)...")
-        args.mode = "region" if getattr(args, "region_results", None) else "region-from-events"
+        if getattr(args, "region_results", None):
+            logging.info("Producing region plots from merged PKL File (ROOT→PKL→plot)")
+            args.mode = "region"
+        else:
+            logging.info("Producing region plots (ROOT→plot, no PKL replay)...")
+            args.mode = "region-from-events"
         make_event_plots(args)
     if make_evsel_flag:
         logging.info("Producing event-selection plots...")
@@ -752,6 +790,30 @@ def run_analyzer(args):
         else:
             _run_analyzer_from_eventselection(args)
             if not getattr(args, "skip_plots", False):
+                # Chain plotting through the per-sample PKLs that were just
+                # written, rather than re-reading EVENTSELECTION.root directly
+                # — PKL replay is the mandatory path (region_cutflow_steps and
+                # other PKL-only fields must be exercised, not silently
+                # bypassed). Point at the per_sample/ DIRECTORY, not
+                # merged.pkl: _trigger_plots's single-file branch replicates
+                # one merged.pkl once per process-group pattern (cli.py's
+                # "Single merged PKL" branch below), so a group with N
+                # patterns would sum N copies of the FULL merged dataset
+                # instead of N real per-sample files — silently inflating
+                # every yield. The directory branch uses the real per-sample
+                # PKLs directly, one file per pattern match, correctly scaled.
+                import os as _os3
+                if args.output:
+                    _out_dir3 = args.output if _os3.path.isdir(args.output) else _os3.path.dirname(args.output) or '.'
+                    _per_sample_dir = _os3.path.join(_out_dir3, 'per_sample')
+                    if _os3.path.isdir(_per_sample_dir):
+                        args.region_results = _per_sample_dir
+                    else:
+                        logging.warning(
+                            "per_sample/ dir not found at %s after region analysis — "
+                            "falling back to plotting directly from EVENTSELECTION.root",
+                            _per_sample_dir,
+                        )
                 _trigger_plots(args)
         return
 
@@ -2791,8 +2853,12 @@ Examples:
     # DNN integration flags
     analyze_parser.add_argument(
         "--apply-dnn", action="store_true",
-        help="Score events with --dnn-model/--dnn-config in the stacked-plot "
-             "(--make-region-plots) path and add ml_score as a plotted variable.",
+        help="Score events with --dnn-model/--dnn-config and add ml_score as "
+             "a field on every event. Required (together with --dnn-model) to "
+             "enable scoring in both --mode region-analysis (scores events "
+             "before region cuts, ml_score then flows into region_histograms) "
+             "and the stacked-plot (--make-region-plots) path — passing "
+             "--dnn-model alone no longer scores anything.",
     )
     analyze_parser.add_argument(
         "--dnn-model", default=None,

@@ -45,41 +45,46 @@ class HistogramManager:
 
         # MET histogram
         histograms["met"] = hist.Hist(
-            hist.axis.Regular(50, 0, 500, name="met", label="MET [GeV]"),
+            hist.axis.Regular(100, 0, 1000, name="met", label="MET [GeV]"),
             storage=hist.storage.Weight()
         )
 
         # Jet multiplicity
+        # Count-type axes use the [-0.5, N-0.5] integer-centered convention
+        # (bin i spans [i-0.5, i+0.5), centered on i) matching
+        # configs/plotting.yaml's variable_bins for these variables — an
+        # axis of [0, N) instead offsets every count by half a bin and
+        # smears "0" into "1" once rebinning is proportional/overlap-based.
         histograms["n_jets"] = hist.Hist(
-            hist.axis.Regular(10, 0, 10, name="n_jets", label="Number of Jets"),
+            hist.axis.Regular(10, -0.5, 9.5, name="n_jets", label="Number of Jets"),
             storage=hist.storage.Weight()
         )
 
         # B-jet multiplicity
         histograms["n_bjets"] = hist.Hist(
-            hist.axis.Regular(6, 0, 6, name="n_bjets", label="Number of B-jets"),
+            hist.axis.Regular(6, -0.5, 5.5, name="n_bjets", label="Number of B-jets"),
             storage=hist.storage.Weight()
         )
 
         # Lepton multiplicity
         histograms["n_muons"] = hist.Hist(
-            hist.axis.Regular(5, 0, 5, name="n_muons", label="Number of Muons"),
+            hist.axis.Regular(5, -0.5, 4.5, name="n_muons", label="Number of Muons"),
             storage=hist.storage.Weight()
         )
 
         histograms["n_electrons"] = hist.Hist(
-            hist.axis.Regular(5, 0, 5, name="n_electrons", label="Number of Electrons"),
+            hist.axis.Regular(5, -0.5, 4.5, name="n_electrons", label="Number of Electrons"),
             storage=hist.storage.Weight()
         )
 
         histograms["n_taus"] = hist.Hist(
-            hist.axis.Regular(5, 0, 5, name="n_taus", label="Number of Taus"),
+            hist.axis.Regular(5, -0.5, 4.5, name="n_taus", label="Number of Taus"),
             storage=hist.storage.Weight()
         )
 
         # Jet kinematics
         histograms["jet_pt"] = hist.Hist(
-            hist.axis.Regular(50, 0, 500, name="jet_pt", label="Jet pT [GeV]"),
+            hist.axis.Regular(80, 0, 800, name="jet_pt", label="Jet pT [GeV]"),
             storage=hist.storage.Weight()
         )
 
@@ -89,13 +94,13 @@ class HistogramManager:
         )
 
         histograms["jet_phi"] = hist.Hist(
-            hist.axis.Regular(50, -np.pi, np.pi, name="jet_phi", label="Jet φ"),
+            hist.axis.Regular(700, -3.5, 3.5, name="jet_phi", label="Jet φ"),
             storage=hist.storage.Weight()
         )
 
         # Lepton kinematics
         histograms["muon_pt"] = hist.Hist(
-            hist.axis.Regular(50, 0, 200, name="muon_pt", label="Muon pT [GeV]"),
+            hist.axis.Regular(50, 0, 500, name="muon_pt", label="Muon pT [GeV]"),
             storage=hist.storage.Weight()
         )
 
@@ -105,7 +110,7 @@ class HistogramManager:
         )
 
         histograms["electron_pt"] = hist.Hist(
-            hist.axis.Regular(50, 0, 200, name="electron_pt", label="Electron pT [GeV]"),
+            hist.axis.Regular(50, 0, 500, name="electron_pt", label="Electron pT [GeV]"),
             storage=hist.storage.Weight()
         )
 
@@ -141,19 +146,19 @@ class HistogramManager:
 
         # MET phi
         histograms["met_phi"] = hist.Hist(
-            hist.axis.Regular(50, -np.pi, np.pi, name="met_phi", label="MET φ"),
+            hist.axis.Regular(700, -3.5, 3.5, name="met_phi", label="MET φ"),
             storage=hist.storage.Weight()
         )
 
         # Recoil (for control regions)
         histograms["recoil"] = hist.Hist(
-            hist.axis.Regular(50, 0, 500, name="recoil", label="Recoil [GeV]"),
+            hist.axis.Regular(100, 0, 1000, name="recoil", label="Recoil [GeV]"),
             storage=hist.storage.Weight()
         )
 
         # Jet2 kinematics
         histograms["jet2_pt"] = hist.Hist(
-            hist.axis.Regular(50, 0, 500, name="jet2_pt", label="Jet2 pT [GeV]"),
+            hist.axis.Regular(80, 0, 800, name="jet2_pt", label="Jet2 pT [GeV]"),
             storage=hist.storage.Weight()
         )
 
@@ -163,7 +168,7 @@ class HistogramManager:
         )
 
         histograms["jet2_phi"] = hist.Hist(
-            hist.axis.Regular(50, -np.pi, np.pi, name="jet2_phi", label="Jet2 φ"),
+            hist.axis.Regular(700, -3.5, 3.5, name="jet2_phi", label="Jet2 φ"),
             storage=hist.storage.Weight()
         )
 
@@ -174,7 +179,7 @@ class HistogramManager:
 
         # Jet3 kinematics
         histograms["jet3_pt"] = hist.Hist(
-            hist.axis.Regular(50, 0, 500, name="jet3_pt", label="Jet3 pT [GeV]"),
+            hist.axis.Regular(80, 0, 800, name="jet3_pt", label="Jet3 pT [GeV]"),
             storage=hist.storage.Weight()
         )
 
@@ -184,7 +189,7 @@ class HistogramManager:
         )
 
         histograms["jet3_phi"] = hist.Hist(
-            hist.axis.Regular(50, -np.pi, np.pi, name="jet3_phi", label="Jet3 φ"),
+            hist.axis.Regular(700, -3.5, 3.5, name="jet3_phi", label="Jet3 φ"),
             storage=hist.storage.Weight()
         )
 
@@ -257,23 +262,23 @@ class HistogramManager:
         )
 
         histograms["dphi_jet12"] = hist.Hist(
-            hist.axis.Regular(50, 0, np.pi, name="dphi_jet12", label="Δφ(Jet1,Jet2)"),
+            hist.axis.Regular(700, -3.5, 3.5, name="dphi_jet12", label="Δφ(Jet1,Jet2)"),
             storage=hist.storage.Weight()
         )
 
         histograms["deta_jet12"] = hist.Hist(
-            hist.axis.Regular(50, 0, 6, name="deta_jet12", label="Δη(Jet1,Jet2)"),
+            hist.axis.Regular(300, -7.5, 7.5, name="deta_jet12", label="Δη(Jet1,Jet2)"),
             storage=hist.storage.Weight()
         )
 
         # Dijet masses
         histograms["m_jet1jet2"] = hist.Hist(
-            hist.axis.Regular(50, 0, 1000, name="m_jet1jet2", label="M(Jet1,Jet2) [GeV]"),
+            hist.axis.Regular(100, 0, 2000, name="m_jet1jet2", label="M(Jet1,Jet2) [GeV]"),
             storage=hist.storage.Weight()
         )
 
         histograms["m_jet1jet3"] = hist.Hist(
-            hist.axis.Regular(50, 0, 1000, name="m_jet1jet3", label="M(Jet1,Jet3) [GeV]"),
+            hist.axis.Regular(100, 0, 2000, name="m_jet1jet3", label="M(Jet1,Jet3) [GeV]"),
             storage=hist.storage.Weight()
         )
 
@@ -290,7 +295,7 @@ class HistogramManager:
 
         # minΔφ and MET quality
         histograms["min_dphi"] = hist.Hist(
-            hist.axis.Regular(50, 0, np.pi, name="min_dphi", label="min Δφ"),
+            hist.axis.Regular(700, -3.5, 3.5, name="min_dphi", label="min Δφ"),
             storage=hist.storage.Weight()
         )
 
@@ -329,27 +334,27 @@ class HistogramManager:
 
         # Lepton kinematics for control regions
         histograms["lep1_pt"] = hist.Hist(
-            hist.axis.Regular(50, 0, 200, name="lep1_pt", label="Leading Lepton pT [GeV]"),
+            hist.axis.Regular(50, 0, 500, name="lep1_pt", label="Leading Lepton pT [GeV]"),
             storage=hist.storage.Weight()
         )
 
         histograms["lep1_phi"] = hist.Hist(
-            hist.axis.Regular(50, -np.pi, np.pi, name="lep1_phi", label="Leading Lepton φ"),
+            hist.axis.Regular(700, -3.5, 3.5, name="lep1_phi", label="Leading Lepton φ"),
             storage=hist.storage.Weight()
         )
 
         histograms["lep2_pt"] = hist.Hist(
-            hist.axis.Regular(50, 0, 200, name="lep2_pt", label="Subleading Lepton pT [GeV]"),
+            hist.axis.Regular(50, 0, 500, name="lep2_pt", label="Subleading Lepton pT [GeV]"),
             storage=hist.storage.Weight()
         )
 
         histograms["lep2_phi"] = hist.Hist(
-            hist.axis.Regular(50, -np.pi, np.pi, name="lep2_phi", label="Subleading Lepton φ"),
+            hist.axis.Regular(700, -3.5, 3.5, name="lep2_phi", label="Subleading Lepton φ"),
             storage=hist.storage.Weight()
         )
 
         histograms["dphi_lep1_met"] = hist.Hist(
-            hist.axis.Regular(50, 0, np.pi, name="dphi_lep1_met", label="Δφ(Lepton1,MET)"),
+            hist.axis.Regular(700, -3.5, 3.5, name="dphi_lep1_met", label="Δφ(Lepton1,MET)"),
             storage=hist.storage.Weight()
         )
 
@@ -370,7 +375,7 @@ class HistogramManager:
         )
 
         histograms["z_pt"] = hist.Hist(
-            hist.axis.Regular(50, 0, 500, name="z_pt", label="Z pT [GeV]"),
+            hist.axis.Regular(80, 0, 800, name="z_pt", label="Z pT [GeV]"),
             storage=hist.storage.Weight()
         )
 

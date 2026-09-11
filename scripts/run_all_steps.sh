@@ -168,6 +168,33 @@ handle_error() {
     exit 1
 }
 
+check_eventsel_dir() {
+    # Fails fast with a clear message instead of letting a downstream
+    # darkbottomline command hit a confusing Python traceback when a
+    # --steps subset skips the step that was supposed to produce this dir.
+    local label="$1"
+    if [ $DRY_RUN -eq 1 ]; then
+        return 0
+    fi
+    if [ ! -d "${EVENTSEL_DIR}" ] || [ -z "$(find "${EVENTSEL_DIR}" -maxdepth 1 -name '*_EVENTSELECTION.root' -print -quit 2>/dev/null)" ]; then
+        handle_error \
+            "${EVENTSEL_DIR} is missing or has no *_EVENTSELECTION.root files — run Step 1 (--steps eventsel) first." \
+            "$label"
+    fi
+}
+
+check_dnn_model() {
+    local label="$1"
+    if [ $DRY_RUN -eq 1 ]; then
+        return 0
+    fi
+    if [ ! -f "${DNN_MODEL}" ]; then
+        handle_error \
+            "${DNN_MODEL} not found — run Step 2 (--steps dnn) first, or unset --apply-dnn to skip scoring." \
+            "$label"
+    fi
+}
+
 run_step() {
     # run_step <step-label> <command...>
     local label="$1"
@@ -196,16 +223,72 @@ log "  Version         : ${VERSION}"
 [ $DRY_RUN -eq 1 ] && log "  Mode            : DRY RUN"
 log "=========================================="
 
-# Step 1: Event selection (NanoAOD -> EVENTSELECTION.root, per input file)
+# Step 1: Event selection (NanoAOD -> EVENTSELECTION.root, one job per
+# input .root file). Inlined here (not a separate script) so this file has
+# no sibling-script dependency — self-sufficient end to end.
+#
+# Filename substring pattern that identifies collision data (gets --data)
+EVENTSEL_DATA_PATTERN="JetMET-Run|JetMET0-Run|JetMET1-Run|MET-Run|EGamma-Run|EGamma0-Run|EGamma1-Run"
+
 if step_enabled eventsel; then
     log "Step 1: Event selection..."
-    if [ $DRY_RUN -eq 1 ]; then
-        "$(dirname "$0")/run_eventsel_all.sh" "${RAW_INPUT_DIR}" "${EVENTSEL_DIR}" "${CONFIG}" --dry-run
-    else
-        "$(dirname "$0")/run_eventsel_all.sh" "${RAW_INPUT_DIR}" "${EVENTSEL_DIR}" "${CONFIG}" \
+    mkdir -p "${EVENTSEL_DIR}"
+
+    shopt -s nullglob
+    _eventsel_files=("${RAW_INPUT_DIR}"/*.root)
+    shopt -u nullglob
+
+    if [ ${#_eventsel_files[@]} -eq 0 ]; then
+        handle_error "No .root files found in ${RAW_INPUT_DIR}" "Step 1"
+    fi
+
+    log "  Config     : ${CONFIG}"
+    log "  Input dir  : ${RAW_INPUT_DIR}"
+    log "  Output dir : ${EVENTSEL_DIR}"
+    log "  Files      : ${#_eventsel_files[@]}"
+
+    _eventsel_n=0
+    _eventsel_fail=0
+    for _f in "${_eventsel_files[@]}"; do
+        _eventsel_n=$((_eventsel_n + 1))
+        _base="$(basename "${_f}" .root)"
+        # strip NanoAOD "___<uuid>" suffix -> clean sample name
+        _sample="${_base%%___*}"
+        _out="${EVENTSEL_DIR}/${_sample}_EVENTSELECTION.root"
+
+        _data_flag=""
+        _tag="MC"
+        if [[ "${_base}" =~ ${EVENTSEL_DATA_PATTERN} ]]; then
+            _data_flag="--data"
+            _tag="DATA"
+        fi
+
+        log "  [${_eventsel_n}/${#_eventsel_files[@]}] (${_tag}) ${_sample}"
+
+        if [ $DRY_RUN -eq 1 ]; then
+            log "    darkbottomline analyze --mode event-selection --config ${CONFIG} --input ${_f} --event-selection-output ${_out} ${_data_flag}"
+            continue
+        fi
+
+        darkbottomline analyze \
+            --mode event-selection \
+            --config "${CONFIG}" \
+            --input "${_f}" \
+            --event-selection-output "${_out}" \
+            ${_data_flag} \
             2>&1 | tee -a "${LOG_FILE}"
-        rc=${PIPESTATUS[0]}
-        [ $rc -ne 0 ] && handle_error "Event selection failed (rc=$rc)" "Step 1"
+        _rc=${PIPESTATUS[0]}
+        if [ ${_rc} -ne 0 ]; then
+            log "    FAILED (rc=${_rc}): ${_f}"
+            _eventsel_fail=$((_eventsel_fail + 1))
+        fi
+    done
+
+    if [ $DRY_RUN -eq 1 ]; then
+        log "  Dry run complete. ${_eventsel_n} file(s) would be processed."
+    else
+        log "  Done. $((_eventsel_n - _eventsel_fail))/${_eventsel_n} succeeded, ${_eventsel_fail} failed."
+        [ ${_eventsel_fail} -ne 0 ] && handle_error "Event selection failed for ${_eventsel_fail}/${_eventsel_n} file(s)" "Step 1"
     fi
     log "Event selection completed"
 else
@@ -214,6 +297,7 @@ fi
 
 # Step 2: DNN training
 if step_enabled dnn; then
+    check_eventsel_dir "Step 2: Training DNN model..."
     run_step "Step 2: Training DNN model..." \
         darkbottomline train-dnn \
         --dnn-config "${DNN_CONFIG}" \
@@ -231,6 +315,8 @@ fi
 # Step 3: Region analysis (event-selection -> region plots + ROOT histograms,
 # with the trained DNN applied)
 if step_enabled region; then
+    check_eventsel_dir "Step 3: Running region analysis + region plots..."
+    check_dnn_model "Step 3: Running region analysis + region plots..."
     run_step "Step 3: Running region analysis + region plots..." \
         darkbottomline analyze \
         --mode region-analysis \

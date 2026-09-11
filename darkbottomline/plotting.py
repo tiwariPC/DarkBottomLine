@@ -1245,9 +1245,24 @@ class PlotManager:
             data_max = float(np.max(data_ndarray)) if data_ndarray is not None and data_ndarray.size else 0.0
             ax.set_ylim(0.1, max(stacked_max, data_max, 1e-3) * 1000.0)
 
-        # Always use full bin range from config — never auto-trim to nonzero data range
-        x_lo = float(bins[0])
-        x_hi = float(bins[-1])
+        # Trim the x-range to where content actually is (bkg stack, data, or
+        # any drawn signal line) — configs/plotting.yaml's variable_bins can
+        # span a much wider physical range than events populate for a given
+        # region, leaving a large empty margin otherwise.
+        _nonzero_mask = cumulative > 0
+        if data_ndarray is not None:
+            _nonzero_mask = _nonzero_mask | (data_ndarray > 0)
+        if signal_rows:
+            for _, _shv, _, _ in signal_rows[:3]:
+                _nonzero_mask = _nonzero_mask | (np.asarray(_shv, dtype=float) > 0)
+        if np.any(_nonzero_mask):
+            _first = int(np.argmax(_nonzero_mask))
+            _last = len(_nonzero_mask) - 1 - int(np.argmax(_nonzero_mask[::-1]))
+            x_lo = float(bins[_first])
+            x_hi = float(bins[_last + 1])
+        else:
+            x_lo = float(bins[0])
+            x_hi = float(bins[-1])
         ax.set_xlim(x_lo, x_hi)
         ax.set_ylabel("Events / bin", fontsize=self.fontsize_axis, labelpad=6)
         if not show_ratio:
@@ -1977,8 +1992,14 @@ class PlotManager:
             else:
                 logging.warning("[Data:%s] NO DATA FILES LOADED", label)
 
-        def _data_hist_for_region(region: str, var: str) -> Optional[np.ndarray]:
-            """Sum histogram values from whichever data group(s) apply to this region."""
+        def _data_hist_for_region(region: str, var: str, bins_ref: Optional[np.ndarray] = None) -> Optional[np.ndarray]:
+            """Histogram raw data values (weight=1, no lumi/xsec scaling —
+            data is never scaled) from whichever data group(s) apply to this
+            region, binned directly at *bins_ref* (the configured/display
+            binning) — no rebinning needed since nothing was pre-binned.
+            """
+            if bins_ref is None:
+                return None
             total: Optional[np.ndarray] = None
             for label, info in data_loaded.items():
                 rp = info["region_patterns"]
@@ -1987,19 +2008,16 @@ class PlotManager:
                     continue
                 for pkl in info["pkls"]:
                     rh = pkl.get("region_histograms", {}).get(region, {})
-                    h = rh.get(var)
-                    if h is None:
+                    vals = rh.get("values", {}).get(var)
+                    if vals is None:
                         _alias = _aliases.get(var)
                         if _alias:
-                            h = rh.get(_alias)
-                    if h is None:
+                            vals = rh.get("values", {}).get(_alias)
+                    if vals is None or not isinstance(vals, np.ndarray):
                         continue
-                    if _HAS_HIST and isinstance(h, hist_lib.Hist):
-                        hv = h.values().astype(float)
-                    elif isinstance(h, dict):
-                        hv = np.array(h.get("values", []), dtype=float)
-                    else:
-                        continue
+                    sentinel_mask = _apply_variable_plot_filter(var, vals.astype(float), return_mask=True)
+                    vals_clipped = _clip_overflow(vals[sentinel_mask].astype(float), bins_ref)
+                    hv, _ = np.histogram(vals_clipped, bins=bins_ref)
                     total = hv if total is None else total + hv
             return total
 
@@ -2010,30 +2028,63 @@ class PlotManager:
             for r in e["data"].get("region_histograms", {}).keys()
         })
 
-        def _h_to_numpy(h: Any) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
-            """Convert hist.Hist or dict → (edges, values, sumw2). Returns (None,None,None) on failure."""
-            if _HAS_HIST and isinstance(h, hist_lib.Hist):
-                edges = np.array(h.axes[0].edges)
-                hv = h.values().astype(float)
-                hvar = h.variances()
-                hs = hvar.astype(float) if hvar is not None else np.zeros_like(hv)
-                return edges, hv, hs
-            if isinstance(h, dict):
-                edges = np.array(h.get("bins", []))
-                hv = np.array(h.get("values", []), dtype=float)
-                hs = np.array(h.get("errors", np.zeros_like(hv)), dtype=float) ** 2
-                return (edges if edges.size > 1 else None), hv, hs
-            return None, None, None
-
         created: List[str] = []
         skipped_region_var = []
         plot_tasks: List[tuple] = []
+
+        # Signal region-cut masks (SR only) — cached per (region, signal file)
+        # so every variable in the region reuses the same mask instead of
+        # recomputing it. Without this, sig_rows_for_plot below would take
+        # the raw, un-region-cut signal branches (only masspoint-masked),
+        # letting signal show values the region selection actually excludes.
+        _sig_region_manager = None
+        if getattr(self, "_regions_config_path", None) and sig_file_entries:
+            try:
+                from darkbottomline.regions import RegionManager as _SigRM
+                _sig_region_manager = _SigRM(self._regions_config_path)
+            except Exception as _srm_exc:
+                logging.warning("Signal region masking: could not load RegionManager: %s", _srm_exc)
+        _sig_mask_cache: Dict[Tuple[str, int], np.ndarray] = {}
+
+        def _signal_region_mask(_region_name: str, _sfe: Dict[str, Any]) -> Optional[np.ndarray]:
+            if _sig_region_manager is None:
+                return None
+            _robj = _sig_region_manager.regions.get(_region_name)
+            if _robj is None:
+                return None
+            _cache_key = (_region_name, id(_sfe))
+            if _cache_key in _sig_mask_cache:
+                return _sig_mask_cache[_cache_key]
+            _sbr = _sfe.get("branches")
+            if not isinstance(_sbr, dict) or not _sbr:
+                return None
+            try:
+                _sak_dict: Dict[str, Any] = {}
+                for _k, _v in _sbr.items():
+                    if not isinstance(_v, np.ndarray) or _v.ndim != 1:
+                        continue
+                    if _v.dtype == object:
+                        try:
+                            _sak_dict[_k] = _ak.Array(list(_v))
+                        except Exception:
+                            pass
+                    else:
+                        _sak_dict[_k] = _v
+                _sev_ak = _ak.Array(_sak_dict)
+                _mask = np.asarray(_robj.apply_cuts(_sev_ak, objects={}), dtype=bool)
+            except Exception as _mask_exc:
+                logging.warning("Signal region mask failed for %s: %s", _region_name, _mask_exc)
+                return None
+            _sig_mask_cache[_cache_key] = _mask
+            return _mask
+
         logging.info("Regions to process: %d (%s)", len(all_regions), ', '.join(all_regions[:5]) + ('...' if len(all_regions) > 5 else ''))
         for region in all_regions:
             all_vars_set: set = set()
             for entries in bkg_groups.values():
                 for e in entries:
-                    all_vars_set.update(e["data"].get("region_histograms", {}).get(region, {}).keys())
+                    _rh = e["data"].get("region_histograms", {}).get(region, {})
+                    all_vars_set.update(_rh.get("values", {}).keys())
             candidate_vars = variables or sorted(all_vars_set)
             all_vars_for_region = self._get_allowed_variables_for_region(region, candidate_vars)
             logging.info("Region '%s': candidate_vars=%d, after filtering=%d",
@@ -2052,7 +2103,25 @@ class PlotManager:
             }
 
             for var in all_vars_for_region:
+                def _values_for(rh: Dict[str, Any]) -> Optional[np.ndarray]:
+                    vals = rh.get("values", {})
+                    arr = vals.get(var)
+                    if arr is None:
+                        _alias = _aliases.get(var)
+                        if _alias:
+                            arr = vals.get(_alias)
+                    return arr
+
+                # Binning is decided once from configs/plotting.yaml (or an
+                # auto-derived fallback, resolved lazily below on first use)
+                # — raw per-event values carry no binning of their own, so
+                # there is nothing to reconcile across files/samples here
+                # (unlike the old pre-binned hist.Hist path, where every
+                # sample's fixed analyzer-time axis had to be rebinned onto
+                # this shared axis). Mirrors _create_region_from_events_plots'
+                # identical lazy-bins-then-histogram pattern.
                 bins_ref: Optional[np.ndarray] = self._build_bins_from_config(var)
+
                 bkg_rows: List[Tuple[str, np.ndarray, np.ndarray]] = []
                 procs_with_data = []
 
@@ -2062,26 +2131,42 @@ class PlotManager:
                     file_hits = 0
                     for e in entries:
                         rh = e["data"].get("region_histograms", {}).get(region, {})
-                        h = rh.get(var)
-                        if h is None:
-                            _alias = _aliases.get(var)
-                            if _alias:
-                                h = rh.get(_alias)
-                        if h is None:
+                        vals_raw = _values_for(rh)
+                        if vals_raw is None or not isinstance(vals_raw, np.ndarray):
+                            continue
+                        w_raw = rh.get("weight")
+                        if w_raw is None or len(w_raw) != len(vals_raw):
                             continue
                         wte = int(e["data"].get("metadata", {}).get("weighted_total_events", 0)
                                    or e["data"].get("weighted_total_events", 0) or 0)
-                        edges, hv, hs = _h_to_numpy(h)
-                        if hv is None or hv.size == 0:
-                            logging.debug("  %s/%s/%s: histogram empty after conversion", region, proc_label, var)
+                        sentinel_mask = _apply_variable_plot_filter(var, vals_raw.astype(float), return_mask=True)
+                        vals = vals_raw[sentinel_mask].astype(float)
+                        if vals.size == 0:
                             continue
-                        if edges is not None:
-                            bins_ref = edges  # Use PKL pre-computed binning
+                        w = np.asarray(w_raw, dtype=float)[sentinel_mask]
+
                         scale = ((luminosity * e["xsec"] * 1000.0) / wte
                                  if e["xsec"] is not None and wte > 0
                                  else (luminosity / wte if wte > 0 else 1.0))
-                        group_hv = hv * scale if group_hv is None else group_hv + hv * scale
-                        group_hs = hs * scale**2 if group_hs is None else group_hs + hs * scale**2
+
+                        if bins_ref is None:
+                            all_vals_for_bins = []
+                            for ee in bkg_groups.values():
+                                for e2 in ee:
+                                    rh2 = e2["data"].get("region_histograms", {}).get(region, {})
+                                    v2 = _values_for(rh2)
+                                    if isinstance(v2, np.ndarray):
+                                        all_vals_for_bins.append(_apply_variable_plot_filter(var, v2.astype(float)))
+                            bins_ref = _make_bins(all_vals_for_bins, self._build_bins_from_config,
+                                                  var, self._n_bins_default)
+                            if bins_ref is None or len(bins_ref) < 2:
+                                break
+
+                        vals_clipped = _clip_overflow(vals, bins_ref)
+                        hv, _ = np.histogram(vals_clipped, bins=bins_ref, weights=w * scale)
+                        hs, _ = np.histogram(vals_clipped, bins=bins_ref, weights=(w * scale) ** 2)
+                        group_hv = hv if group_hv is None else group_hv + hv
+                        group_hs = hs if group_hs is None else group_hs + hs
                         file_hits += 1
 
                     if group_hv is not None and group_hv.size > 0:
@@ -2108,7 +2193,7 @@ class PlotManager:
                     data_hist = total_mc
                     logging.debug("  %s/%s: blinded SR, using bkg-sum as pseudo-data (sum=%.3f)", region, var, float(np.sum(total_mc)))
                 else:
-                    data_hist = _data_hist_for_region(region, var)
+                    data_hist = _data_hist_for_region(region, var, bins_ref)
                 data_sum = float(np.sum(data_hist)) if data_hist is not None else 0
                 logging.info("Queuing %s/%s: bins=%d, bkg_rows=%d, total_mc=%.3f, data_sum=%.1f, procs=%s",
                              region, var, len(bins_ref) - 1, len(bkg_rows),
@@ -2135,6 +2220,7 @@ class PlotManager:
                                 _svals_raw = _sbr.get(_alias)
                         if _svals_raw is None or not isinstance(_svals_raw, np.ndarray) or _svals_raw.dtype == object:
                             continue
+                        _sregion_mask = _signal_region_mask(region, _sfe)
                         _sscale_base = ((luminosity * _sxsec * 1000.0) / _swte
                                         if _sxsec is not None and _swte > 0
                                         else (luminosity / _swte if _swte > 0 else 1.0))
@@ -2144,6 +2230,8 @@ class PlotManager:
                                 if _gm_arr is None:
                                     continue
                                 _mp_mask = _gm_arr.astype(bool)
+                                if _sregion_mask is not None:
+                                    _mp_mask = _mp_mask & _sregion_mask
                                 _svals = np.asarray(_svals_raw, dtype=float)[_mp_mask]
                                 if _svals.size == 0:
                                     continue
@@ -2174,9 +2262,13 @@ class PlotManager:
                                 _sig_rows.append((f"{_scale_prefix}{_pretty}", _shv * signal_scale,
                                                   _mp_label, _shv))
                         else:
-                            _shv, _ = np.histogram(np.clip(np.asarray(_svals_raw, dtype=float),
-                                                           bins_ref[0], bins_ref[-1]),
-                                                   bins=bins_ref, weights=np.ones(len(_svals_raw)) * _sscale_base)
+                            _svals_single = np.asarray(_svals_raw, dtype=float)
+                            if _sregion_mask is not None:
+                                _svals_single = _svals_single[_sregion_mask]
+                            if _svals_single.size == 0:
+                                continue
+                            _shv, _ = np.histogram(np.clip(_svals_single, bins_ref[0], bins_ref[-1]),
+                                                   bins=bins_ref, weights=np.ones(_svals_single.size) * _sscale_base)
                             _scale_suffix = f" ×{signal_scale:g}" if signal_scale != 1.0 else ""
                             _sig_rows.append((f"{_sfe['file_label']}{_scale_suffix}", _shv * signal_scale,
                                               _sfe['file_label'], _shv))
@@ -2217,6 +2309,104 @@ class PlotManager:
                             + ('...' if len(skipped_region_var) > 10 else ''))
         # Per-region cutflow waterfall plots
         try:
+            # Signal per-masspoint sequential cutflow (SR only) — same masspoints
+            # and per-masspoint xsec scaling as the SR variable plots above
+            # (sig_rows_for_plot), so the cutflow overlay matches the MET plot.
+            _regions_config_path = getattr(self, "_regions_config_path", None)
+            _cf_region_manager = None
+            if _regions_config_path and sig_file_entries:
+                try:
+                    from darkbottomline.regions import RegionManager as _CfRM
+                    _cf_region_manager = _CfRM(_regions_config_path)
+                except Exception as _rm_exc:
+                    logging.warning("Signal cutflow: could not load RegionManager: %s", _rm_exc)
+
+            def _signal_cutflow_rows(_rname: str) -> List[Tuple[str, np.ndarray]]:
+                """Per-masspoint sequential cutflow yields for one SR, aligned to
+                the region's cut labels. Mirrors sig_rows_for_plot's masking/xsec
+                scaling but summed over all cut stages instead of one variable."""
+                if _cf_region_manager is None:
+                    return []
+                _robj = _cf_region_manager.regions.get(_rname)
+                if _robj is None:
+                    return []
+                rows: List[Tuple[str, np.ndarray]] = []
+                for _sfe in sig_file_entries:
+                    _sbr = _sfe["branches"]
+                    _swte = _sfe["wte"]
+                    _sxsec = _sfe["xsec"]
+                    _gm_cols = _sfe["genmodel_cols"]
+                    if not isinstance(_sbr, dict) or not _sbr:
+                        continue
+                    try:
+                        _sak_dict = {}
+                        for _k, _v in _sbr.items():
+                            if not isinstance(_v, np.ndarray) or _v.ndim != 1:
+                                continue
+                            if _v.dtype == object:
+                                try:
+                                    _sak_dict[_k] = _ak.Array(list(_v))
+                                except Exception:
+                                    pass
+                            else:
+                                _sak_dict[_k] = _v
+                        _sev_ak = _ak.Array(_sak_dict)
+                    except Exception:
+                        continue
+                    _sw_arr = _sbr.get("full_event_weight")
+                    _n_sig = len(_sev_ak) if hasattr(_sev_ak, "__len__") else 0
+                    _sw_base = (np.asarray(_sw_arr, dtype=float) if _sw_arr is not None
+                                else np.ones(_n_sig, dtype=float))
+                    _sscale_base = ((luminosity * _sxsec * 1000.0) / _swte
+                                     if _sxsec is not None and _swte > 0
+                                     else (luminosity / _swte if _swte > 0 else 1.0))
+                    if _gm_cols:
+                        for _gmc in _gm_cols:
+                            _gm_arr = _sbr.get(_gmc)
+                            if _gm_arr is None:
+                                continue
+                            _mp_label = _gmc[len("GenModel_"):]
+                            _mp_xsec = _find_xsec(_mp_label, cross_sections)
+                            _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _swte
+                                         if _mp_xsec is not None and _swte > 0
+                                         else _sscale_base)
+                            _mp_weight = _sw_base * np.asarray(_gm_arr, dtype=bool) * _mp_scale
+                            try:
+                                _steps = _robj.apply_cuts_with_yields(
+                                    _sev_ak, objects={}, weight=_mp_weight)
+                            except Exception:
+                                continue
+                            if not _steps:
+                                continue
+                            _labels = list(_steps.keys())
+                            _vals = np.array([_steps[_l] for _l in _labels], dtype=float)
+                            _tex_map = {"MH3": r"$m_A$", "MH4": r"$m_a$", "Mchi": r"$m_\chi$"}
+                            _parts = _mp_label.split("_")
+                            _pairs, _i = [], 0
+                            while _i < len(_parts) - 1:
+                                if _parts[_i] in _tex_map:
+                                    _pairs.append(f"{_tex_map[_parts[_i]]}={_parts[_i + 1]}")
+                                    _i += 2
+                                else:
+                                    _i += 1
+                            _pretty = " ".join(_pairs) if _pairs else _mp_label
+                            _scale_prefix = f"×{signal_scale:g} " if signal_scale != 1.0 else ""
+                            rows.append((f"{_scale_prefix}{_pretty}", _vals * signal_scale, _labels))
+                    else:
+                        _mp_weight = _sw_base * _sscale_base
+                        try:
+                            _steps = _robj.apply_cuts_with_yields(
+                                _sev_ak, objects={}, weight=_mp_weight)
+                        except Exception:
+                            continue
+                        if not _steps:
+                            continue
+                        _labels = list(_steps.keys())
+                        _vals = np.array([_steps[_l] for _l in _labels], dtype=float)
+                        _scale_suffix = f" ×{signal_scale:g}" if signal_scale != 1.0 else ""
+                        rows.append((f"{_sfe['file_label']}{_scale_suffix}", _vals * signal_scale, _labels))
+                return rows
+
             _proc_region_cf = {}
             for _proc_label, _elist in bkg_groups.items():
                 _cf_by_region = {}
@@ -2254,9 +2444,17 @@ class PlotManager:
                         _data_cf_arr = None
                         _is_sr_cf = _rname.endswith(":SR")
                         if not _is_sr_cf:
-                            # Load region cutflow from data PKLs
+                            # Load region cutflow from data PKLs — only from
+                            # data groups whose region_patterns actually
+                            # cover this region (e.g. EGamma data must not
+                            # be summed into a muon CR's cutflow), matching
+                            # _data_hist_for_region's filter for the
+                            # variable-plot histograms.
                             _data_cf_arr = np.zeros(len(_all_cf_labels), dtype=float) if _all_cf_labels else None
                             for _dlabel, _dinfo in data_loaded.items():
+                                _drp = _dinfo.get("region_patterns")
+                                if _drp and not any(pat in _rname for pat in _drp):
+                                    continue
                                 for _pkl in _dinfo.get("pkls", []):
                                     _dcf_steps = _pkl.get("region_cutflow_steps", {}).get(_rname, {})
                                     if _dcf_steps and _data_cf_arr is not None:
@@ -2269,6 +2467,18 @@ class PlotManager:
                                 for _i, _lbl in enumerate(_all_region_labels):
                                     _data_cf_arr[_i] += _pcf.get(_lbl, 0.0)
 
+                        # Signal overlay (SR only) — same masspoints as the SR
+                        # variable plots, aligned to this region's cut labels.
+                        _sig_cf_rows: List[Tuple[str, np.ndarray]] = []
+                        if _is_sr_cf and _all_cf_labels:
+                            for _sig_label, _sig_vals, _sig_labels in _signal_cutflow_rows(_rname):
+                                _aligned = np.array(
+                                    [_sig_vals[_sig_labels.index(_l)] if _l in _sig_labels else 0.0
+                                     for _l in _all_cf_labels],
+                                    dtype=float,
+                                )
+                                _sig_cf_rows.append((_sig_label, _aligned))
+
                         try:
                             cf_files = self._plot_cutflow(
                                 evtsel_cutflow_per_proc={},
@@ -2279,6 +2489,7 @@ class PlotManager:
                                 year=year,
                                 luminosity=luminosity,
                                 data_cutflow=_data_cf_arr,
+                                signal_cutflow_rows=_sig_cf_rows,
                             )
                             created.extend(cf_files)
                             logging.info("Cutflow plot for %s: %d files", _rname, len(cf_files))
@@ -3241,6 +3452,89 @@ class PlotManager:
         # ---- per-region cutflow plots ----
         if target_regions:
             import awkward as _ak
+
+            def _signal_cutflow_rows(_robj) -> List[Tuple[str, np.ndarray, List[str]]]:
+                """Per-masspoint sequential cutflow yields for one SR, same
+                masspoints/xsec scaling as sig_rows_for_plot (the SR variable
+                plots, e.g. MET) — so the same signal point shown there is
+                shown in the cutflow overlay."""
+                rows: List[Tuple[str, np.ndarray, List[str]]] = []
+                for _sfe in sig_file_entries:
+                    _sbr = _sfe["branches"]
+                    _swte = _sfe["wte"]
+                    _sxsec = _sfe["xsec"]
+                    _gm_cols = _sfe["genmodel_cols"]
+                    if not isinstance(_sbr, dict) or not _sbr:
+                        continue
+                    try:
+                        _sak_dict = {}
+                        for _k, _v in _sbr.items():
+                            if not isinstance(_v, np.ndarray) or _v.ndim != 1:
+                                continue
+                            if _v.dtype == object:
+                                try:
+                                    _sak_dict[_k] = _ak.Array(list(_v))
+                                except Exception:
+                                    pass
+                            else:
+                                _sak_dict[_k] = _v
+                        _sev_ak = _ak.Array(_sak_dict)
+                    except Exception:
+                        continue
+                    _sw_arr = _sbr.get(weight_branch)
+                    _n_sig = len(_sev_ak) if hasattr(_sev_ak, "__len__") else 0
+                    _sw_base = (np.asarray(_sw_arr, dtype=float) if _sw_arr is not None
+                                else np.ones(_n_sig, dtype=float))
+                    _sscale_base = ((luminosity * _sxsec * 1000.0) / _swte
+                                     if _sxsec is not None and _swte > 0
+                                     else (luminosity / _swte if _swte > 0 else 1.0))
+                    if _gm_cols:
+                        for _gmc in _gm_cols:
+                            _gm_arr = _sbr.get(_gmc)
+                            if _gm_arr is None:
+                                continue
+                            _mp_label = _gmc[len("GenModel_"):]
+                            _mp_xsec = _find_xsec(_mp_label, cross_sections)
+                            _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _swte
+                                         if _mp_xsec is not None and _swte > 0
+                                         else _sscale_base)
+                            _mp_weight = _sw_base * np.asarray(_gm_arr, dtype=bool) * _mp_scale
+                            try:
+                                _steps = _robj.apply_cuts_with_yields(
+                                    _sev_ak, objects={}, weight=_mp_weight)
+                            except Exception:
+                                continue
+                            if not _steps:
+                                continue
+                            _labels = list(_steps.keys())
+                            _vals = np.array([_steps[_l] for _l in _labels], dtype=float)
+                            _tex_map = {"MH3": r"$m_A$", "MH4": r"$m_a$", "Mchi": r"$m_\chi$"}
+                            _parts = _mp_label.split("_")
+                            _pairs, _i = [], 0
+                            while _i < len(_parts) - 1:
+                                if _parts[_i] in _tex_map:
+                                    _pairs.append(f"{_tex_map[_parts[_i]]}={_parts[_i + 1]}")
+                                    _i += 2
+                                else:
+                                    _i += 1
+                            _pretty = " ".join(_pairs) if _pairs else _mp_label
+                            _scale_prefix = f"×{signal_scale:g} " if signal_scale != 1.0 else ""
+                            rows.append((f"{_scale_prefix}{_pretty}", _vals * signal_scale, _labels))
+                    else:
+                        _mp_weight = _sw_base * _sscale_base
+                        try:
+                            _steps = _robj.apply_cuts_with_yields(
+                                _sev_ak, objects={}, weight=_mp_weight)
+                        except Exception:
+                            continue
+                        if not _steps:
+                            continue
+                        _labels = list(_steps.keys())
+                        _vals = np.array([_steps[_l] for _l in _labels], dtype=float)
+                        _scale_suffix = f" ×{signal_scale:g}" if signal_scale != 1.0 else ""
+                        rows.append((f"{_sfe['file_label']}{_scale_suffix}", _vals * signal_scale, _labels))
+                return rows
+
             for region_name in target_regions:
                 region_obj = region_manager.regions.get(region_name)
                 if region_obj is None:
@@ -3320,6 +3614,18 @@ class PlotManager:
                             except Exception:
                                 pass
 
+                # Signal overlay (SR only) — same masspoints as the SR variable
+                # plots, aligned to this region's cut labels.
+                sig_cf_rows: List[Tuple[str, np.ndarray]] = []
+                if _is_sr_cf and _all_cf_labels and sig_file_entries:
+                    for _sig_label, _sig_vals, _sig_labels in _signal_cutflow_rows(region_obj):
+                        _aligned = np.array(
+                            [_sig_vals[_sig_labels.index(_l)] if _l in _sig_labels else 0.0
+                             for _l in _all_cf_labels],
+                            dtype=float,
+                        )
+                        sig_cf_rows.append((_sig_label, _aligned))
+
                 if region_cf_per_proc or evtsel_cutflow_per_proc:
                     logging.debug("Plotting cutflow for %s (evtsel=%d procs, region=%d procs)",
                                  region_name, len(evtsel_cutflow_per_proc), len(region_cf_per_proc))
@@ -3333,6 +3639,7 @@ class PlotManager:
                             year=year,
                             luminosity=luminosity,
                             data_cutflow=data_cf_arr,
+                            signal_cutflow_rows=sig_cf_rows,
                         )
                         created.extend(cf_files)
                     except Exception as _cf_exc:
@@ -3547,11 +3854,18 @@ class PlotManager:
         year: str,
         luminosity: float,
         data_cutflow: Optional[np.ndarray] = None,
+        signal_cutflow_rows: Optional[List[Tuple[str, np.ndarray]]] = None,
     ) -> List[str]:
         """
         Cutflow plot matching event_stacked_plotter.py aesthetics:
         stacked bars per background process (evtsel steps) + ratio panel.
         Region cuts appended as additional bars after event-selection steps.
+
+        signal_cutflow_rows: optional [(label, values_aligned_to_all_labels), ...]
+        — one unstacked step line per signal masspoint (SR only), drawn on top
+        of the background stack. Same masspoints/xsec scaling as the SR
+        variable plots (e.g. MET), so the same signal point shown there is
+        shown here.
         """
         import matplotlib.ticker as _ticker
         import mplhep as hep
@@ -3640,12 +3954,32 @@ class PlotManager:
                     label="Data", zorder=10,
                 )
 
+        # ---- signal overlay (SR only): one unstacked step line per masspoint,
+        # same masspoints/xsec scaling as the SR variable plots. Draw only the
+        # first 3 (PNG/PDF only; all masspoints still go to ROOT below) —
+        # matches _plot_stacked_variable's signal_rows[:3] convention so the
+        # cutflow legend stays legible instead of listing all 29 masspoints. ----
+        _sig_max = 0.0
+        if signal_cutflow_rows:
+            for _si, (_sig_label, _sig_vals) in enumerate(signal_cutflow_rows[:3]):
+                _sv = np.asarray(_sig_vals, dtype=float)
+                if _sv.size != len(all_labels) or not np.any(_sv > 0):
+                    continue
+                _sig_max = max(_sig_max, float(np.max(_sv)))
+                _sc = self.signal_colors[_si % len(self.signal_colors)]
+                ax1.step(
+                    np.append(x - 0.5, x[-1] + 0.5), np.append(_sv, _sv[-1]),
+                    where="post", color=_sc,
+                    linewidth=1.6, linestyle="--", label=_sig_label, zorder=9,
+                )
+
         ax1.set_ylabel("Events", fontsize=self.fontsize_axis, labelpad=6)
         ax1.set_yscale("log")
         pos = cumulative[cumulative > 0]
         ymin = max(1e-3, min(float(np.min(pos)), 1e2)) if pos.size else 1e-3
         ymax = max(1.0, float(np.max(cumulative)),
-                   float(np.max(_dc)) if data_cutflow is not None else 1.0)
+                   float(np.max(_dc)) if data_cutflow is not None else 1.0,
+                   _sig_max)
         ax1.set_ylim(ymin, 10 ** (np.ceil(np.log10(ymax)) + 2))
         ax1.grid(False)
 
@@ -3766,7 +4100,8 @@ class PlotManager:
             fh.write("\\bottomrule\n\\end{tabular}\n\\end{table}\n")
         saved.append(str(tex_path))
 
-        # ROOT TH1D
+        # ROOT TH1D — one histogram per background process + TotalBkg +
+        # data_obs, matching the hist_*.root convention (see _plot_stacked_variable).
         try:
             import uproot as _up
             root_dir = Path(output_dir) / version / "root"
@@ -3774,7 +4109,17 @@ class PlotManager:
             root_path = root_dir / f"cutflow_{region_label}.root"
             edges = np.arange(len(all_labels) + 1, dtype=float)
             with _up.recreate(str(root_path)) as rf:
-                rf[f"cutflow_{region_label}"] = (total_vals, edges)
+                for proc, arr in proc_arrays:
+                    rf[str(proc)] = (arr.astype(float), edges)
+                rf["TotalBkg"] = (total_vals.astype(float), edges)
+                if has_data:
+                    rf["data_obs"] = (_dc.astype(float), edges)
+                if signal_cutflow_rows:
+                    for _sig_label, _sig_vals in signal_cutflow_rows:
+                        _safe_key = (_sig_label.replace(" ", "_").replace("(", "")
+                                     .replace(")", "").replace(",", "_").replace("=", "_")
+                                     .replace("×", "x").replace("$", ""))
+                        rf[f"sig_{_safe_key}"] = (np.asarray(_sig_vals, dtype=float), edges)
             saved.append(str(root_path))
         except Exception as _exc:
             logging.warning("Could not save cutflow ROOT for %s: %s", region_name, _exc)
@@ -4128,10 +4473,23 @@ class PlotManager:
         """
         plot_files = {}
 
-        # Get region histograms
-        region_histograms = results.get("region_histograms", {}).get(region, {})
+        # Get region histograms. region_histograms[region] is now
+        # {"values": {var: array}, "weight": array} — raw per-event data,
+        # no pre-binned hist.Hist objects (see analyzer.py's
+        # _fill_region_histograms). This legacy `make-plots` CLI path isn't
+        # exercised by the region-analysis workflow (which uses
+        # _create_region_stacked_plots / _create_region_from_events_plots,
+        # both already raw-value-aware) — degrade gracefully here rather
+        # than reimplementing binning for a command that isn't in active use.
+        region_payload = results.get("region_histograms", {}).get(region, {})
+        region_histograms = region_payload.get("values", {}) if isinstance(region_payload, dict) else {}
         if not region_histograms:
-            logging.warning(f"No histograms found for region {region}")
+            logging.warning(
+                f"No plottable values for region {region} — "
+                "region_histograms now stores raw per-event arrays; use "
+                "the region-analysis workflow (--make-region-plots) instead "
+                "of make-plots for binned output."
+            )
             return plot_files
 
         _internal_patterns = ['_dnn_score', '_region_variables']
@@ -4149,25 +4507,31 @@ class PlotManager:
         # Create one plot per variable
         for var_name in variables_to_plot:
             try:
-                hist_data = region_histograms.get(var_name)
-                if hist_data is None:
+                vals_raw = region_histograms.get(var_name)
+                if vals_raw is None or not isinstance(vals_raw, np.ndarray):
                     continue
 
-                # --- Extract arrays from histogram object ---
-                if hasattr(hist_data, 'values') and hasattr(hist_data, 'axes'):
-                    _hv = np.asarray(hist_data.values(), dtype=float)
-                    _edges = np.asarray(hist_data.axes[0].edges, dtype=float)
-                    _hvar = hist_data.variances()
-                    _hs = np.asarray(_hvar, dtype=float) if _hvar is not None else np.zeros_like(_hv)
-                elif isinstance(hist_data, dict):
-                    _hv = np.asarray(hist_data.get('values', []), dtype=float)
-                    _edges = np.asarray(hist_data.get('bins', []), dtype=float)
-                    _errs = hist_data.get('errors', None)
-                    _hs = (np.asarray(_errs, dtype=float) ** 2
-                           if _errs is not None else np.zeros_like(_hv))
-                else:
-                    logging.warning("Unknown histogram format for %s in %s", var_name, region)
+                # Raw per-event values (no pre-binning) — bin at
+                # configs/plotting.yaml's configured edges (or an
+                # auto-derived fallback), same convention as the
+                # region-analysis plotting paths.
+                _w_full = region_payload.get("weight") if isinstance(region_payload, dict) else None
+                _edges = self._build_bins_from_config(var_name)
+                _sentinel_mask = _apply_variable_plot_filter(var_name, vals_raw.astype(float), return_mask=True)
+                _vals = vals_raw[_sentinel_mask].astype(float)
+                if _vals.size == 0:
                     continue
+                _w = (np.asarray(_w_full, dtype=float)[_sentinel_mask]
+                      if _w_full is not None and len(_w_full) == len(vals_raw)
+                      else np.ones(_vals.size, dtype=float))
+                if _edges is None:
+                    _edges = _make_bins([_vals], self._build_bins_from_config, var_name, self._n_bins_default)
+                    if _edges is None or len(_edges) < 2:
+                        continue
+                _vals_clipped = _clip_overflow(_vals, _edges)
+                _hv, _ = np.histogram(_vals_clipped, bins=_edges, weights=_w)
+                _hs, _ = np.histogram(_vals_clipped, bins=_edges, weights=_w ** 2)
+                hist_data = {"values": _hv, "bins": _edges, "errors": np.sqrt(_hs)}
 
                 if _hv.size == 0 or _edges.size < 2:
                     continue
@@ -4321,8 +4685,35 @@ class PlotManager:
         """
         plot_files = {}
 
-        # Get region histograms
-        region_histograms = results.get("region_histograms", {}).get(region, {})
+        # region_histograms[region] is raw per-event {"values": {var: array},
+        # "weight": array} (see analyzer.py's _fill_region_histograms) — bin
+        # each variable here, once, into the same {"values","bins","errors"}
+        # dict shape the downstream plot-type methods already accept, so
+        # nothing further down this legacy (make-plots CLI, not exercised by
+        # the region-analysis workflow) call chain needs to change.
+        region_payload = results.get("region_histograms", {}).get(region, {})
+        raw_values = region_payload.get("values", {}) if isinstance(region_payload, dict) else {}
+        raw_weight = region_payload.get("weight") if isinstance(region_payload, dict) else None
+        region_histograms: Dict[str, Any] = {}
+        for _var, _vals_raw in raw_values.items():
+            if not isinstance(_vals_raw, np.ndarray):
+                continue
+            _edges = self._build_bins_from_config(_var)
+            _sentinel_mask = _apply_variable_plot_filter(_var, _vals_raw.astype(float), return_mask=True)
+            _vals = _vals_raw[_sentinel_mask].astype(float)
+            if _vals.size == 0:
+                continue
+            _w = (np.asarray(raw_weight, dtype=float)[_sentinel_mask]
+                  if raw_weight is not None and len(raw_weight) == len(_vals_raw)
+                  else np.ones(_vals.size, dtype=float))
+            if _edges is None:
+                _edges = _make_bins([_vals], self._build_bins_from_config, _var, self._n_bins_default)
+                if _edges is None or len(_edges) < 2:
+                    continue
+            _vals_clipped = _clip_overflow(_vals, _edges)
+            _hv, _ = np.histogram(_vals_clipped, bins=_edges, weights=_w)
+            _hs, _ = np.histogram(_vals_clipped, bins=_edges, weights=_w ** 2)
+            region_histograms[_var] = {"values": _hv, "bins": _edges, "errors": np.sqrt(_hs)}
         if not region_histograms:
             logging.warning(f"No histograms found for region {region}")
             return plot_files

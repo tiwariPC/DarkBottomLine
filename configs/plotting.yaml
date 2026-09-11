@@ -285,37 +285,37 @@ variable_labels:
   MET_significance: $p_{T}^{miss}$ significance
 variable_bins:
   METPhi:
-    low: -3.14159
-    high: 3.14159
-    n: 15
+    low: -3.5
+    high: 3.5
+    n: 29
   MET_phi:
-    low: -3.14159
-    high: 3.14159
-    n: 15
+    low: -3.5
+    high: 3.5
+    n: 29
   RecoilPhi:
-    low: -3.14159
-    high: 3.14159
-    n: 15
+    low: -3.5
+    high: 3.5
+    n: 29
   dPhi_jetMET:
-    low: 0.5
-    high: 3.2
-    n: 17
+    low: -3.5
+    high: 3.5
+    n: 29
   del_plus:
-    low: 0.0
-    high: 3.2
-    n: 17
+    low: -3.5
+    high: 3.5
+    n: 29
   del_minus:
-    low: -3.2
-    high: 3.2
-    n: 17
+    low: -3.5
+    high: 3.5
+    n: 29
   dPhiJet12:
-    low: -7.5
-    high: 7.5
-    n: 21
+    low: -3.5
+    high: 3.5
+    n: 29
   dPhiJet13:
-    low: -7.5
-    high: 7.5
-    n: 21
+    low: -3.5
+    high: 3.5
+    n: 29
   DetaJet12:
     low: -7.5
     high: 7.5
@@ -329,57 +329,57 @@ variable_bins:
     high: 2.5
     n: 15
   Jet1Phi:
-    low: -3.14159
-    high: 3.14159
-    n: 15
+    low: -3.5
+    high: 3.5
+    n: 29
   Jet2Eta:
     low: -2.5
     high: 2.5
     n: 15
   Jet2Phi:
-    low: -3.14159
-    high: 3.14159
-    n: 15
+    low: -3.5
+    high: 3.5
+    n: 29
   Jet3Eta:
     low: -2.5
     high: 2.5
     n: 15
   Jet3Phi:
-    low: -3.14159
-    high: 3.14159
-    n: 15
+    low: -3.5
+    high: 3.5
+    n: 29
   bjet_eta:
     low: -2.5
     high: 2.5
     n: 15
   bjet_phi:
-    low: -3.14159
-    high: 3.14159
-    n: 15
+    low: -3.5
+    high: 3.5
+    n: 29
   jet_eta:
     low: -2.5
     high: 2.5
     n: 15
   jet_phi:
-    low: -3.14159
-    high: 3.14159
-    n: 15
+    low: -3.5
+    high: 3.5
+    n: 29
   electron_eta:
     low: -2.5
     high: 2.5
     n: 15
   electron_phi:
-    low: -3.14159
-    high: 3.14159
-    n: 15
+    low: -3.5
+    high: 3.5
+    n: 29
   muon_eta:
     low: -2.5
     high: 2.5
     n: 15
   muon_phi:
-    low: -3.14159
-    high: 3.14159
-    n: 15
+    low: -3.5
+    high: 3.5
+    n: 29
   MET:
     edges:
     - 100

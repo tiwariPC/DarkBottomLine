@@ -640,19 +640,22 @@ signal mass hypothesis) and injecting per-event DNN scores (`ml_score`) into the
 
 ### Step 0 — Event selection (run once per sample)
 
-`scripts/run_eventsel_all.sh` loops `darkbottomline analyze --mode event-selection` over every
-`.root` file in a directory, auto-detecting data files (via filename pattern) and applying `--data`
-to them:
+`scripts/run_all_steps.sh`'s Step 1 (`--steps eventsel`) loops
+`darkbottomline analyze --mode event-selection` over every `.root` file in
+`RAW_INPUT_DIR`, auto-detecting data files (via filename pattern) and
+applying `--data` to them — no separate script, this is inlined directly
+in `run_all_steps.sh` so it has no sibling-script dependency:
 
 ```bash
-scripts/run_eventsel_all.sh [INPUT_DIR] [OUTPUT_DIR] [CONFIG] [--dry-run]
+scripts/run_all_steps.sh --steps eventsel [--dry-run]
 
-# e.g.
-scripts/run_eventsel_all.sh /path/to/NanoAODv15_2024 outputs/eventsel configs/2024.yaml
+# e.g., with overrides via env vars
+RAW_INPUT_DIR=/path/to/NanoAODv15_2024 EVENTSEL_DIR=outputs/eventsel CONFIG=configs/2024.yaml \
+    scripts/run_all_steps.sh --steps eventsel
 ```
 
-Defaults: `INPUT_DIR=../TestingSamples/NanoAODv15_2024`, `OUTPUT_DIR=outputs/eventsel`,
-`CONFIG=configs/2024.yaml`. `--dry-run` prints the planned per-file commands without running them.
+Defaults: `RAW_INPUT_DIR=../TestingSamples/NanoAODv15_2024`, `EVENTSEL_DIR=outputs/eventsel`,
+`CONFIG=configs/${YEAR}.yaml`. `--dry-run` prints the planned per-file commands without running them.
 
 ### Step 1 — Train
 
