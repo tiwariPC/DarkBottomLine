@@ -104,7 +104,9 @@ btagging:
    # XXTight    0.9654  42.7   0.01    0.9739  48.3   0.01    0.9815  44.6   0.01
    algorithm: "UParT"       # PNet, deepJet, deepCSV, UParT
    branch: "Jet_btagUParTAK4B"  # NanoAOD branch name
+   score_loose: 0.0246       # UParT Loose WP (BTV POG Summer24)
    score: 0.1272            # UParT Medium WP (BTV POG Summer24)
+   score_tight: 0.4648       # UParT Tight WP (BTV POG Summer24)
    # B-tag SF (correctionlib). sf_type: "shape" (continuous, discr-based)
    # or "fixed_wp" (per-WP, needs sf_wp). Correction names built from sf_name:
    #   shape    -> {sf_name}_shape
@@ -112,6 +114,13 @@ btagging:
    sf_name: "UParTAK4"      # base correction name in btagging.json.gz
    sf_type: "fixed_wp"      # Summer24 ships only fixed-WP UParT SFs
    sf_wp: "M"               # L, M, T, XT, XXT (matches score above)
+   # MC-truth tagging-efficiency map (scripts/btag_efficiency_slimmer.py +
+   # btag_efficiency_maker.py). Needed for the full fixed-WP SF reweighting
+   # formula: SF on tagged jets, (1-SF*eff)/(1-eff) on untagged jets. This is
+   # a placeholder built from a handful of local test samples; will be
+   # replaced by a full-sample-statistics version with the same structure
+   # (hist_<b|c|light>_efficiency_<lwp|mwp|twp>, 6 signed-eta x 9-pt bins).
+   efficiency_map: data/corrections/2024/heavyflavor_efficiency_maps_2024.root
 
 # Event selection (aligned with SUS-23-008)
 event_selection:

@@ -3215,6 +3215,8 @@ class PlotManager:
                 _weight_systs = [
                     "weight_pileupUP", "weight_pileupDOWN",
                     "weight_btagUP", "weight_btagDOWN",
+                    "weight_btag_trueUP", "weight_btag_trueDOWN",
+                    "weight_btag_mistagUP", "weight_btag_mistagDOWN",
                     "weight_muonUP", "weight_muonDOWN",
                     "weight_electronUP", "weight_electronDOWN",
                     "weight_electronHLTUP", "weight_electronHLTDOWN",

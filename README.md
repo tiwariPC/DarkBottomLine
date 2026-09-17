@@ -877,6 +877,83 @@ Works with both 2022/2023 (float ±inf edges) and 2024 (string `'-inf'` edges) J
 
 ---
 
+## B-tag MC-truth Efficiency Map + Fixed-WP SF Reweighting
+
+The BTV fixed-WP b-tag SF prescription needs a per-flavor MC-truth
+tagging-efficiency map to correctly reweight events with untagged jets (the
+`(1-SF·eff)/(1-eff)` term). Two self-contained scripts (no `darkbottomline`
+import) produce that map from NanoAOD, condor-compatible (one NanoAOD file
+in → one ROOT file out per job), modeled on the old Run2 custom-ntuple
+maker (`bEff_Slimmer.py` + `btag_EffMaker.py`), with binning that matches
+Run2's real production maps exactly (6 signed η bins, 9 pt bins).
+
+### Stage 1 — Slimmer (per file, MC only)
+
+```bash
+python scripts/btag_efficiency_slimmer.py \
+    --config configs/2024.yaml \
+    --input /path/to/one_nanoaod_file.root \
+    --output outputs/btageff/2024/sample_0.root \
+    [--max-events 500000]
+```
+
+Fills 2D (η, pt) **count** histograms per truth jet flavor (b/c/light) and
+per working point (Loose/Medium/Tight, `configs/{year}.yaml`'s
+`btagging.score_loose/score/score_tight`):
+`hist_<flavor>_efficiency_denominator`, `hist_<flavor>_efficiency_pass_<wp>`,
+`hist_<flavor>_efficiency_fail_<wp>`. Additive counts only — no division
+here, since efficiency = pass/denominator is not additive (summing per-file
+efficiencies would be statistically wrong).
+
+### Stage 2 — Maker (once, after all slimmer files exist)
+
+```bash
+python scripts/btag_efficiency_maker.py \
+    --inputs "outputs/btageff/2024/*.root" \
+    --output data/corrections/2024/heavyflavor_efficiency_maps_2024.root
+```
+
+Sums the count histograms across every slimmer output (the `hadd`
+equivalent, done via uproot), then divides into the actual efficiency
+ratio: `hist_<flavor>_denominator_<wp>`, `hist_<flavor>_pass_<wp>`,
+`hist_<flavor>_efficiency_<wp>` for `<flavor>` in `b`/`c`/`light` and `<wp>`
+in `lwp`/`mwp`/`twp`. Warns on any bin at 0% or 100% efficiency (breaks the
+`1/(1-eff)` term — usually too few MC events in that cell).
+
+### Config wiring
+
+```yaml
+btagging:
+  efficiency_map: data/corrections/2024/heavyflavor_efficiency_maps_2024.root
+```
+
+`corrections.py::_evaluate_btag_sf` loads this file lazily via uproot
+(`_load_btag_efficiency_maps`) and applies the full BTV fixed-WP formula
+per jet: `SF` for tagged jets, `(1-SF·eff)/(1-eff)` for untagged jets — same
+formula as the Run2 reference (`ExoPieUtils/scalefactortools/
+btag_SFMaker.py::getJetWeight`).
+
+### Split b-tag weight: true vs mistag
+
+The per-jet factor is further split into two independent components,
+matching the Run2 reference's `weightB`/`weightFakeB` split
+(`ExoPieAnalyzer/bbMETAnalyzer.py`): true b-jets (`hadronFlavour==5`) vs
+everything else (c+light), each with its own product and its own
+systematic, since the b-tagging-efficiency and mistag-rate uncertainties
+are independent, uncorrelated sources.
+
+| Branch | Component |
+| ------ | --------- |
+| `weight_btagUP` / `weight_btagDOWN` | Combined (both components varied together) — kept for backward compatibility |
+| `weight_btag_trueUP` / `weight_btag_trueDOWN` | True b-jets only (mistag held central) |
+| `weight_btag_mistagUP` / `weight_btag_mistagDOWN` | c+light jets only (true-b held central) |
+
+Use either the combined branch **or** the two split branches as
+uncorrelated nuisances downstream — never all three together, that would
+double-count the same underlying uncertainty.
+
+---
+
 ## Framework Components
 
 | File | Role |

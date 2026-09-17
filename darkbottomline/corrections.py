@@ -11,6 +11,8 @@ import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional, Union, List
 
+from darkbottomline.selections import pass_triggers
+
 try:
     from correctionlib import CorrectionSet
     CORRECTIONLIB_AVAILABLE = True
@@ -241,6 +243,8 @@ class CorrectionManager:
         self.config = config
         self.corrections = {}
         self._load_corrections()
+        self._btag_efficiency_maps: Optional[Dict[str, Any]] = None
+        self._btag_efficiency_maps_loaded = False
 
     def _load_corrections(self):
         """Load correction files using correctionlib."""
@@ -536,16 +540,22 @@ class CorrectionManager:
         working_point = corr_cfg.get("electronSF_WP", "Tight")
         return str(year_str), str(working_point)
 
+    def _electron_sf_loose_wp(self) -> str:
+        """WP for the Z-candidate subleading (loose-only) electron's ID SF."""
+        corr_cfg = self.config.get("corrections", {})
+        return str(corr_cfg.get("electronSF_WP_loose", "Loose"))
+
     def get_electron_sf(
         self,
         electrons: ak.Array,
-        systematic: str = "central"
+        systematic: str = "central",
+        working_point: Optional[str] = None,
     ) -> ak.Array:
         """
         Get electron scale factors for ID and reconstruction (nominal, up, or down).
         Uses correction \"Electron-ID-SF\" with ValType sf / sfup / sfdown.
         """
-        var = self.get_electron_sf_nominal_up_down(electrons)
+        var = self.get_electron_sf_nominal_up_down(electrons, working_point=working_point)
         if systematic == "up":
             return var["up"]
         if systematic == "down":
@@ -555,18 +565,24 @@ class CorrectionManager:
     def get_electron_sf_nominal_up_down(
         self,
         electrons: ak.Array,
+        working_point: Optional[str] = None,
     ) -> Dict[str, ak.Array]:
         """
         Get electron scale factors as nominal, up, and down for systematics.
         Uses shared jagged-then-flat pattern (Coffea/correctionlib).
         Returns dict with keys \"central\", \"up\", \"down\" (same shape as electrons.pt).
+
+        working_point overrides the config-driven WP (e.g. "Loose" for a
+        loose-only lepton such as the Z-candidate subleading electron);
+        defaults to config.corrections.electronSF_WP ("Tight") when omitted.
         """
         ones = ak.ones_like(electrons.pt, dtype=float)
         out = {"central": ones, "up": ones, "down": ones}
         corr = self._get_electron_sf_correction()
         if corr is None:
             return out
-        year_str, working_point = self._electron_sf_params()
+        year_str, cfg_wp = self._electron_sf_params()
+        working_point = working_point or cfg_wp
         pt = electrons.pt
         eta = electrons.eta
         if len(ak.ravel(pt)) == 0:
@@ -684,6 +700,79 @@ class CorrectionManager:
             return var["down"]
         return var["central"]
 
+    # sf_wp letter (config.btagging.sf_wp) -> efficiency-map histogram suffix
+    # (scripts/btag_efficiency_slimmer.py's WORKING_POINTS: lwp/mwp/twp) and
+    # -> the config.btagging discriminant-threshold key for that same WP.
+    _EFF_MAP_WP_SUFFIX = {"L": "lwp", "M": "mwp", "T": "twp"}
+    _WP_SCORE_KEY = {"L": "score_loose", "M": "score", "T": "score_tight"}
+
+    def _load_btag_efficiency_maps(self) -> Optional[Dict[str, Any]]:
+        """
+        Load the MC-truth tagging-efficiency map (config.btagging.efficiency_map,
+        a plain ROOT file from scripts/btag_efficiency_slimmer.py +
+        btag_efficiency_maker.py — NOT a correctionlib JSON, loaded via uproot).
+
+        Returns {"b": {"lwp": (eff_2d, eta_edges, pt_edges), "mwp": ..., "twp": ...},
+                 "c": {...}, "light": {...}} or None if unavailable/unconfigured.
+        Cached after first call (lazy, since this needs the full BTV fixed-WP
+        reweighting formula, which isn't always exercised).
+        """
+        if self._btag_efficiency_maps_loaded:
+            return self._btag_efficiency_maps
+        self._btag_efficiency_maps_loaded = True
+
+        file_path = self.config.get("btagging", {}).get("efficiency_map")
+        if not file_path:
+            return None
+        resolved = _resolve_correction_path(file_path)
+        path_to_open = str(resolved) if resolved is not None else file_path
+        try:
+            import uproot
+            maps: Dict[str, Any] = {}
+            with uproot.open(path_to_open) as f:
+                for flavor in ("b", "c", "light"):
+                    maps[flavor] = {}
+                    for wp_suffix in ("lwp", "mwp", "twp"):
+                        hist = f[f"hist_{flavor}_efficiency_{wp_suffix}"]
+                        eff = hist.values()
+                        eta_edges = hist.axis(0).edges()
+                        pt_edges = hist.axis(1).edges()
+                        maps[flavor][wp_suffix] = (eff, eta_edges, pt_edges)
+            self._btag_efficiency_maps = maps
+            logging.debug(f"Loaded b-tag efficiency maps from {path_to_open}")
+        except Exception as e:
+            logging.warning(f"Failed to load b-tag efficiency map {file_path}: {e}")
+            self._btag_efficiency_maps = None
+        return self._btag_efficiency_maps
+
+    def _lookup_btag_efficiency(
+        self,
+        flavor_flat: np.ndarray,
+        eta: np.ndarray,
+        pt: np.ndarray,
+        wp_suffix: str,
+    ) -> Optional[np.ndarray]:
+        """Per-jet MC-truth tagging efficiency at the given working point, from
+        the loaded efficiency map. `eta` is SIGNED (map binning is signed eta,
+        matching the real Run2 production maps), `flavor_flat` is hadronFlavour
+        (5=b, 4=c, else=light). Returns None if the map isn't available."""
+        maps = self._load_btag_efficiency_maps()
+        if maps is None:
+            return None
+        eff_out = np.zeros(len(pt), dtype=float)
+        for flavor, flav_vals in (("b", (5,)), ("c", (4,)), ("light", None)):
+            if flav_vals is not None:
+                mask = np.isin(flavor_flat, flav_vals)
+            else:
+                mask = ~np.isin(flavor_flat, (4, 5))
+            if not np.any(mask):
+                continue
+            eff_2d, eta_edges, pt_edges = maps[flavor][wp_suffix]
+            eta_idx = np.clip(np.digitize(eta[mask], eta_edges) - 1, 0, len(eta_edges) - 2)
+            pt_idx = np.clip(np.digitize(pt[mask], pt_edges) - 1, 0, len(pt_edges) - 2)
+            eff_out[mask] = eff_2d[eta_idx, pt_idx]
+        return eff_out
+
     def _btag_sf_config(self) -> Dict[str, Any]:
         """Read b-tag SF settings from config.btagging (config-driven, no hardcoding).
 
@@ -716,13 +805,39 @@ class CorrectionManager:
         self,
         jets: ak.Array,
         systematic: str,
+        component: Optional[str] = None,
     ) -> Optional[ak.Array]:
         """
         B-tag SF for one systematic. Dispatches on config sf_type:
           shape    : one correction, evaluate(syst, flavor, abseta, pt, discr).
+                     Returns the per-jet SF directly (continuous discriminant
+                     already encodes tag status, no reweighting needed).
           fixed_wp : flavor {4,5} -> comb, flavor {0} -> light,
                      evaluate(syst, wp, flavor, abseta, pt); no discriminant.
-        Flavor: 0=udsg, 4=c, 5=b (hadronFlavour). Returns jagged SF array or None.
+                     Applies the full BTV fixed-WP reweighting formula when
+                     an efficiency map is configured (config.btagging.
+                     efficiency_map): per-jet factor is SF for tagged jets,
+                     (1-SF*eff)/(1-eff) for untagged jets (same formula as the
+                     Run2 reference, ExoPieUtils/scalefactortools/
+                     btag_SFMaker.py::getJetWeight) — the per-event product
+                     over ALL jets (not just tagged ones) is then the correct
+                     event weight. Falls back to the raw per-jet SF (valid
+                     only for tagged jets) if no efficiency map is available.
+
+        `component` splits the per-jet factor into two independent weights,
+        matching the Run2 reference's weightB/weightFakeB split
+        (ExoPieAnalyzer/bbMETAnalyzer.py: `if flavlist[i] != 5: fakebWgt *=
+        ... else: bWgt *= ...` — true b-jets vs everything else, each with
+        its own product and its own up/down systematic, then multiplied
+        together for the total b-tag weight):
+          "true"   -> only true b-jets (hadronFlavour==5) get their real
+                      factor; all other jets are set to 1.0 (no contribution).
+          "mistag" -> only non-b jets (c and light) get their real factor;
+                      b-jets are set to 1.0.
+          None     -> no split, every jet contributes its own factor (used
+                      internally when computing the un-split combined SF).
+        Flavor: 0=udsg, 4=c, 5=b (hadronFlavour). Returns jagged per-jet
+        factor array (multiply over all jets in the event) or None.
         """
         cfg = self._btag_sf_config()
         name = cfg["name"]
@@ -732,7 +847,8 @@ class CorrectionManager:
         flavor = getattr(jets, "hadronFlavour", None)
         if flavor is None:
             flavor = ak.zeros_like(jets.pt, dtype=np.int32)
-        eta = np.asarray(ak.ravel(np.abs(jets.eta)), dtype=float)
+        eta_signed = np.asarray(ak.ravel(jets.eta), dtype=float)
+        eta = np.abs(eta_signed)
         pt = np.asarray(ak.ravel(jets.pt), dtype=float)
         flavor_flat = np.asarray(ak.ravel(flavor), dtype=np.int32)
         n = len(pt)
@@ -779,11 +895,30 @@ class CorrectionManager:
                         ),
                         dtype=float,
                     )
+
+                wp_suffix = self._EFF_MAP_WP_SUFFIX.get(wp)
+                score_key = self._WP_SCORE_KEY.get(wp)
+                eff = (
+                    self._lookup_btag_efficiency(flavor_flat, eta_signed, pt, wp_suffix)
+                    if wp_suffix is not None and score_key is not None else None
+                )
+                if eff is not None:
+                    discr = np.asarray(ak.ravel(jets.btagScore), dtype=float)
+                    is_tagged = discr > self.config["btagging"][score_key]
+                    safe_eff = np.clip(eff, 0.0, 0.999999)
+                    untagged_factor = (1.0 - sf * safe_eff) / (1.0 - safe_eff)
+                    sf = np.where(is_tagged, sf, untagged_factor)
             else:
                 return None
 
             if sf.shape != (n,):
                 return None
+
+            if component == "true":
+                sf = np.where(flavor_flat == 5, sf, 1.0)
+            elif component == "mistag":
+                sf = np.where(flavor_flat == 5, 1.0, sf)
+
             return ak.unflatten(ak.Array(sf), counts)
         except Exception:
             return None
@@ -791,7 +926,8 @@ class CorrectionManager:
     def get_btag_sf(
         self,
         jets: ak.Array,
-        systematic: str = "central"
+        systematic: str = "central",
+        component: Optional[str] = None,
     ) -> ak.Array:
         """
         Get b-tagging scale factors for one systematic (central/up/down).
@@ -800,20 +936,23 @@ class CorrectionManager:
         ones = ak.ones_like(jets.pt, dtype=float)
         if not jets.pt.layout or len(ak.ravel(jets.pt)) == 0:
             return ones
-        out = self._evaluate_btag_sf(jets, systematic)
+        out = self._evaluate_btag_sf(jets, systematic, component=component)
         if out is not None:
             return out
         logging.warning("B-tag SF evaluate failed")
         return ones
 
-    def get_btag_sf_nominal_up_down(self, jets: ak.Array) -> Dict[str, ak.Array]:
-        """Get b-tag SF as central, up, down."""
+    def get_btag_sf_nominal_up_down(
+        self, jets: ak.Array, component: Optional[str] = None
+    ) -> Dict[str, ak.Array]:
+        """Get b-tag SF as central, up, down. `component`: "true" (true
+        b-jets only) or "mistag" (c+light jets only) — see _evaluate_btag_sf."""
         ones = ak.ones_like(jets.pt, dtype=float)
         out = {"central": ones, "up": ones, "down": ones}
         if "btagSF" not in self.corrections:
             return out
         for key, syst in [("central", "central"), ("up", "up"), ("down", "down")]:
-            val = self._evaluate_btag_sf(jets, syst)
+            val = self._evaluate_btag_sf(jets, syst, component=component)
             if val is not None:
                 out[key] = val
         return out
@@ -977,83 +1116,6 @@ class CorrectionManager:
             n_events = len(jagged_sf)
             return np.ones(n_events, dtype=float)
 
-    def get_all_corrections(
-        self,
-        events: ak.Array,
-        objects: Dict[str, Any],
-        systematic: str = "central"
-    ) -> Dict[str, Union[ak.Array, Dict[str, ak.Array]]]:
-        """
-        Get all corrections for an event sample.
-
-        Each weight is the product over all selected objects in the event:
-        - weight_btag: product of b-tag SF over all jets
-        - weight_electron_id: product of electron ID SF over all electrons
-        - weight_muon_id: product of muon ID (and iso if combined) SF over all muons
-        Final event weight = pileup * generator * weight_muon_id * weight_electron_id * weight_btag * ...
-
-        Returns:
-            Dictionary of per-event weights. Values are either a single array (e.g. pileup)
-            or a dict {"central", "up", "down"} so the weight calculator can combine
-            central only for total weight and use up/down for systematics.
-        """
-        corrections = {}
-
-        # Pileup (per-event, no systematic variations stored here)
-        corrections["pileup"] = self.get_pileup_weight(events, systematic)
-
-        # Muon: product of SF over all muons -> weight_muon_id (ID/iso as in correction file)
-        if "tight_muons" in objects and len(ak.flatten(objects["tight_muons"])) > 0:
-            mu_sf = self.get_muon_sf(objects["tight_muons"], systematic)
-            mu_var = self.get_muon_sf_nominal_up_down(objects["tight_muons"])
-            corrections["weight_muon_id"] = {
-                "central": self._per_event_product(mu_sf),
-                "up": self._per_event_product(mu_var["up"]),
-                "down": self._per_event_product(mu_var["down"]),
-            }
-
-        # Electron: product of SF over all electrons -> weight_electron_id
-        if "tight_electrons" in objects and len(ak.flatten(objects["tight_electrons"])) > 0:
-            ele_sf = self.get_electron_sf(objects["tight_electrons"], systematic)
-            ele_var = self.get_electron_sf_nominal_up_down(objects["tight_electrons"])
-            corrections["weight_electron_id"] = {
-                "central": self._per_event_product(ele_sf),
-                "up": self._per_event_product(ele_var["up"]),
-                "down": self._per_event_product(ele_var["down"]),
-            }
-
-        # B-tag: product of SF over all jets -> weight_btag
-        if "jets" in objects and len(ak.flatten(objects["jets"])) > 0:
-            btag_sf = self.get_btag_sf(objects["jets"], systematic)
-            btag_var = self.get_btag_sf_nominal_up_down(objects["jets"])
-            corrections["weight_btag"] = {
-                "central": self._per_event_product(btag_sf),
-                "up": self._per_event_product(btag_var["up"]),
-                "down": self._per_event_product(btag_var["down"]),
-            }
-
-        # Electron HLT trigger SF: product of SF over all electrons -> weight_electronHLT
-        if "tight_electrons" in objects and len(ak.flatten(objects["tight_electrons"])) > 0:
-            hlt_sf = self.get_electronHLT_sf(objects["tight_electrons"], systematic)
-            hlt_var = self.get_electronHLT_sf_nominal_up_down(objects["tight_electrons"])
-            corrections["weight_electronHLT"] = {
-                "central": self._per_event_product(hlt_sf),
-                "up": self._per_event_product(hlt_var["up"]),
-                "down": self._per_event_product(hlt_var["down"]),
-            }
-
-        # MET HLT trigger SF: per-event, evaluated on hadronic recoil -> weight_metHLT
-        if "recoil" in objects and len(ak.ravel(objects["recoil"])) > 0:
-            corrections["weight_metHLT"] = self.get_metHLT_sf_nominal_up_down(objects["recoil"])
-
-        # JEC: product of correction factors over all jets -> weight_JEC
-        if "jets" in objects and len(ak.flatten(objects["jets"])) > 0:
-            corrections["weight_JEC"] = self.get_jet_jec_weight_nominal_up_down(
-                objects["jets"], events
-            )
-
-        return corrections
-
     def get_weighted_total_events(self, events: ak.Array) -> float:
         """
         Compute the normalization sum from all events before any selection.
@@ -1134,8 +1196,10 @@ class CorrectionManager:
             weight_XDOWN = (full_event_weight / weight_X_central) * weight_X_down
 
         Returns dict with keys: full_event_weight, weight_pileupUP/DOWN,
-        weight_btagUP/DOWN, weight_muonUP/DOWN, weight_electronUP/DOWN,
-        weight_electronHLTUP/DOWN, weight_metHLTUP/DOWN, weight_JECUP/DOWN.
+        weight_btagUP/DOWN (combined), weight_btag_trueUP/DOWN (true b-jets
+        only), weight_btag_mistagUP/DOWN (c+light jets only), weight_muonUP/
+        DOWN, weight_electronUP/DOWN, weight_electronHLTUP/DOWN,
+        weight_metHLTUP/DOWN, weight_JECUP/DOWN.
         """
         n_events = len(events)
         ones = ak.Array(np.ones(n_events, dtype=float))
@@ -1147,14 +1211,14 @@ class CorrectionManager:
         except Exception:
             genweight = ones
 
-        def _prod_or_ones(obj_key, sf_func, var_func):
+        def _prod_or_ones(obj_key, sf_func, var_func, **kwargs):
             """Return (central, up, down) per-event product SFs, or ones if no objects."""
             obj = objects.get(obj_key)
             if obj is None or len(ak.ravel(obj.pt)) == 0:
                 return ones, ones, ones
-            var = var_func(obj)
+            var = var_func(obj, **kwargs)
             return (
-                self._per_event_product(sf_func(obj)),
+                self._per_event_product(sf_func(obj, **kwargs)),
                 self._per_event_product(var["up"]),
                 self._per_event_product(var["down"]),
             )
@@ -1164,33 +1228,86 @@ class CorrectionManager:
         w_pu_up = self.get_pileup_weight(events, "up")
         w_pu_down = self.get_pileup_weight(events, "down")
 
-        # B-tag
-        w_btag, w_btag_up, w_btag_down = _prod_or_ones(
-            "jets", self.get_btag_sf, self.get_btag_sf_nominal_up_down
+        # B-tag: full BTV fixed-WP reweighting over ALL selected jets (SF on
+        # tagged jets, (1-SF*eff)/(1-eff) on untagged jets — see
+        # _evaluate_btag_sf) when an efficiency map is configured
+        # (config.btagging.efficiency_map). Split into two independent
+        # components, matching the Run2 reference's weightB/weightFakeB
+        # split (ExoPieAnalyzer/bbMETAnalyzer.py): "true" = true b-jets
+        # only, "mistag" = c+light jets only — each gets its own product and
+        # its own up/down systematic, then the two are multiplied together
+        # for the total b-tag weight. Restricting to bjets only (the
+        # previous fallback, before the efficiency map existed) would drop
+        # the untagged-jet term the formula needs and is no longer correct
+        # now that the map is available.
+        w_btag_true, w_btag_true_up, w_btag_true_down = _prod_or_ones(
+            "jets", self.get_btag_sf, self.get_btag_sf_nominal_up_down,
+            component="true",
         )
+        w_btag_mistag, w_btag_mistag_up, w_btag_mistag_down = _prod_or_ones(
+            "jets", self.get_btag_sf, self.get_btag_sf_nominal_up_down,
+            component="mistag",
+        )
+        w_btag = w_btag_true * w_btag_mistag
+        w_btag_up = w_btag_true_up * w_btag_mistag_up
+        w_btag_down = w_btag_true_down * w_btag_mistag_down
 
         # Muon
         w_muon, w_muon_up, w_muon_down = _prod_or_ones(
             "tight_muons", self.get_muon_sf, self.get_muon_sf_nominal_up_down
         )
+        # Z-candidate subleading muon is loose-only (not in tight_muons) and
+        # would otherwise never get an ID SF; fold it in via the low-pT
+        # (loose-ID) correction, which get_muon_sf already auto-selects for
+        # pt<=30 GeV (matches the 10-30 GeV sublead pt range).
+        w_z_sub_mu, w_z_sub_mu_up, w_z_sub_mu_down = _prod_or_ones(
+            "z_sublead_muons", self.get_muon_sf, self.get_muon_sf_nominal_up_down
+        )
+        w_muon = w_muon * w_z_sub_mu
+        w_muon_up = w_muon_up * w_z_sub_mu_up
+        w_muon_down = w_muon_down * w_z_sub_mu_down
 
         # Electron ID
         w_electron, w_electron_up, w_electron_down = _prod_or_ones(
             "tight_electrons", self.get_electron_sf, self.get_electron_sf_nominal_up_down
         )
+        # Z-candidate subleading electron is loose-only (not in
+        # tight_electrons) and would otherwise never get an ID SF; fold it in
+        # using the Loose-WP correction (matches its Loose cutBased ID).
+        z_sub_el = objects.get("z_sublead_electrons")
+        if z_sub_el is not None and len(ak.ravel(z_sub_el.pt)) > 0:
+            sub_var = self.get_electron_sf_nominal_up_down(
+                z_sub_el, working_point=self._electron_sf_loose_wp()
+            )
+            w_electron = w_electron * self._per_event_product(sub_var["central"])
+            w_electron_up = w_electron_up * self._per_event_product(sub_var["up"])
+            w_electron_down = w_electron_down * self._per_event_product(sub_var["down"])
 
-        # Electron HLT
+        # Electron HLT. Same trigger-OR issue as MET HLT: an event can have a
+        # tight electron but have fired only via the MET leg (trigger_cut is
+        # MET|EGamma at preselection), so this per-electron HLT-efficiency SF
+        # must not apply unless the event actually fired the EGamma trigger.
         w_ele_hlt, w_ele_hlt_up, w_ele_hlt_down = _prod_or_ones(
             "tight_electrons", self.get_electronHLT_sf, self.get_electronHLT_sf_nominal_up_down
         )
+        ele_trig_paths = self.config.get("triggers", {}).get("EGamma", [])
+        fired_ele_trigger = np.asarray(ak.to_numpy(pass_triggers(events, ele_trig_paths)), dtype=bool)
+        w_ele_hlt = ak.where(fired_ele_trigger, w_ele_hlt, ones)
+        w_ele_hlt_up = ak.where(fired_ele_trigger, w_ele_hlt_up, ones)
+        w_ele_hlt_down = ak.where(fired_ele_trigger, w_ele_hlt_down, ones)
 
-        # MET HLT (per-event, on hadronic recoil)
+        # MET HLT (per-event, on hadronic recoil). Only valid for events that
+        # actually fired the MET trigger — electron-only-triggered events
+        # (e.g. Wenu/Zee/Topenu CRs) must not get a MET-trigger-efficiency
+        # correction folded in, so gate per-event on the real trigger bit.
         recoil = objects.get("recoil")
         if recoil is not None and len(ak.ravel(recoil)) > 0:
             met_hlt_var = self.get_metHLT_sf_nominal_up_down(recoil)
-            w_met_hlt, w_met_hlt_up, w_met_hlt_down = (
-                met_hlt_var["central"], met_hlt_var["up"], met_hlt_var["down"]
-            )
+            met_trig_paths = self.config.get("triggers", {}).get("MET", [])
+            fired_met_trigger = np.asarray(ak.to_numpy(pass_triggers(events, met_trig_paths)), dtype=bool)
+            w_met_hlt = ak.where(fired_met_trigger, met_hlt_var["central"], ones)
+            w_met_hlt_up = ak.where(fired_met_trigger, met_hlt_var["up"], ones)
+            w_met_hlt_down = ak.where(fired_met_trigger, met_hlt_var["down"], ones)
         else:
             w_met_hlt = w_met_hlt_up = w_met_hlt_down = ones
 
@@ -1224,6 +1341,13 @@ class CorrectionManager:
             "weight_pileupDOWN": _vary(full_event_weight, w_pu, w_pu_down),
             "weight_btagUP": _vary(full_event_weight, w_btag, w_btag_up),
             "weight_btagDOWN": _vary(full_event_weight, w_btag, w_btag_down),
+            # Independent b-tag components (Run2 weightB/weightFakeB split):
+            # heavy = true b-jets only, mistag = c+light jets only. Each
+            # varies only its own factor, holding the other at central.
+            "weight_btag_trueUP": _vary(full_event_weight, w_btag_true, w_btag_true_up),
+            "weight_btag_trueDOWN": _vary(full_event_weight, w_btag_true, w_btag_true_down),
+            "weight_btag_mistagUP": _vary(full_event_weight, w_btag_mistag, w_btag_mistag_up),
+            "weight_btag_mistagDOWN": _vary(full_event_weight, w_btag_mistag, w_btag_mistag_down),
             "weight_muonUP": _vary(full_event_weight, w_muon, w_muon_up),
             "weight_muonDOWN": _vary(full_event_weight, w_muon, w_muon_down),
             "weight_electronUP": _vary(full_event_weight, w_electron, w_electron_up),

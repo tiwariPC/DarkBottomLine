@@ -307,7 +307,7 @@ def build_z_candidates(
     pt_lead_min_mu: float = 30.0,
     pt_lead_min_el: float = 32.0,
     pt_sublead_min: float = 10.0,
-) -> Tuple[ak.Array, ak.Array, ak.Array, ak.Array, ak.Array, ak.Array]:
+) -> Tuple[ak.Array, ak.Array, ak.Array, ak.Array, ak.Array, ak.Array, ak.Array, ak.Array]:
     """
     Build Z->ll candidates for Z CR: 2 opposite-sign leptons.
     Leading: tight ID, pt > per-flavor threshold (mu 30, el 32 GeV).
@@ -317,6 +317,10 @@ def build_z_candidates(
         n_z_muons, n_z_electrons: 2 if valid Z candidate else 0 per event
         mll_mu, mll_el: invariant mass of the candidate pair (SENTINEL if none)
         z_pt_mu, z_pt_el: pT of the candidate dilepton system (SENTINEL if none)
+        z_sublead_muons, z_sublead_electrons: jagged (0-or-1-per-event) pt/eta
+            of the valid Z candidate's subleading (loose-only) lepton, so its
+            ID scale factor can be applied — it is otherwise never in
+            tight_muons/tight_electrons and would receive no SF at all.
     """
     n_ev = len(loose_muons)
     # awkward has no ak.zeros; use numpy and wrap for compatibility
@@ -332,7 +336,7 @@ def build_z_candidates(
 
     def _one_flavor(
         loose_lep: ak.Array, is_mu: bool
-    ) -> Tuple[ak.Array, ak.Array, ak.Array]:
+    ) -> Tuple[ak.Array, ak.Array, ak.Array, ak.Array]:
         n_lep = ak.num(loose_lep, axis=1)
         has_two = n_lep >= 2
         idx = ak.argsort(loose_lep.pt, axis=1, ascending=False)
@@ -363,17 +367,34 @@ def build_z_candidates(
         lead_phi  = ak.fill_none(lead.phi,    0.0)
         sub_pt    = ak.fill_none(sublead.pt,  0.0)
         sub_phi   = ak.fill_none(sublead.phi, 0.0)
+        sub_eta   = ak.fill_none(sublead.eta, 0.0)
         z_px = lead_pt * np.cos(lead_phi) + sub_pt * np.cos(sub_phi)
         z_py = lead_pt * np.sin(lead_phi) + sub_pt * np.sin(sub_phi)
         z_pt = ak.where(valid, np.sqrt(z_px**2 + z_py**2), SENTINEL)
-        return n_z, mll, z_pt
+        # Jagged (0-or-1-per-event) sublead-lepton pt/eta, kept only for valid Z
+        # candidates, so its ID scale factor can be folded into the event weight
+        # (the sublead lepton is loose-only and otherwise never receives an SF).
+        sublead_for_sf = ak.zip({
+            "pt": ak.singletons(ak.mask(sub_pt, valid)),
+            "eta": ak.singletons(ak.mask(sub_eta, valid)),
+        })
+        return n_z, mll, z_pt, sublead_for_sf
 
+    _no_sublead = ak.zip({
+        "pt": ak.singletons(ak.mask(ak.Array(np.zeros(n_ev)), ak.Array(np.zeros(n_ev, dtype=bool)))),
+        "eta": ak.singletons(ak.mask(ak.Array(np.zeros(n_ev)), ak.Array(np.zeros(n_ev, dtype=bool)))),
+    })
+    z_sublead_muons = _no_sublead
+    z_sublead_electrons = _no_sublead
     if len(ak.flatten(loose_muons)) > 0 and hasattr(loose_muons, "is_tight"):
-        n_z_muons, mll_mu, z_pt_mu = _one_flavor(loose_muons, True)
+        n_z_muons, mll_mu, z_pt_mu, z_sublead_muons = _one_flavor(loose_muons, True)
     if len(ak.flatten(loose_electrons)) > 0 and hasattr(loose_electrons, "is_tight"):
-        n_z_electrons, mll_el, z_pt_el = _one_flavor(loose_electrons, False)
+        n_z_electrons, mll_el, z_pt_el, z_sublead_electrons = _one_flavor(loose_electrons, False)
 
-    return n_z_muons, n_z_electrons, mll_mu, mll_el, z_pt_mu, z_pt_el
+    return (
+        n_z_muons, n_z_electrons, mll_mu, mll_el, z_pt_mu, z_pt_el,
+        z_sublead_muons, z_sublead_electrons,
+    )
 
 
 def build_transverse_mass(
@@ -525,7 +546,10 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
     el_pt_min  = config["objects"]["electrons"]["pt_min"]   # 32 GeV
 
     # Z CR candidates: leading tight pt > mu/el pt_min, subleading loose pt > 10
-    (n_z_muons, n_z_electrons, mll_mu, mll_el, z_pt_mu, z_pt_el) = build_z_candidates(
+    (
+        n_z_muons, n_z_electrons, mll_mu, mll_el, z_pt_mu, z_pt_el,
+        z_sublead_muons, z_sublead_electrons,
+    ) = build_z_candidates(
         selected_muons, selected_electrons,
         pt_lead_min_mu=mu_pt_min, pt_lead_min_el=el_pt_min, pt_sublead_min=10.0
     )
@@ -624,6 +648,8 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
         "tight_taus": tight_taus,
         "n_z_muons": n_z_muons,
         "n_z_electrons": n_z_electrons,
+        "z_sublead_muons": z_sublead_muons,
+        "z_sublead_electrons": z_sublead_electrons,
         "mll_mu": mll_mu,
         "mll_el": mll_el,
         "z_pt_mu": z_pt_mu,
