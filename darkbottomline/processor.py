@@ -138,10 +138,35 @@ class DarkBottomLineProcessor:
         """
         if self._lumi_mask is None:
             return events
-        good_lumi = self._lumi_mask(events.run, events.luminosityBlock)
         n_before = len(events)
+
+        # Detect runs entirely absent from the golden JSON (distinct from runs
+        # present but with some lumis outside certified ranges). A file whose
+        # runs are not JSON keys at all yields zero passing events regardless
+        # of real selection efficiency, which looks identical to a normal cut
+        # in the "N -> 0" log line unless flagged explicitly.
+        known_runs = set(self._lumi_mask._masks.keys())
+        input_runs = set(np.unique(ak.to_numpy(events.run)).tolist())
+        missing_runs = sorted(r for r in input_runs if r not in known_runs)
+        if missing_runs:
+            n_missing_events = int(ak.sum(np.isin(ak.to_numpy(events.run), missing_runs)))
+            logging.warning(
+                f"Golden JSON does not contain {len(missing_runs)} run(s) present in input "
+                f"({n_missing_events}/{n_before} events): {missing_runs[:10]}"
+                f"{'...' if len(missing_runs) > 10 else ''}. "
+                f"These events will be dropped entirely (not a lumi-range cut, but missing "
+                f"run coverage) — check that the golden JSON covers the full run range of "
+                f"the dataset being processed."
+            )
+
+        good_lumi = self._lumi_mask(events.run, events.luminosityBlock)
         events = events[good_lumi]
         logging.info(f"Golden JSON: {n_before} -> {len(events)} events ({n_before - len(events)} removed)")
+        if n_before > 0 and len(events) == 0 and missing_runs:
+            logging.warning(
+                "Golden JSON filter removed ALL events, entirely due to missing run coverage "
+                "in the golden JSON (see warning above), not due to certified-lumi selection."
+            )
         return events
 
     def process(self, events: ak.Array, event_selection_output: Optional[str] = None) -> Dict[str, Any]:
@@ -158,10 +183,54 @@ class DarkBottomLineProcessor:
         print(f"=== PROCESSING EVENTS ===")
         print(f"Total events loaded: {len(events)}")
 
+        # Cross-check --data flag against actual file content: real NanoAOD
+        # data never has genWeight, MC always does. is_data is user-asserted
+        # (from --data CLI flag) and never otherwise verified, so a wrong
+        # flag silently skips the golden JSON mask (or applies it to MC) with
+        # no other symptom.
+        has_gen_weight = "genWeight" in events.fields
+        if self.is_data and has_gen_weight:
+            logging.warning(
+                "is_data=True but input events have a 'genWeight' branch, which real "
+                "collision data does not have. Check that --data was not passed for an "
+                "MC file — golden JSON mask and unit-weight logic are being applied."
+            )
+        elif not self.is_data and not has_gen_weight:
+            logging.warning(
+                "is_data=False but input events have no 'genWeight' branch, which is "
+                "expected for collision data. Check that --data is not missing for a "
+                "real data file — golden JSON mask will NOT be applied."
+            )
+
         # Apply golden JSON lumi mask (data only; no-op for MC)
         if self.is_data:
             events = self.apply_lumi_mask(events)
             print(f"  Events after golden JSON filter: {len(events)}")
+
+            if len(events) == 0:
+                logging.warning(
+                    "No events survive the golden JSON lumi mask; stopping here for this "
+                    "data file (nothing to select, weight, or histogram)."
+                )
+                if event_selection_output:
+                    self._save_event_selection(
+                        event_selection_output, events, {},
+                        max_events=self.config.get("max_events"),
+                        total_events=len(events),
+                        weighted_total_events=0.0,
+                        cutflow={},
+                    )
+                self.accumulator["histograms"] = self.histograms
+                self.accumulator["cutflow"] = {}
+                self.accumulator["event_weights"] = {}
+                self.accumulator["metadata"] = {
+                    "n_events_processed": 0,
+                    "n_events_selected": 0,
+                    "weighted_total_events": 0.0,
+                    "processing_time": time.time() - start_time,
+                    "weight_statistics": {},
+                }
+                return self.accumulator
 
         # weighted_total_events: sum of sign(genWeight) over ALL events before any selection
         weighted_total_events = self.correction_manager.get_weighted_total_events(events)

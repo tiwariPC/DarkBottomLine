@@ -281,10 +281,53 @@ class DarkBottomLineAnalyzer:
                 logging.error("Region manager not initialized and no event_selection_output provided. Cannot process events.")
                 raise ValueError("Region manager must be initialized or event_selection_output must be provided")
 
+        # Cross-check --data flag against actual file content (see processor.py
+        # for rationale): is_data is user-asserted and never otherwise verified.
+        has_gen_weight = "genWeight" in events.fields
+        if self.base_processor.is_data and has_gen_weight:
+            logging.warning(
+                "is_data=True but input events have a 'genWeight' branch, which real "
+                "collision data does not have. Check that --data was not passed for an "
+                "MC file — golden JSON mask and unit-weight logic are being applied."
+            )
+        elif not self.base_processor.is_data and not has_gen_weight:
+            logging.warning(
+                "is_data=False but input events have no 'genWeight' branch, which is "
+                "expected for collision data. Check that --data is not missing for a "
+                "real data file — golden JSON mask will NOT be applied."
+            )
+
         # Apply golden JSON lumi mask (data only; no-op for MC)
         if self.base_processor.is_data:
             events = self.base_processor.apply_lumi_mask(events)
             logging.info(f"Events after golden JSON filter: {len(events)}")
+
+            if len(events) == 0:
+                logging.warning(
+                    "No events survive the golden JSON lumi mask; stopping here for this "
+                    "data file (nothing to select, weight, or fill regions with)."
+                )
+                if event_selection_output:
+                    self.base_processor._save_event_selection(
+                        event_selection_output, events, {},
+                        max_events=self.base_processor.config.get("max_events"),
+                        total_events=len(events),
+                        weighted_total_events=0.0,
+                        cutflow={},
+                    )
+                return {
+                    "regions": {},
+                    "region_histograms": {},
+                    "region_cutflow": {},
+                    "region_validation": {},
+                    "event_selection_cutflow": {},
+                    "metadata": {
+                        "n_events_processed": 0,
+                        "n_events_selected": 0,
+                        "weighted_total_events": 0.0,
+                    },
+                    "event_weights": {},
+                }
 
         # Compute weighted_total_events from raw events before any selection
         weighted_total_events = self.base_processor.correction_manager.get_weighted_total_events(events)
