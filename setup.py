@@ -27,7 +27,7 @@ setup(
         "pandas==2.2.3",
         # Physics analysis
         "awkward==2.8.9",
-        "uproot==5.6.0",
+        "uproot==5.7.6",
         "correctionlib==2.6.4",
         "coffea==2025.12.0",
         "fsspec-xrootd==0.5.1",
