@@ -14,6 +14,21 @@ LOCAL_DIR="${SCRIPT_DIR}/.local"
 PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
 SITE_PACKAGES_DIR="${LOCAL_DIR}/lib/python${PYTHON_VERSION}/site-packages"
 
+# The editable install below points darkbottomline.egg-link/easy-install.pth
+# at SCRIPT_DIR (where the darkbottomline/ package actually lives on disk),
+# but that .pth redirect is only honored by Python's `site` module for
+# directories it treats as site dirs — plain PYTHONPATH entries are not
+# .pth-processed. That redirect only "worked" by accident whenever the
+# current directory (repo root) happened to already be on sys.path (e.g.
+# `python3 -c ...` run from here). Running a script from a subdirectory
+# (e.g. `python3 scripts/foo.py`) puts that script's own directory on
+# sys.path[0] instead, so `import darkbottomline` fails there even right
+# after a successful install. Put SCRIPT_DIR on PYTHONPATH directly so the
+# package resolves regardless of CWD or how the entry point is invoked.
+if [[ ":$PYTHONPATH:" != *":${SCRIPT_DIR}:"* ]]; then
+    export PYTHONPATH="${SCRIPT_DIR}:${PYTHONPATH}"
+fi
+
 echo "=========================================="
 echo "DarkBottomLine Installation for lxplus"
 echo "=========================================="

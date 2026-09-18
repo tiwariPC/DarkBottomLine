@@ -20,6 +20,23 @@ import importlib
 import importlib.metadata
 from pathlib import Path
 
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
+
+
+def version_satisfies(version, version_constraint):
+    """Check whether an installed version string satisfies a requirement's
+    version constraint (e.g. "==5.7.6"). Returns True if there is no
+    constraint to check, or if either side fails to parse (so a package is
+    never falsely reported as missing due to an unusual version string).
+    """
+    if not version_constraint:
+        return True
+    try:
+        return Version(version) in SpecifierSet(version_constraint)
+    except (InvalidVersion, InvalidSpecifier):
+        return True
+
 
 def get_package_version(package_name, local_dir=None):
     """Get installed package version, or None if not installed."""
@@ -147,10 +164,52 @@ def parse_environment_yml(env_path):
 
     return requirements
 
-def install_missing_packages(local_dir, missing_lines):
-    """Install missing packages locally."""
+def install_missing_packages(local_dir, missing_lines, force_reinstall_names=None,
+                              already_satisfied=None):
+    """Install missing packages locally.
+
+    force_reinstall_names: base package names that are already present
+    elsewhere on sys.path at the wrong version (e.g. baked into a read-only
+    CVMFS/LCG view) and must be installed fresh into local_dir without pip
+    trying to touch/uninstall the existing copy — that uninstall attempt
+    fails with a read-only filesystem error on lxplus. --ignore-installed
+    tells pip to skip the "already satisfied" check and just place a new
+    copy at --prefix, which then shadows the read-only one via sys.path
+    order (local_dir is inserted at position 0).
+
+    already_satisfied: {package_name: version} for every package that
+    already correctly satisfies environment.yml right now, wherever it
+    lives (LCG view or local_dir). pip's resolver runs scoped to --prefix
+    local_dir, which starts out empty, so it cannot see these and will
+    happily pull in its own (usually newer) version of any of them as an
+    unpinned transitive dependency — e.g. installing uproot without any
+    numpy/awkward pin drags in the latest numpy/awkward from PyPI. Since
+    local_dir is placed first on sys.path, that stray copy then silently
+    shadows the correct LCG-provided version for the rest of the session.
+    We write these as a pip constraints file so pip is forced to leave
+    already-correct packages alone instead of "resolving" a replacement.
+    """
+    force_reinstall_names = force_reinstall_names or set()
+    already_satisfied = already_satisfied or {}
     local_dir = Path(local_dir)
     local_dir.mkdir(parents=True, exist_ok=True)
+
+    constraints_path = None
+    # Packages we're about to (re)install must not also appear as a
+    # constraint, or pip will refuse to move them off the constrained version.
+    to_install_names = set()
+    for req_line in missing_lines:
+        m = re.match(r'^([a-zA-Z0-9_-]+(?:\[[^\]]+\])?)', req_line.strip())
+        if m:
+            to_install_names.add(re.match(r'^([a-zA-Z0-9_-]+)', m.group(1)).group(1).lower())
+    constraint_lines = [
+        f"{name}=={version}"
+        for name, version in already_satisfied.items()
+        if name.lower() not in to_install_names
+    ]
+    if constraint_lines:
+        constraints_path = local_dir / ".pip-constraints.txt"
+        constraints_path.write_text("\n".join(constraint_lines) + "\n")
 
     # Set environment variables to force installation to target directory only
     import os
@@ -195,6 +254,7 @@ def install_missing_packages(local_dir, missing_lines):
         # Extract package name for display
         pkg_match = re.match(r'^([a-zA-Z0-9_-]+(?:\[[^\]]+\])?)', req_line)
         pkg_name = pkg_match.group(1) if pkg_match else req_line
+        base_name = re.match(r'^([a-zA-Z0-9_-]+)', pkg_name).group(1).lower()
 
         # Install package individually using --user with PYTHONUSERBASE
         # This ensures packages go to local_dir/lib/pythonX.X/site-packages
@@ -209,6 +269,19 @@ def install_missing_packages(local_dir, missing_lines):
             "--disable-pip-version-check",
             "--no-warn-script-location"  # Suppress warnings since we control the location
         ]
+        if constraints_path is not None:
+            # Pin every package that's already correctly satisfied (LCG view
+            # or local_dir) so pip's dependency resolution can't drop a
+            # different (usually newer, unpinned) version of one of them
+            # into local_dir, where it would shadow the correct copy.
+            cmd.extend(["--constraint", str(constraints_path)])
+        if base_name in force_reinstall_names:
+            # Skip pip's "already satisfied"/uninstall check entirely: on
+            # lxplus the wrong version is baked into the read-only CVMFS/LCG
+            # view, so pip's normal replace attempt fails with EROFS. Just
+            # drop a fresh copy into --prefix; local_dir is placed first on
+            # sys.path so it shadows the read-only one at import time.
+            cmd.append("--ignore-installed")
 
         result = subprocess.run(
             cmd,
@@ -223,6 +296,9 @@ def install_missing_packages(local_dir, missing_lines):
             failed_packages.append((pkg_name, req_line))
         else:
             print(f"✓ Installed {pkg_name}")
+
+    if constraints_path is not None:
+        constraints_path.unlink(missing_ok=True)
 
     if failed_packages:
         print(f"\n✗ Failed to install {len(failed_packages)} package(s):")
@@ -361,11 +437,14 @@ def main():
         requirements = parse_requirements(requirements_path)
     missing = []
     installed = []
+    mismatched = []
 
     for package_name, requirement_line, version_constraint in requirements:
         version = get_package_version(package_name, local_dir_for_check)
-        if version:
+        if version and version_satisfies(version, version_constraint):
             installed.append((package_name, version, version_constraint))
+        elif version:
+            mismatched.append((package_name, version, requirement_line, version_constraint))
         else:
             missing.append((package_name, requirement_line, version_constraint))
 
@@ -373,9 +452,12 @@ def main():
     total = len(requirements)
     installed_count = len(installed)
     missing_count = len(missing)
+    mismatched_count = len(mismatched)
 
     print(f"Found {total} packages in {requirements_path.name}")
     print(f"✓ Installed: {installed_count}/{total}")
+    if mismatched:
+        print(f"⚠ Wrong version: {mismatched_count}/{total}")
     print(f"✗ Missing: {missing_count}/{total}")
     print()
 
@@ -384,6 +466,12 @@ def main():
         for pkg_name, version, version_constraint in installed:
             constraint_info = f" (required: {version_constraint})" if version_constraint else ""
             print(f"  ✓ {pkg_name} (version: {version}){constraint_info}")
+        print()
+
+    if mismatched:
+        print("Wrong version installed:")
+        for pkg_name, version, _requirement_line, version_constraint in mismatched:
+            print(f"  ⚠ {pkg_name} (installed: {version}, required: {version_constraint})")
         print()
 
     if missing:
@@ -395,18 +483,24 @@ def main():
                 print(f"  ✗ {pkg_name} (will install: latest)")
         print()
 
-    if not missing:
+    if not missing and not mismatched:
         print("All packages are installed.")
         return
 
     if not args.install:
-        print(f"To install missing packages, run:")
+        print(f"To install missing/wrong-version packages, run:")
         print(f"  python {Path(__file__).name} --install")
         return
 
-    print(f"Installing {missing_count} missing packages...")
+    to_install_count = missing_count + mismatched_count
+    print(f"Installing {to_install_count} missing/wrong-version packages...")
     missing_lines = [req_line for _, req_line, _ in missing]
-    if install_missing_packages(args.local_dir, missing_lines):
+    mismatched_lines = [req_line for _, _, req_line, _ in mismatched]
+    mismatched_names = {pkg_name.lower() for pkg_name, _, _, _ in mismatched}
+    already_satisfied = {pkg_name: version for pkg_name, version, _ in installed}
+    if install_missing_packages(args.local_dir, missing_lines + mismatched_lines,
+                                 force_reinstall_names=mismatched_names,
+                                 already_satisfied=already_satisfied):
         local_packages_path = Path(args.local_dir).absolute()
         print(f"✓ Packages installed to: {local_packages_path}")
         print(f"\nTo use these packages, add to your Python path:")
