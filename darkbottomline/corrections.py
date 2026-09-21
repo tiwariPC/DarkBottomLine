@@ -726,23 +726,19 @@ class CorrectionManager:
             return None
         resolved = _resolve_correction_path(file_path)
         path_to_open = str(resolved) if resolved is not None else file_path
-        try:
-            import uproot
-            maps: Dict[str, Any] = {}
-            with uproot.open(path_to_open) as f:
-                for flavor in ("b", "c", "light"):
-                    maps[flavor] = {}
-                    for wp_suffix in ("lwp", "mwp", "twp"):
-                        hist = f[f"hist_{flavor}_efficiency_{wp_suffix}"]
-                        eff = hist.values()
-                        eta_edges = hist.axis(0).edges()
-                        pt_edges = hist.axis(1).edges()
-                        maps[flavor][wp_suffix] = (eff, eta_edges, pt_edges)
-            self._btag_efficiency_maps = maps
-            logging.debug(f"Loaded b-tag efficiency maps from {path_to_open}")
-        except Exception as e:
-            logging.warning(f"Failed to load b-tag efficiency map {file_path}: {e}")
-            self._btag_efficiency_maps = None
+        import uproot
+        maps: Dict[str, Any] = {}
+        with uproot.open(path_to_open) as f:
+            for flavor in ("b", "c", "light"):
+                maps[flavor] = {}
+                for wp_suffix in ("lwp", "mwp", "twp"):
+                    hist = f[f"hist_{flavor}_efficiency_{wp_suffix}"]
+                    eff = hist.values()
+                    eta_edges = hist.axis(0).edges()
+                    pt_edges = hist.axis(1).edges()
+                    maps[flavor][wp_suffix] = (eff, eta_edges, pt_edges)
+        self._btag_efficiency_maps = maps
+        logging.debug(f"Loaded b-tag efficiency maps from {path_to_open}")
         return self._btag_efficiency_maps
 
     def _lookup_btag_efficiency(
@@ -855,6 +851,12 @@ class CorrectionManager:
         if n == 0:
             return ak.ones_like(jets.pt, dtype=float)
         counts = np.asarray(ak.num(jets.pt, axis=1))
+
+        if cfg["type"] == "fixed_wp" and cfg["wp"] is not None:
+            # Load outside the broad try/except below so a missing/corrupt
+            # efficiency-map file raises instead of silently disabling the
+            # fixed-WP reweighting formula.
+            self._load_btag_efficiency_maps()
 
         try:
             if cfg["type"] == "shape":
