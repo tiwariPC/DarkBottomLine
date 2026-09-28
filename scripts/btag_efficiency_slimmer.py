@@ -2,14 +2,24 @@
 """
 B-tag (UParT, 2024) MC-truth tagging-efficiency SLIMMER.
 
-Usage:
+Usage (single file):
     python scripts/btag_efficiency_slimmer.py \
         --config configs/2024.yaml \
         --input /path/to/one_nanoaod_file.root \
         --output outputs/btageff/2024/sample_0.root \
         [--max-events 500000]
 
-    # Then, once all per-file outputs exist, run stage 2:
+    # Or batch several files into ONE output (sums raw counts in-process, same
+    # rule as the maker's hadd-equivalent stage — never sums an already-divided
+    # efficiency). Used by condorJobs/btag-efficiency/ to give each Condor job
+    # a BATCH-sized slice instead of one job per input file:
+    python scripts/btag_efficiency_slimmer.py \
+        --config configs/2024.yaml \
+        --inputs /path/to/slice.txt \
+        --output outputs/btageff/2024/sample_0.root \
+        [--max-events 500000]
+
+    # Then, once all per-job outputs exist, run stage 2:
     #   python scripts/btag_efficiency_maker.py \
     #       --inputs "outputs/btageff/2024/*.root" \
     #       --output outputs/btageff/2024/heavyflavor_efficiency_maps.root
@@ -291,21 +301,74 @@ def write_histograms(output_path: str, hists: Dict[str, np.ndarray]) -> None:
             rf[name] = (values, ETA_EDGES, PT_EDGES)
 
 
+def _add_hists(total: Dict[str, np.ndarray], hists: Dict[str, np.ndarray]) -> None:
+    """In-place accumulate `hists` (one file's counts) into `total` (running sum
+    across a --inputs batch). Same raw-counts-only rule as the maker's hadd-
+    equivalent stage: never sum/average an already-divided efficiency."""
+    if not total:
+        total.update({k: v.copy() for k, v in hists.items()})
+    else:
+        for k, v in hists.items():
+            total[k] += v
+
+
+def process_one_file(path: str, config: Dict[str, Any], max_events) -> Dict[str, np.ndarray]:
+    with uproot.open(path) as tfile:
+        events = load_events(tfile, max_events)
+    print(f"Loaded {len(events)} events from {path}")
+    return fill_slimmer_histograms(events, config)
+
+
+def read_file_list(txt_path: str) -> List[str]:
+    """Parse a samplelist-style .txt: one ROOT path per line, '#' comments and
+    blank lines skipped — same convention as data/samplelist/*.txt."""
+    files = []
+    with open(txt_path) as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#"):
+                files.append(line)
+    return files
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, help="Year YAML, e.g. configs/2024.yaml")
-    parser.add_argument("--input", required=True, help="Single NanoAOD ROOT file (local or xrootd)")
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument("--input", help="Single NanoAOD ROOT file (local or xrootd)")
+    input_group.add_argument("--inputs", help="Text file listing multiple NanoAOD ROOT "
+                              "files, one per line (batches a Condor job's file slice "
+                              "into ONE output — see condorJobs/btag-efficiency/)")
     parser.add_argument("--output", required=True, help="Output ROOT file path")
-    parser.add_argument("--max-events", type=int, default=None)
+    parser.add_argument("--max-events", type=int, default=None,
+                        help="Per-file cap (applied to each file individually, not "
+                        "the batch total)")
     args = parser.parse_args()
 
     config = load_config(args.config)
 
-    with uproot.open(args.input) as tfile:
-        events = load_events(tfile, args.max_events)
-
-    print(f"Loaded {len(events)} events from {args.input}")
-    hists = fill_slimmer_histograms(events, config)
+    if args.input:
+        hists = process_one_file(args.input, config, args.max_events)
+    else:
+        files = read_file_list(args.inputs)
+        if not files:
+            raise ValueError(f"No files listed in {args.inputs}")
+        print(f"Processing {len(files)} file(s) from {args.inputs}")
+        total: Dict[str, np.ndarray] = {}
+        failed: List[str] = []
+        for path in files:
+            try:
+                hists = process_one_file(path, config, args.max_events)
+            except Exception as e:
+                print(f"WARNING: skipping unreadable file {path}: {e}")
+                failed.append(path)
+                continue
+            _add_hists(total, hists)
+        if not total:
+            raise RuntimeError(f"All {len(files)} file(s) failed to process — see warnings above")
+        if failed:
+            print(f"WARNING: {len(failed)}/{len(files)} file(s) skipped (see above)")
+        hists = total
 
     for name, values in hists.items():
         print(f"  {name}: sum={values.sum():.1f}")

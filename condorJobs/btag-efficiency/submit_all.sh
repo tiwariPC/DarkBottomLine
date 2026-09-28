@@ -1,30 +1,39 @@
 #!/bin/bash
 # ---------------------------------------------------------------------------
-# Submit one condor CLUSTER per samplelist .txt, with one JOB per input ROOT
-# file (ProcId picks the file — the slimmer is single-file-in/single-file-out,
-# so unlike met_trigger there is no BATCH slicing: NJOBS = NFILES).
+# Submit one condor CLUSTER per samplelist .txt, with one JOB per BATCH-sized
+# slice of ROOT files (ProcId picks the slice — mirrors
+# condorJobs/met_trigger/submit_all.sh; the slimmer's --inputs mode sums a
+# slice's raw counts into one output). A .txt with 594 files and BATCH=50 ->
+# a cluster of ceil(594/50)=12 jobs.
 #
 # Reads the joblist built by make_joblist.sh (lines: "mc <txtpath>"), counts the
-# ROOT lines in each .txt, and calls condor_submit once per .txt, passing
-# TXTFILE / NJOBS via -append.
+# ROOT lines in each .txt, computes NJOBS=ceil(NFILES/BATCH), and calls
+# condor_submit once per .txt, passing TXTFILE / BATCH / NJOBS via -append.
 #
 # Usage:
-#   condorJobs/btag-efficiency/submit_all.sh [joblist]
-#   (default: joblist=condorJobs/btag-efficiency/joblist.txt)
+#   condorJobs/btag-efficiency/submit_all.sh [joblist] [batch]
+#   env override: BATCH=100 condorJobs/btag-efficiency/submit_all.sh
+#   (defaults: joblist=condorJobs/btag-efficiency/joblist.txt, batch=50)
 # ---------------------------------------------------------------------------
 set -euo pipefail
 
 SUBDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SUBFILE="${SUBDIR}/submit.sub"
 JOBLIST="${1:-${SUBDIR}/joblist.txt}"
+# BATCH: env var wins, else 2nd positional arg, else default 50.
+BATCH="${BATCH:-${2:-50}}"
 
 [[ -f "${JOBLIST}" ]] || { echo "ERROR: joblist not found: ${JOBLIST}" >&2; exit 1; }
+[[ "${BATCH}" -ge 1 ]] || { echo "ERROR: BATCH must be >= 1 (got ${BATCH})" >&2; exit 1; }
 
 # Logs live next to these scripts (${SUBDIR}/logs), created here if missing. The
 # absolute LOGDIR is passed to submit.sub so condor writes there regardless of the
 # CWD condor_submit is invoked from — no hardcoded paths, no cd required.
+# stdout/stderr are split into their own subdirs (submit.sub points `output`/
+# `error` there); the per-cluster event log stays directly under LOGDIR.
 LOGDIR="${SUBDIR}/logs"
-mkdir -p "${LOGDIR}"
+mkdir -p "${LOGDIR}/output" "${LOGDIR}/error"
+echo "Batch size: ${BATCH} files/job"
 
 # Read the whole joblist into an array FIRST, then loop it. Streaming the file
 # through `while read` while calling condor_submit inside the loop is fragile:
@@ -44,15 +53,18 @@ for line in "${JOBLINES[@]}"; do
         echo "    (resolved from CWD: $(pwd)) — check the path in the joblist" >&2
         continue
     fi
+    # Count ROOT lines (skip comments + blanks); NJOBS = ceil(NFILES / BATCH).
     NFILES=$(grep -v '^#' "${TXTFILE}" | grep -v '^[[:space:]]*$' | wc -l | tr -d ' ')
     if [[ "${NFILES}" -eq 0 ]]; then
         echo "WARNING: no ROOT files in ${TXTFILE}, skipping" >&2
         continue
     fi
-    echo "Submitting ${NFILES} jobs for $(basename "${TXTFILE}")"
+    NJOBS=$(( (NFILES + BATCH - 1) / BATCH ))
+    echo "Submitting ${NJOBS} jobs (${NFILES} files / ${BATCH}) for $(basename "${TXTFILE}")"
     condor_submit "${SUBFILE}" \
         -append "TXTFILE=${TXTFILE}" \
-        -append "NJOBS=${NFILES}" \
+        -append "BATCH=${BATCH}" \
+        -append "NJOBS=${NJOBS}" \
         -append "LOGDIR=${LOGDIR}" \
         -append "USER_INITIAL=${USER:0:1}" </dev/null
     n_clusters=$((n_clusters + 1))

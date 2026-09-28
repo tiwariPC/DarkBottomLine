@@ -1,8 +1,13 @@
 #!/bin/sh
 # ---------------------------------------------------------------------------
-# Condor executable: b-tag efficiency map for ONE ROOT file (the ProcId'th line
-# of TXTFILE), written to:
+# Condor executable: b-tag efficiency map for a BATCH-sized slice of ROOT
+# files (a contiguous slice of a samplelist .txt), merged into ONE output:
 #   <OUTDIR>/<txtstem>/<txtstem>_<ClusterId>_<ProcId>.root
+#
+# Job model: one cluster per .txt, one job per BATCH-sized slice (mirrors
+# condorJobs/met_trigger/run_skim.sh). ProcId selects the slice = lines
+# [ProcId*BATCH+1 .. ProcId*BATCH+BATCH] of TXTFILE. The slimmer's own
+# --inputs mode sums that whole slice's raw counts into one output.
 #
 # Args (from submit.sub):
 #   $1  PROXY      x509 proxy filename in the job sandbox (shipped via
@@ -10,9 +15,10 @@
 #   $2  REPO_DIR   absolute path to the DarkBottomLine checkout (shared FS)
 #   $3  CONFIG     year YAML, e.g. configs/2024.yaml
 #   $4  OUTDIR     output directory for btag-efficiency ROOTs (AFS/EOS-visible)
-#   $5  TXTFILE    the samplelist .txt (on shared FS; job reads line ProcId+1)
-#   $6  PROCID     0-based job index -> selects the file in TXTFILE
-#   $7  CLUSTERID  condor ClusterId (unique per submission, shared by all ProcIds)
+#   $5  TXTFILE    the samplelist .txt (on shared FS; job reads a slice of it)
+#   $6  PROCID     0-based job index -> selects the slice of TXTFILE
+#   $7  BATCH      number of ROOT files per job (slice size)
+#   $8  CLUSTERID  condor ClusterId (unique per submission, shared by all ProcIds)
 # ---------------------------------------------------------------------------
 ulimit -s unlimited
 set -e
@@ -23,7 +29,8 @@ CONFIG="$3"
 OUTDIR="$4"
 TXTFILE="$5"
 PROCID="$6"
-CLUSTERID="$7"
+BATCH="$7"
+CLUSTERID="$8"
 
 # Grid proxy shipped into the sandbox: point XRootD at it (relative to CWD, the
 # sandbox, before we cd into the repo).
@@ -37,6 +44,7 @@ echo "config    : ${CONFIG}"
 echo "outdir    : ${OUTDIR}"
 echo "txtfile   : ${TXTFILE}"
 echo "procid    : ${PROCID}"
+echo "batch     : ${BATCH}"
 echo "clusterid : ${CLUSTERID}"
 echo "start     : $(date)"
 
@@ -75,36 +83,94 @@ if [ ! -f "${TXTFILE}" ]; then
     exit 1
 fi
 
-INPUT=$(grep -v '^#' "${TXTFILE}" | grep -v '^[[:space:]]*$' | sed -n "$((PROCID + 1))p")
-if [ -z "${INPUT}" ]; then
-    TOTAL_FILES=$(grep -v '^#' "${TXTFILE}" | grep -v '^[[:space:]]*$' | wc -l)
-    echo "✗ Error: ProcId ${PROCID} exceeds number of files in ${TXTFILE} (${TOTAL_FILES} files)" >&2
-    exit 1
-fi
-
-TXTSTEM=$(basename "${TXTFILE}" .txt)
-OUTPUT="${OUTDIR}/${TXTSTEM}/${TXTSTEM}_${CLUSTERID}_${PROCID}.root"
-mkdir -p "$(dirname "${OUTPUT}")"
-
-echo "input     : ${INPUT}"
-echo "output    : ${OUTPUT}"
-
 if [ ! -f "${CONFIG}" ]; then
     echo "✗ Error: Configuration file not found: ${CONFIG}" >&2
     exit 1
 fi
 
-CMD="python3 scripts/btag_efficiency_slimmer.py --config ${CONFIG} --input ${INPUT} --output ${OUTPUT}"
+# This job's slice = ROOT lines [START..END] of TXTFILE (1-based), after
+# dropping comment/blank lines (same filter as the slimmer's own .txt
+# parser). sed clamps END past EOF, so the last job's slice is naturally short.
+START=$((PROCID * BATCH + 1))
+END=$((START + BATCH - 1))
+SLICE=$(grep -v '^#' "${TXTFILE}" | grep -v '^[[:space:]]*$' | sed -n "${START},${END}p")
+if [ -z "${SLICE}" ]; then
+    echo "✗ Error: empty slice (lines ${START}-${END}) of ${TXTFILE}" >&2
+    exit 4
+fi
+N_IN_SLICE=$(printf '%s\n' "${SLICE}" | grep -c .)
+echo "slice     : lines ${START}-${END} (${N_IN_SLICE} files)"
+
+TXTSTEM=$(basename "${TXTFILE}" .txt)
+
+# Write the slice samplelist to a PRIVATE scratch dir — never the repo root.
+# pwd is REPO_DIR (we cd'd there), so writing here would pollute the shared
+# checkout and clash with the real data/samplelist files. Named after
+# <TXTSTEM>_<ClusterId>_<ProcId> so concurrent/resubmitted jobs never collide.
+SCRATCH="${_CONDOR_SCRATCH_DIR:-$(mktemp -d)}"
+SLICE_DIR="${SCRATCH}/slice_${TXTSTEM}_${CLUSTERID}_${PROCID}"
+mkdir -p "${SLICE_DIR}"
+SLICE_STEM="${TXTSTEM}_${CLUSTERID}_${PROCID}"
+SLICE_TXT="${SLICE_DIR}/${SLICE_STEM}.txt"
+printf '%s\n' "${SLICE}" > "${SLICE_TXT}"
+
+OUTPUT="${OUTDIR}/${TXTSTEM}/${SLICE_STEM}.root"
+mkdir -p "$(dirname "${OUTPUT}")"
+
+echo "output    : ${OUTPUT}"
+
+CMD="python3 scripts/btag_efficiency_slimmer.py --config ${CONFIG} --inputs ${SLICE_TXT} --output ${OUTPUT}"
 echo "command   : ${CMD}"
 
-START_TIME=$(date +%s)
-if eval "${CMD}"; then
+# EOS (via eosxd FUSE) has been observed to silently corrupt a small fraction
+# of sibling files written concurrently by many condor jobs into the same
+# output directory: the slimmer's own `with uproot.recreate(...)` block exits
+# cleanly (no exception, "Wrote <path>" printed), but a subset of histogram
+# keys in the file on disk decompress to garbage afterwards (seen: both
+# "unrecognized compression algorithm" and "invalid bit length repeat" —
+# different garbage each time, ruling out a slimmer logic bug). Since the
+# writing process itself can't detect this, verify by re-opening the file
+# fresh (new process, forces a real read from EOS, not a page-cache echo of
+# what we just wrote) and decompressing every histogram key. A bad write
+# can only be fixed by regenerating it, so retry the whole slimmer run.
+MAX_ATTEMPTS=3
+ATTEMPT=1
+while [ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]; do
+    START_TIME=$(date +%s)
+    if ! eval "${CMD}"; then
+        EXIT_CODE=$?
+        DURATION=$(( $(date +%s) - START_TIME ))
+        echo "✗ Slimmer failed after ${DURATION}s (attempt ${ATTEMPT}/${MAX_ATTEMPTS}), exit code ${EXIT_CODE}" >&2
+        ATTEMPT=$((ATTEMPT + 1))
+        continue
+    fi
     DURATION=$(( $(date +%s) - START_TIME ))
-    echo "✓ Completed in ${DURATION}s: ${OUTPUT}"
-    exit 0
-else
-    EXIT_CODE=$?
-    DURATION=$(( $(date +%s) - START_TIME ))
-    echo "✗ Failed after ${DURATION}s, exit code ${EXIT_CODE}" >&2
-    exit "${EXIT_CODE}"
-fi
+
+    if python3 -c "
+import sys
+import uproot
+try:
+    f = uproot.open('${OUTPUT}')
+    keys = f.keys()
+    if not keys:
+        print('no keys found', file=sys.stderr)
+        sys.exit(1)
+    for k in keys:
+        f[k].values()
+except Exception as e:
+    print(f'verify failed on key read: {e}', file=sys.stderr)
+    sys.exit(1)
+"; then
+        echo "✓ Completed in ${DURATION}s, verified ${OUTPUT}"
+        rm -rf "${SLICE_DIR}"
+        exit 0
+    else
+        echo "✗ Output failed verification (attempt ${ATTEMPT}/${MAX_ATTEMPTS}, likely EOS write corruption): ${OUTPUT}" >&2
+        rm -f "${OUTPUT}"
+        ATTEMPT=$((ATTEMPT + 1))
+    fi
+done
+
+echo "✗ Giving up after ${MAX_ATTEMPTS} attempts: ${OUTPUT}" >&2
+rm -rf "${SLICE_DIR}"
+exit 1

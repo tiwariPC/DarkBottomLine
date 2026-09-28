@@ -1,14 +1,15 @@
 # ---------------------------------------------------------------------------
 # Condor submit: b-tag efficiency map, ONE cluster per samplelist .txt, ONE job
-# per input ROOT file (ProcId selects the file — the slimmer is single-file-
-# in/single-file-out, so unlike met_trigger there is no BATCH slicing).
+# per BATCH-sized slice of ROOT files (mirrors condorJobs/met_trigger/submit.sub
+# — the slimmer's --inputs mode sums a slice's raw counts into one output, so
+# NJOBS = ceil(NFILES/BATCH) instead of NJOBS = NFILES).
 # Output: <OUTDIR>/<txtstem>/<txtstem>_<ClusterId>_<ProcId>.root
 #
 # This file is submitted once per .txt by condorJobs/btag-efficiency/submit_all.sh,
-# which passes TXTFILE / NJOBS via -append.
+# which passes TXTFILE / BATCH / NJOBS via -append.
 #
 # Vars passed by submit_all.sh via -append (do not hardcode here):
-#   TXTFILE, NJOBS, LOGDIR, USER_INITIAL
+#   TXTFILE, BATCH, NJOBS, LOGDIR, USER_INITIAL
 #
 # Static vars below only need changing if your checkout / output / config live
 # somewhere other than the standard CERN AFS+EOS home layout:
@@ -17,9 +18,9 @@
 #   OUTDIR     : where btag-efficiency ROOTs land (job-visible: AFS/EOS)
 # ---------------------------------------------------------------------------
 
-REPO_DIR = /CHANGE/ME/DarkBottomLine
+REPO_DIR = /afs/cern.ch/work/p/ptiwari/bbdm-analysis/run3/DarkBottomLine
 CONFIG   = configs/2024.yaml
-OUTDIR   = /CHANGE/ME/btag_efficiency_maps/2024
+OUTDIR   = /eos/cms/store/group/phys_susy/sus-23-008/run3_bbMET/btag_efficiency_slims/2024
 
 # x509 proxy: shipped into the job sandbox and used for XRootD reads. The AFS
 # directory auto-resolves from your username (USER_INITIAL injected by
@@ -30,8 +31,8 @@ Proxy_path     = /afs/cern.ch/user/$(USER_INITIAL)/$ENV(USER)/private/$(Proxy_fi
 
 universe = vanilla
 executable            = condorJobs/btag-efficiency/run_slimmer.sh
-# Args: proxy filename, repo, config, outdir, txtfile, ProcId, ClusterId.
-arguments             = $(Proxy_filename) $(REPO_DIR) $(CONFIG) $(OUTDIR) $(TXTFILE) $(ProcId) $(ClusterId)
+# Args: proxy filename, repo, config, outdir, txtfile, ProcId, batch, ClusterId.
+arguments             = $(Proxy_filename) $(REPO_DIR) $(CONFIG) $(OUTDIR) $(TXTFILE) $(ProcId) $(BATCH) $(ClusterId)
 
 should_transfer_files = YES
 when_to_transfer_output = ON_EXIT
@@ -39,18 +40,23 @@ transfer_output_files = ""
 transfer_input_files  = $(Proxy_path)
 
 # LOGDIR is the absolute ${SUBDIR}/logs passed (and created) by submit_all.sh.
-output                = $(LOGDIR)/btageff_$(ClusterId)_$(ProcId).out
-error                 = $(LOGDIR)/btageff_$(ClusterId)_$(ProcId).err
+# stdout/stderr go into their own subdirs (LOGDIR/output, LOGDIR/error); the
+# condor event log stays directly under LOGDIR since it's per-cluster, not
+# per-job, and isn't stdout/stderr.
+output                = $(LOGDIR)/output/btageff_$(ClusterId)_$(ProcId).out
+error                 = $(LOGDIR)/error/btageff_$(ClusterId)_$(ProcId).err
 log                   = $(LOGDIR)/btageff_$(ClusterId).log
 
-# Resources — one file per job, event loop + histogram fill only.
-request_memory = 4000
-request_cpus = 1
+# Resources — up to BATCH files per job, event loop + histogram fill only
+# (lighter per-file cost than met_trigger's skim, but give it workday
+# headroom now that a job can cover dozens of files sequentially).
+request_memory = 12000
+request_cpus = 8
 +JobFlavour           = "testmatch"
 
 # Hold on failure; retry every 10 min up to 3 starts.
 on_exit_hold     = (ExitBySignal == True) || (ExitCode != 0)
 periodic_release = (NumJobStarts < 3) && ((CurrentTime - EnteredCurrentStatus) > 600)
 
-# NJOBS jobs (ProcId 0 .. NJOBS-1), each ProcId'th ROOT file in TXTFILE.
+# NJOBS jobs (ProcId 0 .. NJOBS-1), each a BATCH-sized slice of TXTFILE.
 queue $(NJOBS)

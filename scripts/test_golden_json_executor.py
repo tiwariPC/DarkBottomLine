@@ -43,7 +43,7 @@ def run_iterative(data_file, config):
 
 def run_executor(data_file, config, executor_name, workers, chunksize):
     from coffea.nanoevents import BaseSchema
-    from coffea.processor import ProcessorABC, Runner, dict_accumulator
+    from coffea.processor import ProcessorABC, Runner, dict_accumulator, set_accumulator
 
     from darkbottomline.processor import DarkBottomLineProcessor
 
@@ -53,12 +53,18 @@ def run_executor(data_file, config, executor_name, workers, chunksize):
 
         @property
         def accumulator(self):
-            return dict_accumulator({"n_total": 0, "pairs": set()})
+            return dict_accumulator({"n_total": 0, "pairs": set_accumulator(set())})
 
         def process(self, events):
             n_total = len(events)
             filtered = self.base.apply_lumi_mask(events)
-            pairs = set(zip(filtered.run.tolist(), filtered.luminosityBlock.tolist()))
+            # Must be a set_accumulator, not a plain set: coffea's
+            # dict_accumulator merges values with += across the executor's
+            # multi-worker merge tree, and plain Python sets don't support
+            # += (only |=), so a bare set() blows up with
+            # "TypeError: unsupported operand type(s) for +=: 'set' and 'set'"
+            # as soon as there's more than one chunk to merge.
+            pairs = set_accumulator(set(zip(filtered.run.tolist(), filtered.luminosityBlock.tolist())))
             return dict_accumulator({"n_total": n_total, "pairs": pairs})
 
         def postprocess(self, accumulator):

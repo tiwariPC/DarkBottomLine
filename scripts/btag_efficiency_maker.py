@@ -36,16 +36,34 @@ def resolve_inputs(patterns: List[str]) -> List[str]:
     return files
 
 
-def sum_counts(files: List[str], flavor: str, wp: str) -> Tuple[np.ndarray, np.ndarray]:
+def sum_counts(files: List[str], flavor: str, wp: str,
+                bad_files: "set[str]") -> Tuple[np.ndarray, np.ndarray]:
     """Sum the slimmer's denominator/pass count histograms for one flavor and
     working point across every input file (the `hadd`-equivalent step, done
-    on raw counts only — never sum/average an already-divided efficiency)."""
+    on raw counts only — never sum/average an already-divided efficiency).
+
+    Files already known bad (in `bad_files`, from an earlier flavor/wp pass)
+    are skipped outright. A file that fails here for the first time is added
+    to `bad_files` and skipped too — condor's run_slimmer.sh verifies its own
+    output before exiting, but a file from an older run (or one that slipped
+    past that check) can still land here; better to report every bad file up
+    front than crash on the first one and force a fix-one-rerun-find-the-next
+    cycle (see condorJobs/btag-efficiency/run_slimmer.sh for the EOS write-
+    corruption background: an uproot.recreate() block can exit cleanly while
+    a subset of keys in the file on disk decompress to garbage)."""
     den_total = None
     pass_total = None
     for path in files:
-        with uproot.open(path) as f:
-            den = f[f"hist_{flavor}_efficiency_denominator"].values()
-            pas = f[f"hist_{flavor}_efficiency_pass_{wp}"].values()
+        if path in bad_files:
+            continue
+        try:
+            with uproot.open(path) as f:
+                den = f[f"hist_{flavor}_efficiency_denominator"].values()
+                pas = f[f"hist_{flavor}_efficiency_pass_{wp}"].values()
+        except Exception as e:
+            print(f"WARNING: skipping corrupted file {path}: {e}")
+            bad_files.add(path)
+            continue
         if den.shape != (len(ETA_EDGES) - 1, len(PT_EDGES) - 1):
             raise ValueError(
                 f"{path}: hist_{flavor}_efficiency_denominator has shape "
@@ -62,11 +80,12 @@ def sum_counts(files: List[str], flavor: str, wp: str) -> Tuple[np.ndarray, np.n
     return den_total, pass_total
 
 
-def build_efficiency_map(files: List[str]) -> Dict[str, np.ndarray]:
+def build_efficiency_map(files: List[str]) -> Tuple[Dict[str, np.ndarray], "set[str]"]:
     hists: Dict[str, np.ndarray] = {}
+    bad_files: "set[str]" = set()
     for flavor in FLAVORS:
         for wp in WORKING_POINTS:
-            den, pas = sum_counts(files, flavor, wp)
+            den, pas = sum_counts(files, flavor, wp, bad_files)
 
             eff = np.zeros_like(den)
             nonzero = den > 0
@@ -88,7 +107,7 @@ def build_efficiency_map(files: List[str]) -> Dict[str, np.ndarray]:
             hists[f"hist_{flavor}_pass_{wp}"] = pas
             hists[f"hist_{flavor}_efficiency_{wp}"] = eff
 
-    return hists
+    return hists, bad_files
 
 
 def write_histograms(output_path: str, hists: Dict[str, np.ndarray]) -> None:
@@ -109,7 +128,7 @@ def main() -> None:
     for f in files:
         print(f"  {f}")
 
-    hists = build_efficiency_map(files)
+    hists, bad_files = build_efficiency_map(files)
 
     for flavor in FLAVORS:
         for wp in WORKING_POINTS:
@@ -125,6 +144,16 @@ def main() -> None:
         os.makedirs(out_dir, exist_ok=True)
     write_histograms(args.output, hists)
     print(f"Wrote {args.output}")
+
+    if bad_files:
+        print(f"\n✗ {len(bad_files)}/{len(files)} input file(s) were corrupted and "
+              f"EXCLUDED from the sums above (map was still written from the "
+              f"remaining good files). Re-run the corresponding condor job(s) "
+              f"and re-run this maker before trusting the output:")
+        for path in sorted(bad_files):
+            print(f"  {path}")
+        import sys
+        sys.exit(1)
 
 
 if __name__ == "__main__":
