@@ -22,6 +22,11 @@ corrections:
    jetJEC_algo: "AK4PFPuppi"
    jetJEC_level: "L1L2L3Res"
    jetJEC_unc: "Total"
+   jetid: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_jetid.json.gz
+   # Plain Tight (not TightLeptonVeto): this analysis already does dedicated
+   # jet-lepton dR cleaning (clean_jets_from_leptons in objects.py, dr_jet from
+   # config.cleaning), so TightLeptonVeto's built-in lepton veto would duplicate it.
+   jetid_name: "AK4PUPPI_Tight"
 
 # Data sample settings (set is_data: true when running on collision data)
 data:

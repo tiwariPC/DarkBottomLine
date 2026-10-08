@@ -239,7 +239,7 @@ class DarkBottomLineProcessor:
         # Build physics objects
         print("Step 1: Building physics objects...")
         logging.info("Building physics objects...")
-        objects = build_objects(events, self.config)
+        objects = build_objects(events, self.config, corrections=self.correction_manager)
 
         # Print object counts
         n_muons = ak.sum(ak.num(objects["muons"], axis=1))

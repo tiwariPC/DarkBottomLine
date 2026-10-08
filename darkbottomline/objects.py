@@ -217,23 +217,34 @@ def select_photons(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
     return pt_mask & eta_mask & id_mask & ele_veto_mask
 
 
-def select_jets(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
+def select_jets(events: ak.Array, config: Dict[str, Any], corrections: Any = None) -> ak.Array:
     """
     Select AK4 jets based on configuration cuts.
 
     Args:
         events: Awkward Array of events
         config: Configuration dictionary with jet selection cuts
+        corrections: Optional CorrectionManager. When given and
+            config.corrections.jetid is configured, applies the BTV tight(+
+            lepton-veto) jet-ID correction (CorrectionManager.get_jet_id_mask)
+            on top of pt/eta. Left out (None) or unconfigured -> pt/eta only,
+            same behavior as before this correction was wired in, so existing
+            callers/years without a jetid file keep working unchanged.
 
     Returns:
         Boolean mask for selected jets
     """
-    # Mask needs only pt/eta (no jet ID cut — puIdDisc branch absent in NanoAOD
-    # v12+). btagScore/hadronFlavour are added later in build_jet_collection.
+    # btagScore/hadronFlavour are added later in build_jet_collection.
     pt_mask = events["Jet_pt"] > config["pt_min"]
     eta_mask = abs(events["Jet_eta"]) < config["eta_max"]
+    mask = pt_mask & eta_mask
 
-    return pt_mask & eta_mask
+    if corrections is not None and hasattr(corrections, "get_jet_id_mask"):
+        id_mask = corrections.get_jet_id_mask(events)
+        if id_mask is not None:
+            mask = mask & id_mask
+
+    return mask
 
 
 def clean_jets_from_leptons(
@@ -484,7 +495,8 @@ def calculate_recoil(events: ak.Array, objects: Dict[str, Any]):
     return _recoil_from_met(met_pt, met_phi, muons, electrons)
 
 
-def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = False) -> Dict[str, Any]:
+def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = False,
+                   corrections: Any = None) -> Dict[str, Any]:
     """
     Build all physics objects with selection and cleaning applied.
 
@@ -494,6 +506,9 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
         verbose: When True, print per-step diagnostics. These call ak.sum/ak.num,
                  which force eager materialization of jagged arrays — off by default
                  to avoid that cost on full NanoAOD chunks.
+        corrections: Optional CorrectionManager, forwarded to select_jets for
+            the jet-ID cut (config.corrections.jetid). Omit to keep pt/eta-only
+            jet selection (pre-existing behavior).
 
     Returns:
         Dictionary containing selected objects and masks
@@ -514,7 +529,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
     tau_mask_tight = select_taus(events, config["objects"]["taus"], wp="tight")
     tau_mask = tau_mask_loose
 
-    jet_mask = select_jets(events, config["objects"]["jets"])
+    jet_mask = select_jets(events, config["objects"]["jets"], corrections=corrections)
 
     if verbose:
         print(f"    Muons (loose): {ak.sum(muon_mask_loose)}, tight: {ak.sum(muon_mask_loose & muon_mask_tight)}")

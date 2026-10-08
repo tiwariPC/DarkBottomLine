@@ -334,7 +334,8 @@ class DarkBottomLineAnalyzer:
 
         # Build physics objects
         logging.info("Building physics objects...")
-        objects = build_objects(events, self.base_processor.config)
+        objects = build_objects(events, self.base_processor.config,
+                                 corrections=self.base_processor.correction_manager)
 
         # Step 1 (series): Apply preselection first — regions get events after preselection
         logging.info("Applying preselection (event selection)...")
@@ -1262,7 +1263,8 @@ if COFFEA_AVAILABLE:
                     from .selections import apply_selection
                     from .objects import build_objects
                     # Apply event-level selection to get selected events
-                    objects = build_objects(events_to_process, self.config)
+                    objects = build_objects(events_to_process, self.config,
+                                             corrections=self.analyzer.base_processor.correction_manager)
                     selected_events, selected_objects, chunk_cutflow = apply_selection(
                         events_to_process, objects, self.config
                     )

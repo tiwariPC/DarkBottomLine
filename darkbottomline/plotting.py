@@ -337,8 +337,17 @@ def _make_bins(
 
 
 def _clip_overflow(values: np.ndarray, bins: np.ndarray) -> np.ndarray:
-    lo, hi = float(bins[0]), float(bins[-1])
-    return np.clip(values, lo, np.nextafter(hi, -np.inf))
+    """Fold values above the histogram's last edge into the last bin (overflow),
+    matching the usual "overflow bin" convention. Values BELOW the first edge
+    are left untouched (and therefore fall outside `bins` and are dropped by
+    np.histogram) rather than being folded up into the first bin — clipping
+    underflow into the first bin is wrong whenever the configured low edge is
+    above the variable's true minimum (e.g. MET_pt's display range starts at
+    100 GeV for MET-triggered SR/W-CR usage, but is reused for Z/Top CRs with
+    no MET floor, where most events sit below 100 GeV; folding those into the
+    first bin inflated it by up to ~19x there)."""
+    hi = float(bins[-1])
+    return np.where(values >= hi, np.nextafter(hi, -np.inf), values)
 
 
 def _histogram_and_sumw2(

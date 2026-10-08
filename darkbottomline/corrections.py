@@ -305,6 +305,51 @@ class CorrectionManager:
                     if not loaded:
                         logging.warning(f"Failed to load {correction_type} corrections: {e}")
 
+    def get_jet_id_mask(self, events: ak.Array) -> Optional[ak.Array]:
+        """
+        Per-jet tight jet-ID pass/fail mask from the BTV jetid CorrectionSet
+        (config.corrections.jetid; config.corrections.jetid_name selects the WP,
+        default AK4PUPPI_Tight — NOT TightLeptonVeto, since this analysis
+        already does dedicated jet-lepton dR cleaning in objects.py
+        (clean_jets_from_leptons), so TightLeptonVeto's built-in lepton veto
+        would duplicate that; see https://twiki.cern.ch/twiki/bin/view/CMS/JetID13p6TeV).
+        Evaluated on the raw per-jet energy-fraction/multiplicity branches
+        (Jet_chHEF, Jet_neHEF, Jet_chEmEF, Jet_neEmEF, Jet_muEF,
+        Jet_chMultiplicity, Jet_neMultiplicity — all present in NanoAODv15;
+        "multiplicity" input is derived as chMultiplicity + neMultiplicity per
+        the JSON's own description). Returns None if unconfigured/unavailable/
+        any required branch is missing, so callers can fall back to no jet-ID
+        cut (same as before this correction existed) rather than silently
+        zeroing out jets.
+        """
+        corr = self._get_correction_by_name("jetid", "jetid_name", ("AK4PUPPI_Tight",))
+        if corr is None:
+            return None
+        required = ("Jet_eta", "Jet_chHEF", "Jet_neHEF", "Jet_chEmEF",
+                    "Jet_neEmEF", "Jet_muEF", "Jet_chMultiplicity", "Jet_neMultiplicity")
+        if any(b not in events.fields for b in required):
+            return None
+        try:
+            eta = events["Jet_eta"]
+            chHEF = events["Jet_chHEF"]
+            neHEF = events["Jet_neHEF"]
+            chEmEF = events["Jet_chEmEF"]
+            neEmEF = events["Jet_neEmEF"]
+            muEF = events["Jet_muEF"]
+            chMult = events["Jet_chMultiplicity"]
+            neMult = events["Jet_neMultiplicity"]
+            multiplicity = chMult + neMult
+            result = self._evaluate_correction_jagged_or_flat(
+                corr, events["Jet_pt"],
+                eta, chHEF, neHEF, chEmEF, neEmEF, muEF, chMult, neMult, multiplicity,
+            )
+            if result is None:
+                return None
+            return ak.values_astype(result, bool) if not isinstance(result, bool) else result
+        except Exception as e:
+            logging.warning(f"Failed to evaluate jet ID correction: {e}")
+            return None
+
     def get_pileup_weight(
         self,
         events: ak.Array,
