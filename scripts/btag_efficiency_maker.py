@@ -36,56 +36,63 @@ def resolve_inputs(patterns: List[str]) -> List[str]:
     return files
 
 
-def sum_counts(files: List[str], flavor: str, wp: str,
-                bad_files: "set[str]") -> Tuple[np.ndarray, np.ndarray]:
-    """Sum the slimmer's denominator/pass count histograms for one flavor and
-    working point across every input file (the `hadd`-equivalent step, done
-    on raw counts only — never sum/average an already-divided efficiency).
+def sum_counts(files: List[str]) -> Tuple[Dict[str, np.ndarray], "set[str]"]:
+    """Sum the slimmer's denominator/pass count histograms for every flavor
+    and working point across every input file (the `hadd`-equivalent step,
+    done on raw counts only — never sum/average an already-divided efficiency).
 
-    Files already known bad (in `bad_files`, from an earlier flavor/wp pass)
-    are skipped outright. A file that fails here for the first time is added
-    to `bad_files` and skipped too — condor's run_slimmer.sh verifies its own
-    output before exiting, but a file from an older run (or one that slipped
-    past that check) can still land here; better to report every bad file up
-    front than crash on the first one and force a fix-one-rerun-find-the-next
-    cycle (see condorJobs/btag-efficiency/run_slimmer.sh for the EOS write-
-    corruption background: an uproot.recreate() block can exit cleanly while
-    a subset of keys in the file on disk decompress to garbage)."""
-    den_total = None
-    pass_total = None
+    Each file is all-or-nothing: every key it needs is read before any of it
+    is added to the totals. A file with even one unreadable key is added to
+    `bad_files` and contributes nothing — otherwise a file whose `mwp` key is
+    corrupted but `lwp` key is fine would be counted in the lwp sums only,
+    leaving the per-WP denominators (which must be identical) inconsistent.
+    condor's run_slimmer.sh verifies its own output before exiting, but a file
+    from an older run (or one that slipped past that check) can still land
+    here; better to report every bad file up front than crash on the first one
+    and force a fix-one-rerun-find-the-next cycle (see
+    condorJobs/btag-efficiency/run_slimmer.sh for the EOS write-corruption
+    background: an uproot.recreate() block can exit cleanly while a subset of
+    keys in the file on disk decompress to garbage)."""
+    keys = [f"hist_{flavor}_efficiency_denominator" for flavor in FLAVORS] + [
+        f"hist_{flavor}_efficiency_pass_{wp}"
+        for flavor in FLAVORS for wp in WORKING_POINTS
+    ]
+    expected_shape = (len(ETA_EDGES) - 1, len(PT_EDGES) - 1)
+    totals: Dict[str, np.ndarray] = {}
+    bad_files: "set[str]" = set()
     for path in files:
-        if path in bad_files:
-            continue
         try:
             with uproot.open(path) as f:
-                den = f[f"hist_{flavor}_efficiency_denominator"].values()
-                pas = f[f"hist_{flavor}_efficiency_pass_{wp}"].values()
+                counts = {key: f[key].values() for key in keys}
         except Exception as e:
             print(f"WARNING: skipping corrupted file {path}: {e}")
             bad_files.add(path)
             continue
-        if den.shape != (len(ETA_EDGES) - 1, len(PT_EDGES) - 1):
-            raise ValueError(
-                f"{path}: hist_{flavor}_efficiency_denominator has shape "
-                f"{den.shape}, expected {(len(ETA_EDGES) - 1, len(PT_EDGES) - 1)} "
-                f"— was it produced with a different ETA_EDGES/PT_EDGES than "
-                f"the current btag_efficiency_slimmer.py?"
-            )
-        if den_total is None:
-            den_total = den.copy()
-            pass_total = pas.copy()
-        else:
-            den_total += den
-            pass_total += pas
-    return den_total, pass_total
+        for key, values in counts.items():
+            if values.shape != expected_shape:
+                raise ValueError(
+                    f"{path}: {key} has shape {values.shape}, expected "
+                    f"{expected_shape} — was it produced with a different "
+                    f"ETA_EDGES/PT_EDGES than the current "
+                    f"btag_efficiency_slimmer.py?"
+                )
+        for key, values in counts.items():
+            if key in totals:
+                totals[key] += values
+            else:
+                totals[key] = values.copy()
+    if not totals:
+        raise RuntimeError("No readable input files — nothing to sum.")
+    return totals, bad_files
 
 
 def build_efficiency_map(files: List[str]) -> Tuple[Dict[str, np.ndarray], "set[str]"]:
     hists: Dict[str, np.ndarray] = {}
-    bad_files: "set[str]" = set()
+    totals, bad_files = sum_counts(files)
     for flavor in FLAVORS:
         for wp in WORKING_POINTS:
-            den, pas = sum_counts(files, flavor, wp, bad_files)
+            den = totals[f"hist_{flavor}_efficiency_denominator"]
+            pas = totals[f"hist_{flavor}_efficiency_pass_{wp}"]
 
             eff = np.zeros_like(den)
             nonzero = den > 0

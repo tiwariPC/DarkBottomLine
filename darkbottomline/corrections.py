@@ -462,239 +462,112 @@ class CorrectionManager:
             pass
         return None
 
-    def _get_muonSF_highPT_correction(self):
-        """Muon SF for pt>30: muon_Z_ID with NUM_TightPFIso_DEN_TightID."""
-        return self._get_correction_by_name(
-            "muonSF_highPT", "muonSF_highPT_name",
-            fallback_names=("NUM_TightPFIso_DEN_TightID",)
-        )
+    # ------------------------------------------------------------------
+    # YAML-driven per-object scale factors (muon ID/iso, electron ID, electron HLT)
+    #
+    # Config block (top level of configs/{year}.yaml):
+    #   lepton_sf:
+    #     <sf_kind>:                 # muon | electron_id | electron_hlt
+    #       <object_collection>:     # e.g. tight_muons, z_sublead_electrons
+    #         - file: <key under corrections:>   # correction file path key
+    #           name: <correction name inside that file>
+    #           pt_range: [min, max]             # optional; SF = 1 outside (component not applicable)
+    #           inputs: [...]                    # evaluate() args in order; "$pt", "$eta",
+    #                                            # "$abseta", "$syst" are substituted, anything
+    #                                            # else is passed through as a literal
+    #           syst: {central: .., up: .., down: ..}   # string for "$syst"
+    # Components for an object are multiplied. Every missing key / unknown
+    # correction / failed evaluate raises (no silent fallback to 1.0).
+    # ------------------------------------------------------------------
+    _SF_COMPONENT_KEYS = ("file", "name", "inputs", "syst")
 
-    def _get_muonSF_lowPT_correction(self):
-        """Muon SF for pt<=30: muon_JPsi_LowpT with NUM_LooseID_DEN_TrackerMuons."""
-        return self._get_correction_by_name(
-            "muonSF_lowPT", "muonSF_lowPT_name",
-            fallback_names=("NUM_LooseID_DEN_TrackerMuons",)
-        )
-
-    def _evaluate_muon_sf_per_pt_bin(
-        self,
-        muons: ak.Array,
-        corr_highpt,
-        corr_lowpt,
-        systematic: str = "central",
-    ) -> Optional[ak.Array]:
-        """
-        Evaluate muon SF: pt>30 use highpt correction, pt<=30 use lowpt.
-        Muon SFs are pt and |eta| dependent; inputs passed as (abseta, pt) or (pt, abseta).
-        Returns jagged array of SFs or None on failure.
-        """
-        flat_pt = np.asarray(ak.ravel(muons.pt), dtype=float)
-        flat_abseta = np.asarray(np.abs(ak.ravel(muons.eta)), dtype=float)
-        n_flat = len(flat_pt)
-        if n_flat == 0:
-            return ak.ones_like(muons.pt, dtype=float)
-        result = np.ones(n_flat, dtype=float)
-        mask_high = flat_pt > 30.0
-        mask_low = ~mask_high
-        for corr, mask, label in [(corr_highpt, mask_high, "highpt"), (corr_lowpt, mask_low, "lowpt")]:
-            if corr is None or not np.any(mask):
-                continue
-            pt_sel = flat_pt[mask]
-            eta_sel = flat_abseta[mask]
-            # Try (abseta, pt) and (pt, abseta) orderings; optional systematic
-            for args in [
-                (eta_sel, pt_sel),
-                (pt_sel, eta_sel),
-                (eta_sel, pt_sel, systematic),
-                (pt_sel, eta_sel, systematic),
-                (systematic, eta_sel, pt_sel),
-                (systematic, pt_sel, eta_sel),
-            ]:
-                try:
-                    sf = np.asarray(corr.evaluate(*args), dtype=float)
-                    if sf.shape == pt_sel.shape:
-                        result[mask] = sf
-                        break
-                except Exception:
-                    continue
+    def _sf_components(self, sf_kind: str, collection: str) -> list:
         try:
-            counts = np.asarray(ak.num(muons.pt, axis=1))
-            return ak.unflatten(result, counts)
-        except Exception:
-            return ak.Array(result)
+            components = self.config["lepton_sf"][sf_kind][collection]
+        except (KeyError, TypeError) as e:
+            raise KeyError(
+                f"config is missing lepton_sf.{sf_kind}.{collection} "
+                f"(YAML-driven scale factors, see CorrectionManager._sf_components)"
+            ) from e
+        if not isinstance(components, list):
+            raise TypeError(f"lepton_sf.{sf_kind}.{collection} must be a list of components")
+        for comp in components:
+            missing = [k for k in self._SF_COMPONENT_KEYS if k not in comp]
+            if missing:
+                raise KeyError(f"lepton_sf.{sf_kind}.{collection} component {comp} missing keys {missing}")
+        return components
+
+    def _sf_correction(self, comp: dict):
+        file_key, name = comp["file"], comp["name"]
+        if file_key not in self.corrections:
+            raise KeyError(
+                f"correction file '{file_key}' (corrections.{file_key}) is not loaded; "
+                f"check the path and that correctionlib can read it"
+            )
+        cs = self.corrections[file_key]
+        try:
+            return cs[name]
+        except (IndexError, KeyError) as e:
+            keys = list(cs.keys()) if hasattr(cs, "keys") else []
+            raise KeyError(f"correction '{name}' not in {file_key}; available: {keys}") from e
+
+    def _evaluate_sf_components(
+        self, objects_: ak.Array, sf_kind: str, collection: str
+    ) -> Dict[str, ak.Array]:
+        """Return {"central","up","down"} jagged SFs (product over YAML components)."""
+        components = self._sf_components(sf_kind, collection)
+        pt_j = objects_.pt
+        counts = np.asarray(ak.num(pt_j, axis=1))
+        flat_pt = np.asarray(ak.ravel(pt_j), dtype=float)
+        flat_eta = np.asarray(ak.ravel(objects_.eta), dtype=float)
+        flat_abseta = np.abs(flat_eta)
+        out = {k: np.ones(len(flat_pt), dtype=float) for k in ("central", "up", "down")}
+        if len(flat_pt) > 0:
+            for comp in components:
+                corr = self._sf_correction(comp)
+                lo, hi = comp.get("pt_range", (-np.inf, np.inf))
+                mask = (flat_pt >= lo) & (flat_pt < hi)
+                if not np.any(mask):
+                    continue
+                subst = {"$pt": flat_pt[mask], "$eta": flat_eta[mask], "$abseta": flat_abseta[mask]}
+                for key in ("central", "up", "down"):
+                    syst_str = comp["syst"][key]
+                    args = [
+                        syst_str if a == "$syst" else subst.get(a, a) if isinstance(a, str) else a
+                        for a in comp["inputs"]
+                    ]
+                    out[key][mask] *= np.asarray(corr.evaluate(*args), dtype=float)
+        return {k: ak.unflatten(v, counts) for k, v in out.items()}
+
+    def get_muon_sf_nominal_up_down(
+        self, muons: ak.Array, collection: str = "tight_muons"
+    ) -> Dict[str, ak.Array]:
+        return self._evaluate_sf_components(muons, "muon", collection)
 
     def get_muon_sf(
-        self,
-        muons: ak.Array,
-        systematic: str = "central"
+        self, muons: ak.Array, systematic: str = "central", collection: str = "tight_muons"
     ) -> ak.Array:
-        """
-        Get muon scale factors: pt>30 use muon_Z_ID NUM_TightPFIso_DEN_TightID,
-        pt<=30 use muon_JPsi_LowpT NUM_LooseID_DEN_TrackerMuons.
-        """
-        ones = ak.ones_like(muons.pt, dtype=float)
-        if not muons.pt.layout or len(ak.ravel(muons.pt)) == 0:
-            return ones
-        corr_highpt = self._get_muonSF_highPT_correction()
-        corr_lowpt = self._get_muonSF_lowPT_correction()
-        if corr_highpt is None and corr_lowpt is None:
-            return ones
-        out = self._evaluate_muon_sf_per_pt_bin(muons, corr_highpt, corr_lowpt, systematic)
-        if out is not None:
-            return out
-        logging.warning("Muon SF evaluate failed for all tried signatures")
-        return ones
-
-    def get_muon_sf_nominal_up_down(self, muons: ak.Array) -> Dict[str, ak.Array]:
-        """Get muon SF as central, up, down (pt>30 highpt, pt<=30 lowpt)."""
-        ones = ak.ones_like(muons.pt, dtype=float)
-        out = {"central": ones, "up": ones, "down": ones}
-        corr_highpt = self._get_muonSF_highPT_correction()
-        corr_lowpt = self._get_muonSF_lowPT_correction()
-        if corr_highpt is None and corr_lowpt is None:
-            return out
-        for key, syst in [("central", "central"), ("up", "up"), ("down", "down")]:
-            val = self._evaluate_muon_sf_per_pt_bin(muons, corr_highpt, corr_lowpt, syst)
-            if val is not None:
-                out[key] = val
-        return out
-
-    def _get_electron_sf_correction(self):
-        """Return the Electron-ID-SF correction evaluator from the loaded CorrectionSet."""
-        if "electronSF" not in self.corrections:
-            return None
-        cs = self.corrections["electronSF"]
-        for name in ("Electron-ID-SF", "electron_id_reco", "electron"):
-            if name in cs:
-                return cs[name]
-        if hasattr(cs, "keys"):
-            first = next(iter(cs.keys()), None)
-            if first is not None:
-                return cs[first]
-        return None
-
-    def _electron_sf_params(self) -> tuple:
-        """Return (year_str, working_point) from config for Electron-ID-SF."""
-        year = self.config.get("year", 2022)
-        corr_cfg = self.config.get("corrections", {})
-        year_str = corr_cfg.get("electronSF_name") or {
-            2022: "2022Re-recoBCD",
-            2023: "2022Re-recoBCD",
-            2024: "2022Re-recoBCD",
-        }.get(year, "2022Re-recoBCD")
-        working_point = corr_cfg.get("electronSF_WP", "Tight")
-        return str(year_str), str(working_point)
-
-    def _electron_sf_loose_wp(self) -> str:
-        """WP for the Z-candidate subleading (loose-only) electron's ID SF."""
-        corr_cfg = self.config.get("corrections", {})
-        return str(corr_cfg.get("electronSF_WP_loose", "Loose"))
-
-    def get_electron_sf(
-        self,
-        electrons: ak.Array,
-        systematic: str = "central",
-        working_point: Optional[str] = None,
-    ) -> ak.Array:
-        """
-        Get electron scale factors for ID and reconstruction (nominal, up, or down).
-        Uses correction \"Electron-ID-SF\" with ValType sf / sfup / sfdown.
-        """
-        var = self.get_electron_sf_nominal_up_down(electrons, working_point=working_point)
-        if systematic == "up":
-            return var["up"]
-        if systematic == "down":
-            return var["down"]
-        return var["central"]
+        return self.get_muon_sf_nominal_up_down(muons, collection)[systematic]
 
     def get_electron_sf_nominal_up_down(
-        self,
-        electrons: ak.Array,
-        working_point: Optional[str] = None,
+        self, electrons: ak.Array, collection: str = "tight_electrons"
     ) -> Dict[str, ak.Array]:
-        """
-        Get electron scale factors as nominal, up, and down for systematics.
-        Uses shared jagged-then-flat pattern (Coffea/correctionlib).
-        Returns dict with keys \"central\", \"up\", \"down\" (same shape as electrons.pt).
+        return self._evaluate_sf_components(electrons, "electron_id", collection)
 
-        working_point overrides the config-driven WP (e.g. "Loose" for a
-        loose-only lepton such as the Z-candidate subleading electron);
-        defaults to config.corrections.electronSF_WP ("Tight") when omitted.
-        """
-        ones = ak.ones_like(electrons.pt, dtype=float)
-        out = {"central": ones, "up": ones, "down": ones}
-        corr = self._get_electron_sf_correction()
-        if corr is None:
-            return out
-        year_str, cfg_wp = self._electron_sf_params()
-        working_point = working_point or cfg_wp
-        pt = electrons.pt
-        eta = electrons.eta
-        if len(ak.ravel(pt)) == 0:
-            return out
-        for val_type, key in [("sf", "central"), ("sfup", "up"), ("sfdown", "down")]:
-            val = self._evaluate_correction_jagged_or_flat(
-                corr, pt, year_str, val_type, working_point, eta, pt
-            )
-            out[key] = val if val is not None else ones
-        return out
-
-    def _get_electronHLT_sf_correction(self):
-        """Return the Electron-HLT-SF correction evaluator from the loaded CorrectionSet."""
-        if "electronHLT" not in self.corrections:
-            return None
-        cs = self.corrections["electronHLT"]
-        for name in ("Electron-HLT-SF", "electron_hlt_sf", "electron_hlt"):
-            try:
-                return cs[name]
-            except (IndexError, KeyError, TypeError):
-                continue
-        if hasattr(cs, "keys"):
-            first = next(iter(cs.keys()), None)
-            if first is not None:
-                return cs[first]
-        return None
+    def get_electron_sf(
+        self, electrons: ak.Array, systematic: str = "central", collection: str = "tight_electrons"
+    ) -> ak.Array:
+        return self.get_electron_sf_nominal_up_down(electrons, collection)[systematic]
 
     def get_electronHLT_sf_nominal_up_down(
-        self,
-        electrons: ak.Array,
+        self, electrons: ak.Array, collection: str = "tight_electrons"
     ) -> Dict[str, ak.Array]:
-        """
-        Get electron HLT trigger scale factors as central, up, and down.
-        Uses Electron-HLT-SF with ValType sf/sfup/sfdown.
-        Signature: evaluate(year, val_type, hlt_path, eta, pt).
-        """
-        ones = ak.ones_like(electrons.pt, dtype=float)
-        out = {"central": ones, "up": ones, "down": ones}
-        corr = self._get_electronHLT_sf_correction()
-        if corr is None:
-            return out
-        corr_cfg = self.config.get("corrections", {})
-        year_str = corr_cfg.get("electronHLT_name", "2022Re-recoBCD")
-        hlt_path = corr_cfg.get("electronHLT_WP", "HLT_SF_Ele30_TightID")
-        pt = electrons.pt
-        eta = electrons.eta
-        if len(ak.ravel(pt)) == 0:
-            return out
-        for val_type, key in [("sf", "central"), ("sfup", "up"), ("sfdown", "down")]:
-            val = self._evaluate_correction_jagged_or_flat(
-                corr, pt, year_str, val_type, hlt_path, eta, pt
-            )
-            out[key] = val if val is not None else ones
-        return out
+        return self._evaluate_sf_components(electrons, "electron_hlt", collection)
 
     def get_electronHLT_sf(
-        self,
-        electrons: ak.Array,
-        systematic: str = "central",
+        self, electrons: ak.Array, systematic: str = "central", collection: str = "tight_electrons"
     ) -> ak.Array:
-        """Get electron HLT trigger scale factors (central, up, or down)."""
-        var = self.get_electronHLT_sf_nominal_up_down(electrons)
-        if systematic == "up":
-            return var["up"]
-        if systematic == "down":
-            return var["down"]
-        return var["central"]
+        return self.get_electronHLT_sf_nominal_up_down(electrons, collection)[systematic]
 
     def _get_metHLT_sf_correction(self):
         """Return the MET-HLT-SF correction evaluator from the loaded CorrectionSet."""
@@ -1301,14 +1174,15 @@ class CorrectionManager:
 
         # Muon
         w_muon, w_muon_up, w_muon_down = _prod_or_ones(
-            "tight_muons", self.get_muon_sf, self.get_muon_sf_nominal_up_down
+            "tight_muons", self.get_muon_sf, self.get_muon_sf_nominal_up_down,
+            collection="tight_muons",
         )
         # Z-candidate subleading muon is loose-only (not in tight_muons) and
-        # would otherwise never get an ID SF; fold it in via the low-pT
-        # (loose-ID) correction, which get_muon_sf already auto-selects for
-        # pt<=30 GeV (matches the 10-30 GeV sublead pt range).
+        # would otherwise never get an ID SF; fold it in using its own
+        # lepton_sf.muon.z_sublead_muons components (loose ID).
         w_z_sub_mu, w_z_sub_mu_up, w_z_sub_mu_down = _prod_or_ones(
-            "z_sublead_muons", self.get_muon_sf, self.get_muon_sf_nominal_up_down
+            "z_sublead_muons", self.get_muon_sf, self.get_muon_sf_nominal_up_down,
+            collection="z_sublead_muons",
         )
         w_muon = w_muon * w_z_sub_mu
         w_muon_up = w_muon_up * w_z_sub_mu_up
@@ -1316,7 +1190,8 @@ class CorrectionManager:
 
         # Electron ID
         w_electron, w_electron_up, w_electron_down = _prod_or_ones(
-            "tight_electrons", self.get_electron_sf, self.get_electron_sf_nominal_up_down
+            "tight_electrons", self.get_electron_sf, self.get_electron_sf_nominal_up_down,
+            collection="tight_electrons",
         )
         # Z-candidate subleading electron is loose-only (not in
         # tight_electrons) and would otherwise never get an ID SF; fold it in
@@ -1324,7 +1199,7 @@ class CorrectionManager:
         z_sub_el = objects.get("z_sublead_electrons")
         if z_sub_el is not None and len(ak.ravel(z_sub_el.pt)) > 0:
             sub_var = self.get_electron_sf_nominal_up_down(
-                z_sub_el, working_point=self._electron_sf_loose_wp()
+                z_sub_el, collection="z_sublead_electrons"
             )
             w_electron = w_electron * self._per_event_product(sub_var["central"])
             w_electron_up = w_electron_up * self._per_event_product(sub_var["up"])
@@ -1335,7 +1210,8 @@ class CorrectionManager:
         # MET|EGamma at preselection), so this per-electron HLT-efficiency SF
         # must not apply unless the event actually fired the EGamma trigger.
         w_ele_hlt, w_ele_hlt_up, w_ele_hlt_down = _prod_or_ones(
-            "tight_electrons", self.get_electronHLT_sf, self.get_electronHLT_sf_nominal_up_down
+            "tight_electrons", self.get_electronHLT_sf, self.get_electronHLT_sf_nominal_up_down,
+            collection="tight_electrons",
         )
         ele_trig_paths = self.config.get("triggers", {}).get("EGamma", [])
         fired_ele_trigger = np.asarray(ak.to_numpy(pass_triggers(events, ele_trig_paths)), dtype=bool)

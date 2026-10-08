@@ -7,15 +7,9 @@ corrections:
    pileup_name: "Collisions24_BCDEFGHI_goldenJSON"
    btagSF: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_btagging.json.gz
    muonSF_highPT: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_muon_HighPt.json.gz
-   muonSF_highPT_name: "NUM_TightPFIso_DEN_TightID"
    muonSF_lowPT: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_muon_JPsi.json.gz
-   muonSF_lowPT_name: "NUM_LooseID_DEN_TrackerMuons"
    electronSF: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_electron.json.gz
-   electronSF_name: "2024Re-recoBCD"
-   electronSF_WP: "Tight"
    electronHLT: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_electronHlt.json.gz
-   electronHLT_name: "2024Re-recoBCD"
-   electronHLT_WP: "HLT_SF_Ele30_TightID"
    metHlt: data/corrections/2024/Run3-Summer24-NanoAODv15_metHlt.json.gz
    jetJEC: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_jet_jerc.json.gz
    jetJEC_tag: "Summer24_22Sep2023_V1_MC"
@@ -27,6 +21,36 @@ corrections:
    # jet-lepton dR cleaning (clean_jets_from_leptons in objects.py, dr_jet from
    # config.cleaning), so TightLeptonVeto's built-in lepton veto would duplicate it.
    jetid_name: "AK4PUPPI_Tight"
+
+# YAML-driven lepton scale factors (see CorrectionManager._sf_components).
+# Components per object are multiplied; SF = 1 outside a component's pt_range.
+# "$pt"/"$eta"/"$abseta"/"$syst" in `inputs` are substituted; other entries are literals.
+# Muon: JPsi (low pT) below 50 GeV, HighPt file from 50 GeV (its first pt bin).
+lepton_sf:
+  muon:
+    tight_muons:
+      - {file: muonSF_lowPT,  name: NUM_TightID_DEN_TrackerMuons, pt_range: [0, 50],
+         inputs: ["$abseta", "$pt", "$syst"], syst: {central: nominal, up: systup, down: systdown}}
+      - {file: muonSF_highPT, name: NUM_TightID_DEN_GlobalMuonProbes, pt_range: [50, .inf],
+         inputs: ["$abseta", "$pt", "$syst"], syst: {central: nominal, up: systup, down: systdown}}
+      - {file: muonSF_highPT, name: NUM_probe_TightRelTkIso_DEN_MediumIDProbes, pt_range: [50, .inf],
+         inputs: ["$abseta", "$pt", "$syst"], syst: {central: nominal, up: systup, down: systdown}}
+    z_sublead_muons:   # loose-only leg of the Z candidate
+      - {file: muonSF_lowPT,  name: NUM_LooseID_DEN_TrackerMuons, pt_range: [0, 50],
+         inputs: ["$abseta", "$pt", "$syst"], syst: {central: nominal, up: systup, down: systdown}}
+      - {file: muonSF_highPT, name: NUM_MediumID_DEN_GlobalMuonProbes, pt_range: [50, .inf],
+         inputs: ["$abseta", "$pt", "$syst"], syst: {central: nominal, up: systup, down: systdown}}
+  electron_id:
+    tight_electrons:
+      - {file: electronSF, name: Electron-ID-SF,
+         inputs: ["2024Prompt", "$syst", "Tight", "$eta", "$pt"], syst: {central: sf, up: sfup, down: sfdown}}
+    z_sublead_electrons:
+      - {file: electronSF, name: Electron-ID-SF,
+         inputs: ["2024Prompt", "$syst", "Loose", "$eta", "$pt"], syst: {central: sf, up: sfup, down: sfdown}}
+  electron_hlt:
+    tight_electrons:
+      - {file: electronHLT, name: Electron-HLT-SF,
+         inputs: ["2024Prompt", "$syst", "HLT_SF_Ele30_TightID", "$eta", "$pt"], syst: {central: sf, up: sfup, down: sfdown}}
 
 # Data sample settings (set is_data: true when running on collision data)
 data:
