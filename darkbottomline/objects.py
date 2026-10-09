@@ -6,6 +6,8 @@ import awkward as ak
 import numpy as np
 from typing import Dict, Any, Tuple
 
+from darkbottomline.corrections import jes_sources
+
 SENTINEL = -9999.0  # fill value for variables undefined due to insufficient objects
 
 
@@ -66,14 +68,31 @@ def build_tau_collection(events: ak.Array) -> ak.Array:
     })
 
 
-def build_jet_collection(events: ak.Array, config: Dict[str, Any]) -> ak.Array:
+def build_jet_collection(events: ak.Array, config: Dict[str, Any], corrections: Any = None) -> ak.Array:
     """Zip the AK4 jet collection. btagScore comes from the YAML-configured
-    branch; hadronFlavour (MC) added when present."""
+    branch; hadronFlavour (MC) added when present.
+
+    Args:
+        corrections: Optional CorrectionManager. When given and
+            config.corrections.jetJEC is configured, pt/mass are the
+            properly-rescaled JEC values (CorrectionManager.
+            get_corrected_jet_pt_mass: undo NanoAOD's embedded JEC via
+            Jet_rawFactor, reapply the configured JEC from scratch — see
+            that method's docstring). Omit (None) or unconfigured -> raw
+            NanoAOD Jet_pt/Jet_mass, same behavior as before this
+            correction existed.
+    """
+    pt = events["Jet_pt"]
+    mass = events["Jet_mass"] if "Jet_mass" in events.fields else ak.zeros_like(events["Jet_pt"])
+    if corrections is not None and hasattr(corrections, "get_corrected_jet_pt_mass"):
+        result = corrections.get_corrected_jet_pt_mass(events)
+        if result is not None:
+            pt, mass = result
     fields = {
-        "pt": events["Jet_pt"],
+        "pt": pt,
         "eta": events["Jet_eta"],
         "phi": events["Jet_phi"],
-        "mass": events["Jet_mass"] if "Jet_mass" in events.fields else ak.zeros_like(events["Jet_pt"]),
+        "mass": mass,
         "btagScore": events[config["btagging"]["branch"]],
     }
     if "Jet_hadronFlavour" in events.fields:
@@ -224,18 +243,31 @@ def select_jets(events: ak.Array, config: Dict[str, Any], corrections: Any = Non
     Args:
         events: Awkward Array of events
         config: Configuration dictionary with jet selection cuts
-        corrections: Optional CorrectionManager. When given and
-            config.corrections.jetid is configured, applies the BTV tight(+
+        corrections: Optional CorrectionManager. When given:
+          - config.corrections.jetJEC configured -> the pt_min cut uses the
+            properly JEC-rescaled pt (CorrectionManager.
+            get_corrected_jet_pt_mass), the SAME pt build_jet_collection
+            zips into the returned jet collection — otherwise jets near the
+            threshold would never reflect the correction. Falls back to raw
+            Jet_pt if unconfigured/unavailable.
+          - config.corrections.jetid configured -> applies the BTV tight(+
             lepton-veto) jet-ID correction (CorrectionManager.get_jet_id_mask)
-            on top of pt/eta. Left out (None) or unconfigured -> pt/eta only,
-            same behavior as before this correction was wired in, so existing
-            callers/years without a jetid file keep working unchanged.
+            on top of pt/eta. Jet-ID's energy-fraction inputs are read
+            straight from NanoAOD (ratios, invariant under the pt/mass
+            rescaling above) — no interaction between the two corrections.
+        Left out (None) or unconfigured -> pt/eta only on raw Jet_pt, same
+        behavior as before these corrections were wired in.
 
     Returns:
         Boolean mask for selected jets
     """
     # btagScore/hadronFlavour are added later in build_jet_collection.
-    pt_mask = events["Jet_pt"] > config["pt_min"]
+    jet_pt = events["Jet_pt"]
+    if corrections is not None and hasattr(corrections, "get_corrected_jet_pt_mass"):
+        result = corrections.get_corrected_jet_pt_mass(events)
+        if result is not None:
+            jet_pt = result[0]
+    pt_mask = jet_pt > config["pt_min"]
     eta_mask = abs(events["Jet_eta"]) < config["eta_max"]
     mask = pt_mask & eta_mask
 
@@ -486,10 +518,28 @@ def _met_field(events: ak.Array, *candidates):
     raise KeyError(f"No MET branch found among {candidates}")
 
 
-def calculate_recoil(events: ak.Array, objects: Dict[str, Any]):
-    """Recoil = |-(MET_vec + sum pT(loose muons+electrons))|. Returns (recoil_pt, recoil_phi)."""
+def calculate_recoil(events: ak.Array, objects: Dict[str, Any], corrections: Any = None):
+    """Recoil = |-(MET_vec + sum pT(loose muons+electrons))|. Returns (recoil_pt, recoil_phi).
+
+    When corrections is given and has get_type1_met_shift, the stored
+    PuppiMET_pt/_phi (built by NanoAOD production from its own embedded,
+    possibly-stale JEC payload) is first updated via the Type-1 MET
+    recompute (Type1MET.pdf Sec 1.2-1.5: vector-sum jet pt shift from the
+    SAME corrected jets used elsewhere in this pipeline) before computing
+    recoil — keeping jets and MET on a consistent JEC payload, per the
+    official recommendation. Falls back to the stored MET unchanged if
+    unconfigured/unavailable.
+    """
     met_pt  = _met_field(events, "PuppiMET_pt",  "PFMET_pt",  "MET_pt")
     met_phi = _met_field(events, "PuppiMET_phi", "PFMET_phi", "MET_phi")
+    if corrections is not None and hasattr(corrections, "get_type1_met_shift"):
+        shift = corrections.get_type1_met_shift(events)
+        if shift is not None:
+            delta_met_x, delta_met_y = shift
+            met_x = np.asarray(ak.to_numpy(met_pt)) * np.cos(np.asarray(ak.to_numpy(met_phi))) + delta_met_x
+            met_y = np.asarray(ak.to_numpy(met_pt)) * np.sin(np.asarray(ak.to_numpy(met_phi))) + delta_met_y
+            met_pt = ak.Array(np.sqrt(met_x**2 + met_y**2))
+            met_phi = ak.Array(np.arctan2(met_y, met_x))
     muons     = objects.get("muons",     ak.Array([]))
     electrons = objects.get("electrons", ak.Array([]))
     return _recoil_from_met(met_pt, met_phi, muons, electrons)
@@ -506,9 +556,15 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
         verbose: When True, print per-step diagnostics. These call ak.sum/ak.num,
                  which force eager materialization of jagged arrays — off by default
                  to avoid that cost on full NanoAOD chunks.
-        corrections: Optional CorrectionManager, forwarded to select_jets for
-            the jet-ID cut (config.corrections.jetid). Omit to keep pt/eta-only
-            jet selection (pre-existing behavior).
+        corrections: Optional CorrectionManager, forwarded to select_jets
+            (jet-ID cut, config.corrections.jetid; JEC-corrected pt for the
+            pt_min cut, config.corrections.jetJEC), build_jet_collection
+            (same JEC-corrected pt/mass for the returned jet collection —
+            kept consistent with select_jets's mask), and calculate_recoil
+            (Type-1 MET recompute from the same corrected jets, so jets and
+            MET stay on the same JEC payload). Omit to keep pt/eta-only jet
+            selection and NanoAOD's stored MET unchanged (pre-existing
+            behavior).
 
     Returns:
         Dictionary containing selected objects and masks
@@ -541,7 +597,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
     muons = build_muon_collection(events)
     electrons = build_electron_collection(events)
     taus = build_tau_collection(events)
-    jets = build_jet_collection(events, config)
+    jets = build_jet_collection(events, config, corrections=corrections)
 
     # Apply masks: main collections = loose (for event selection, jet cleaning)
     selected_muons = muons[muon_mask]
@@ -623,7 +679,7 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
 
     # Compute central recoil + JES/JER shifted variants
     _lep_objs = {"muons": selected_muons, "electrons": selected_electrons}
-    recoil, recoil_phi = calculate_recoil(events, _lep_objs)
+    recoil, recoil_phi = calculate_recoil(events, _lep_objs, corrections=corrections)
 
     # Lepton pT sums are invariant across MET shifts — compute once, reuse for all
     # 4 JES/JER variants (only met_px/met_py differ per shift).
@@ -636,10 +692,55 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
             return rpt
         return recoil  # fall back to central if branch missing
 
-    recoil_JESUp   = _shifted_recoil("PuppiMET_ptJESUp",   "PuppiMET_phiJESUp")
-    recoil_JESDown = _shifted_recoil("PuppiMET_ptJESDown",  "PuppiMET_phiJESDown")
+    # JER systematic: deferred (JER smearing itself isn't implemented — see
+    # CorrectionManager.get_corrected_jet_pt_mass's TODO(JER)). Stays on
+    # NanoAOD's own old-payload PuppiMET_ptJERUp/Down branches — a known,
+    # documented inconsistency with the now JEC-corrected central jets/MET,
+    # not silently fixed.
     recoil_JERUp   = _shifted_recoil("PuppiMET_ptJERUp",   "PuppiMET_phiJERUp")
     recoil_JERDown = _shifted_recoil("PuppiMET_ptJERDown",  "PuppiMET_phiJERDown")
+
+    # JES systematic: reduced 11-source scheme (replaces the old single
+    # "Total"-uncertainty PuppiMET_ptJESUp/Down pair). Each source x
+    # direction needs its own full shifted-jet rebuild (new corrected pt via
+    # get_corrected_jet_pt_mass with that source applied, re-selected/
+    # re-cleaned, then a self-consistent Type-1 MET from those shifted jets)
+    # — NOT just a MET-level px/py shift like the JER branches above, since
+    # the whole point of a per-source JES systematic is that jet pt (and
+    # therefore njets/n_bjets/cleaning) can move, not just MET.
+    _jes_year = config.get("year", "")
+    _jes_source_names = jes_sources(_jes_year)
+
+    def _jes_label(source: str, direction: str) -> str:
+        # jes_sources() already gives the real-year-suffixed name (e.g.
+        # "EC2_2024") — just prefix/suffix for the branch-name convention
+        # (-> "recoil_JECEC2_2024Up"). No further munging needed.
+        return f"recoil_JEC{source}{direction.capitalize()}"
+
+    recoil_jes_variants: Dict[str, ak.Array] = {}
+    if corrections is not None and hasattr(corrections, "get_type1_met_shift"):
+        for source in _jes_source_names:
+            for direction in ("up", "down"):
+                label = _jes_label(source, direction)
+                shift = corrections.get_type1_met_shift(
+                    events, jes_source=source, jes_direction=direction,
+                )
+                if shift is None:
+                    recoil_jes_variants[label] = recoil
+                    continue
+                delta_met_x, delta_met_y = shift
+                met_pt_base  = _met_field(events, "PuppiMET_pt",  "PFMET_pt",  "MET_pt")
+                met_phi_base = _met_field(events, "PuppiMET_phi", "PFMET_phi", "MET_phi")
+                met_x = np.asarray(ak.to_numpy(met_pt_base)) * np.cos(np.asarray(ak.to_numpy(met_phi_base))) + delta_met_x
+                met_y = np.asarray(ak.to_numpy(met_pt_base)) * np.sin(np.asarray(ak.to_numpy(met_phi_base))) + delta_met_y
+                shifted_met_pt = ak.Array(np.sqrt(met_x**2 + met_y**2))
+                shifted_met_phi = ak.Array(np.arctan2(met_y, met_x))
+                rpt, _ = _recoil_from_sums(shifted_met_pt, shifted_met_phi, _lep_px, _lep_py)
+                recoil_jes_variants[label] = rpt
+    else:
+        for source in _jes_source_names:
+            for direction in ("up", "down"):
+                recoil_jes_variants[_jes_label(source, direction)] = recoil
 
     # cos(theta*): helicity angle of leading jet in dijet CoM; SENTINEL when < 2 jets
     costheta_star = calculate_costheta_star(cleaned_jets)
@@ -649,10 +750,9 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
     return {
         "recoil": recoil,
         "recoil_phi": recoil_phi,
-        "recoil_JESUp": recoil_JESUp,
-        "recoil_JESDown": recoil_JESDown,
         "recoil_JERUp": recoil_JERUp,
         "recoil_JERDown": recoil_JERDown,
+        **recoil_jes_variants,
         "costheta_star": costheta_star,
         "photons": selected_photons,
         "muons": selected_muons,

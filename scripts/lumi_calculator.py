@@ -70,10 +70,23 @@ def find_data_files(input_dir: str) -> Dict[str, List[str]]:
 
 
 def unique_run_lumis(root_files: List[str]) -> Dict[int, List[int]]:
-    """Read run/luminosityBlock from each file, return {run: sorted unique lumis}."""
+    """Read run/luminosityBlock from each file, return {run: sorted unique lumis}.
+
+    A single-file sample can legitimately have zero events survive the full
+    golden-JSON + selection pipeline (e.g. a short run, or a file covering a
+    quiet period) — such files have no "Events" TTree at all, or an empty
+    one. Both are skipped here rather than treated as errors.
+    """
     run_lumis: Dict[int, set] = defaultdict(set)
     for fn in root_files:
-        tree = uproot.open(fn)["Events"]
+        f = uproot.open(fn)
+        if "Events" not in f:
+            print(f"  (skipping {fn}: no Events tree — zero events survived selection)")
+            continue
+        tree = f["Events"]
+        if tree.num_entries == 0:
+            print(f"  (skipping {fn}: Events tree is empty)")
+            continue
         arrs = tree.arrays(["run", "luminosityBlock"], library="np")
         runs = arrs["run"]
         lumis = arrs["luminosityBlock"]

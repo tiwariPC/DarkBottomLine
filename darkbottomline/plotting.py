@@ -32,6 +32,7 @@ from utils.plot_utils import (
     get_process_config, get_background_color_map, simplify_sample_label,
     _PALETTE,
 )
+from darkbottomline.corrections import jes_sources
 
 # ---------------------------------------------------------------------------
 # Sentinel & histogram utilities (used by create_stacked_plots)
@@ -3221,6 +3222,9 @@ class PlotManager:
             try:
                 import uproot as _up_syst
                 # Weight systematics: same events/mask, different weight branch
+                # weight_JEC{UP,DOWN} removed: JEC is no longer a weight (it
+                # rescales jet pt/mass directly) — the JES systematic is a
+                # kinematic variation, see _kin_systs's 11-source scheme below.
                 _weight_systs = [
                     "weight_pileupUP", "weight_pileupDOWN",
                     "weight_btagUP", "weight_btagDOWN",
@@ -3230,17 +3234,26 @@ class PlotManager:
                     "weight_electronUP", "weight_electronDOWN",
                     "weight_electronHLTUP", "weight_electronHLTDOWN",
                     "weight_metHLTUP", "weight_metHLTDOWN",
-                    "weight_JECUP", "weight_JECDOWN",
                     "weight_pdfUP", "weight_pdfDOWN",
                     "weight_scaleUP", "weight_scaleDOWN",
                 ]
-                # Kinematic systematics: shifted recoil branches (JES/JER)
+                # Kinematic systematics: shifted recoil branches. JES uses
+                # the reduced 11-source scheme (darkbottomline.corrections.
+                # jes_sources(year) — single source of truth, also used by
+                # objects.py/variables.py so branch names stay in sync by
+                # construction; year-suffixed sources carry the REAL year,
+                # e.g. "EC2_2024", not a literal "year" token) — replaces
+                # the old single "Total"-source Recoil_JESUp/Down pair. JER
+                # stays on NanoAOD's own PuppiMET_ptJERUp/Down-derived
+                # branches (JER smearing itself isn't implemented — known,
+                # documented gap).
                 _kin_systs = {
-                    "JESUP":   "Recoil_JESUp",
-                    "JESDOWN": "Recoil_JESDown",
                     "JERUP":   "Recoil_JERUp",
                     "JERDOWN": "Recoil_JERDown",
                 }
+                for _src in jes_sources(self.config.get("year", "")):
+                    _kin_systs[f"JEC{_src}UP"] = f"Recoil_JEC{_src}Up"
+                    _kin_systs[f"JEC{_src}DOWN"] = f"Recoil_JEC{_src}Down"
                 for region_name in target_regions:
                     region_obj = region_manager.regions.get(region_name)
                     if region_obj is None:

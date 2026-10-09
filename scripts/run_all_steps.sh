@@ -22,12 +22,23 @@
 #   scripts/run_all_steps.sh --steps eventsel        # only event selection
 #   scripts/run_all_steps.sh --steps dnn,region      # skip eventsel and combine
 #   scripts/run_all_steps.sh --no-tmux --dry-run     # preview commands, current shell
+#   PARALLEL_JOBS=8 scripts/run_all_steps.sh --steps eventsel
+#                                                     # 8 files at once (Step 1 only)
 #
 # Configure via environment variables (all have defaults below):
 #   YEAR, CONFIG, REGIONS_CONFIG, PLOT_CONFIG, DNN_CONFIG, COMBINE_CONFIG,
-#   RAW_INPUT_DIR, EVENTSEL_DIR, REGION_PLOTS_DIR, VERSION,
+#   RAW_INPUT_DIR, PARALLEL_JOBS, EVENTSEL_DIR, REGION_PLOTS_DIR, VERSION,
 #   DNN_OUTDIR, DNN_PLOT_DIR, XSEC_BKG_JSON, XSEC_SIG_JSON,
 #   SIGNAL_SCALE, COMBINE_ERA, COMBINE_STAGES
+#
+# NOTE on env vars + the default tmux relaunch: the tmux session this script
+# launches itself into does NOT inherit your shell's environment variables
+# (tmux new-session runs a fresh shell, not a child process of the one that
+# set them) — only --dry-run/--steps/positional args survive the relaunch.
+# If you need RAW_INPUT_DIR/CONFIG/PARALLEL_JOBS/etc. to take effect, either
+# export them in a wrapper tmux session you control and pass --no-tmux, or
+# bake them into the CONFIG yaml / a small env file sourced at the top of
+# this script, rather than relying on inline `VAR=... scripts/run_all_steps.sh`.
 
 set -e
 
@@ -131,6 +142,12 @@ DNN_CONFIG=${DNN_CONFIG:-${CONFIG_DIR}/dnn.yaml}
 COMBINE_CONFIG=${COMBINE_CONFIG:-${CONFIG_DIR}/combine.yaml}
 
 RAW_INPUT_DIR=${RAW_INPUT_DIR:-../TestingSamples/NanoAODv15_2024}
+# Step 1 (event selection) runs one `darkbottomline analyze` process per
+# input file; PARALLEL_JOBS controls how many of those run at once via
+# xargs -P. Default 1 = sequential, unchanged from before this existed.
+# This parallelizes ACROSS files, not within one — leave --executor
+# alone (iterative, the default) for each individual file's own run.
+PARALLEL_JOBS=${PARALLEL_JOBS:-1}
 EVENTSEL_DIR=${EVENTSEL_DIR:-outputs/eventsel}
 REGION_PLOTS_DIR=${REGION_PLOTS_DIR:-outputs/region_plots}
 VERSION=${VERSION:-$(date +%Y%m%d)_$(git rev-parse --short HEAD 2>/dev/null || echo local)_${YEAR}}
@@ -246,49 +263,122 @@ if step_enabled eventsel; then
     log "  Input dir  : ${RAW_INPUT_DIR}"
     log "  Output dir : ${EVENTSEL_DIR}"
     log "  Files      : ${#_eventsel_files[@]}"
+    log "  Parallel   : ${PARALLEL_JOBS} job(s) at once"
 
-    _eventsel_n=0
-    _eventsel_fail=0
-    for _f in "${_eventsel_files[@]}"; do
-        _eventsel_n=$((_eventsel_n + 1))
-        _base="$(basename "${_f}" .root)"
-        # strip NanoAOD "___<uuid>" suffix -> clean sample name
-        _sample="${_base%%___*}"
-        _out="${EVENTSEL_DIR}/${_sample}_EVENTSELECTION.root"
+    if [ "${PARALLEL_JOBS}" -le 1 ]; then
+        _eventsel_n=0
+        _eventsel_fail=0
+        for _f in "${_eventsel_files[@]}"; do
+            _eventsel_n=$((_eventsel_n + 1))
+            _base="$(basename "${_f}" .root)"
+            # strip NanoAOD "___<uuid>" suffix -> clean sample name
+            _sample="${_base%%___*}"
+            _out="${EVENTSEL_DIR}/${_sample}_EVENTSELECTION.root"
 
-        _data_flag=""
-        _tag="MC"
-        if [[ "${_base}" =~ ${EVENTSEL_DATA_PATTERN} ]]; then
-            _data_flag="--data"
-            _tag="DATA"
-        fi
+            _data_flag=""
+            _tag="MC"
+            if [[ "${_base}" =~ ${EVENTSEL_DATA_PATTERN} ]]; then
+                _data_flag="--data"
+                _tag="DATA"
+            fi
 
-        log "  [${_eventsel_n}/${#_eventsel_files[@]}] (${_tag}) ${_sample}"
+            log "  [${_eventsel_n}/${#_eventsel_files[@]}] (${_tag}) ${_sample}"
+
+            if [ $DRY_RUN -eq 1 ]; then
+                log "    darkbottomline analyze --mode event-selection --config ${CONFIG} --input ${_f} --event-selection-output ${_out} ${_data_flag}"
+                continue
+            fi
+
+            darkbottomline analyze \
+                --mode event-selection \
+                --config "${CONFIG}" \
+                --input "${_f}" \
+                --event-selection-output "${_out}" \
+                ${_data_flag} \
+                2>&1 | tee -a "${LOG_FILE}"
+            _rc=${PIPESTATUS[0]}
+            if [ ${_rc} -ne 0 ]; then
+                log "    FAILED (rc=${_rc}): ${_f}"
+                _eventsel_fail=$((_eventsel_fail + 1))
+            fi
+        done
 
         if [ $DRY_RUN -eq 1 ]; then
-            log "    darkbottomline analyze --mode event-selection --config ${CONFIG} --input ${_f} --event-selection-output ${_out} ${_data_flag}"
-            continue
+            log "  Dry run complete. ${_eventsel_n} file(s) would be processed."
+        else
+            log "  Done. $((_eventsel_n - _eventsel_fail))/${_eventsel_n} succeeded, ${_eventsel_fail} failed."
+            [ ${_eventsel_fail} -ne 0 ] && handle_error "Event selection failed for ${_eventsel_fail}/${_eventsel_n} file(s)" "Step 1"
         fi
-
-        darkbottomline analyze \
-            --mode event-selection \
-            --config "${CONFIG}" \
-            --input "${_f}" \
-            --event-selection-output "${_out}" \
-            ${_data_flag} \
-            2>&1 | tee -a "${LOG_FILE}"
-        _rc=${PIPESTATUS[0]}
-        if [ ${_rc} -ne 0 ]; then
-            log "    FAILED (rc=${_rc}): ${_f}"
-            _eventsel_fail=$((_eventsel_fail + 1))
-        fi
-    done
-
-    if [ $DRY_RUN -eq 1 ]; then
-        log "  Dry run complete. ${_eventsel_n} file(s) would be processed."
     else
-        log "  Done. $((_eventsel_n - _eventsel_fail))/${_eventsel_n} succeeded, ${_eventsel_fail} failed."
-        [ ${_eventsel_fail} -ne 0 ] && handle_error "Event selection failed for ${_eventsel_fail}/${_eventsel_n} file(s)" "Step 1"
+        # PARALLEL_JOBS>1: fan out across files via xargs -P, one
+        # `darkbottomline analyze` process per file running concurrently.
+        # Each file is an independent, self-contained job (no --executor
+        # futures/dask involved — this parallelizes ACROSS files, not
+        # within one), so this is safe for the single-file-per-sample
+        # iterative path. Per-file output goes to its own log under
+        # ${EVENTSEL_DIR}/_logs/ (36 processes interleaved into one file
+        # would be unreadable); the main log gets one line per file on
+        # completion plus a final summary.
+        _per_file_log_dir="${EVENTSEL_DIR}/_logs"
+        mkdir -p "${_per_file_log_dir}"
+        _eventsel_joblist="$(mktemp)"
+        _n=0
+        for _f in "${_eventsel_files[@]}"; do
+            _n=$((_n + 1))
+            _base="$(basename "${_f}" .root)"
+            _sample="${_base%%___*}"
+            _out="${EVENTSEL_DIR}/${_sample}_EVENTSELECTION.root"
+            _data_flag=""
+            _tag="MC"
+            if [[ "${_base}" =~ ${EVENTSEL_DATA_PATTERN} ]]; then
+                _data_flag="--data"
+                _tag="DATA"
+            fi
+            printf '%s\t%s\t%s\t%s\t%s\t%s\n' "${_n}" "${_tag}" "${_sample}" "${_f}" "${_out}" "${_data_flag}" >> "${_eventsel_joblist}"
+        done
+
+        if [ $DRY_RUN -eq 1 ]; then
+            while IFS=$'\t' read -r _n _tag _sample _f _out _data_flag; do
+                log "  [${_n}/${#_eventsel_files[@]}] (${_tag}) ${_sample}"
+                log "    darkbottomline analyze --mode event-selection --config ${CONFIG} --input ${_f} --event-selection-output ${_out} ${_data_flag}"
+            done < "${_eventsel_joblist}"
+            log "  Dry run complete. ${#_eventsel_files[@]} file(s) would be processed (${PARALLEL_JOBS}-way parallel)."
+            rm -f "${_eventsel_joblist}"
+        else
+            log "  Dispatching ${#_eventsel_files[@]} file(s), ${PARALLEL_JOBS} at a time (per-file logs: ${_per_file_log_dir}/)..."
+            export CONFIG _per_file_log_dir
+            # One shell per job line: run the CLI, log PASS/FAIL (with the
+            # per-file log path) to the shared main log. `xargs -P` runs up
+            # to PARALLEL_JOBS of these concurrently; -I{} with a single
+            # placeholder can't split tab-separated fields, so each worker
+            # re-parses its own input line instead.
+            cat "${_eventsel_joblist}" | xargs -P "${PARALLEL_JOBS}" -I{} -d '\n' bash -c '
+                IFS=$'"'"'\t'"'"' read -r n tag sample f out data_flag <<< "{}"
+                flog="'"${_per_file_log_dir}"'/${sample}.log"
+                darkbottomline analyze \
+                    --mode event-selection \
+                    --config "'"${CONFIG}"'" \
+                    --input "${f}" \
+                    --event-selection-output "${out}" \
+                    ${data_flag} \
+                    > "${flog}" 2>&1
+                rc=$?
+                if [ ${rc} -ne 0 ]; then
+                    echo "[$(date "+%Y-%m-%d %H:%M:%S")]   [${n}] (${tag}) ${sample} FAILED (rc=${rc}) — see ${flog}" >> "'"${LOG_FILE}"'"
+                else
+                    echo "[$(date "+%Y-%m-%d %H:%M:%S")]   [${n}] (${tag}) ${sample} OK" >> "'"${LOG_FILE}"'"
+                fi
+                exit ${rc}
+            '
+            _xargs_rc=$?
+            rm -f "${_eventsel_joblist}"
+            _eventsel_n=${#_eventsel_files[@]}
+            _eventsel_fail=$(grep -c "FAILED (rc=" "${LOG_FILE}" 2>/dev/null || echo 0)
+            log "  Done. $((_eventsel_n - _eventsel_fail))/${_eventsel_n} succeeded, ${_eventsel_fail} failed."
+            if [ ${_xargs_rc} -ne 0 ] || [ "${_eventsel_fail}" -ne 0 ]; then
+                handle_error "Event selection failed for ${_eventsel_fail}/${_eventsel_n} file(s) — see ${_per_file_log_dir}/<sample>.log for each failure" "Step 1"
+            fi
+        fi
     fi
     log "Event selection completed"
 else

@@ -32,7 +32,7 @@ git add "$VERSION_FILE"
 
 BODY_MSG_FILE=$(mktemp)
 trap 'rm -f "$BODY_MSG_FILE"' EXIT
-"${EDITOR:-vi}" "$BODY_MSG_FILE"
+eval "${EDITOR:-vi}" "$BODY_MSG_FILE"
 BODY_MSG=$(cat "$BODY_MSG_FILE")
 
 if [[ -n "$BODY_MSG" ]]; then

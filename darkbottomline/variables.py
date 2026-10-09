@@ -14,6 +14,7 @@ import numpy as np
 import awkward as ak
 from typing import Dict, Any
 from darkbottomline.objects import SENTINEL
+from darkbottomline.corrections import jes_sources
 
 
 # ---------------------------------------------------------------------------
@@ -82,21 +83,32 @@ def _met_variables(events: ak.Array) -> Dict[str, np.ndarray]:
     }
 
 
-def _recoil_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
-    """Recoil pT and phi (precomputed in build_objects), plus JES/JER shifted variants."""
+def _recoil_variables(objects: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, np.ndarray]:
+    """Recoil pT and phi (precomputed in build_objects), plus JES (11-source,
+    see darkbottomline.corrections.jes_sources)/JER shifted variants. The
+    year-suffixed source names (and therefore branch names) depend on
+    config["year"] — must match objects.py's recoil_jes_variants label
+    format exactly (see that module's _jes_label helper)."""
     recoil     = objects.get('recoil')
     recoil_phi = objects.get('recoil_phi')
     n = len(recoil) if recoil is not None else 0
     _zeros = ak.Array(np.zeros(n, dtype=np.float32))
     central = recoil if recoil is not None else _zeros
-    return {
+    out = {
         'Recoil':          _scalar(central),
         'RecoilPhi':       _scalar(recoil_phi if recoil_phi is not None else _zeros),
-        'Recoil_JESUp':   _scalar(objects.get('recoil_JESUp',   central)),
-        'Recoil_JESDown': _scalar(objects.get('recoil_JESDown', central)),
         'Recoil_JERUp':   _scalar(objects.get('recoil_JERUp',   central)),
         'Recoil_JERDown': _scalar(objects.get('recoil_JERDown', central)),
     }
+    # jes_sources() already gives the real-year-suffixed name (e.g.
+    # "EC2_2024") — matches objects.py's _jes_label exactly, no further
+    # munging needed.
+    for source in jes_sources(config.get('year', '')):
+        for direction in ("Up", "Down"):
+            obj_key = f"recoil_JEC{source}{direction}"
+            branch_key = f"Recoil_JEC{source}{direction}"
+            out[branch_key] = _scalar(objects.get(obj_key, central))
+    return out
 
 
 def _multiplicity_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
@@ -370,8 +382,16 @@ _SCALAR_BRANCHES: Dict[str, Any] = {
     'PV_npvsGood': np.int32, 'PV_npvs': np.int32,
     'MET_pt': np.float32, 'MET_phi': np.float32, 'MET_significance': np.float32,
     'Recoil': np.float32, 'RecoilPhi': np.float32,
-    'Recoil_JESUp': np.float32, 'Recoil_JESDown': np.float32,
     'Recoil_JERUp': np.float32, 'Recoil_JERDown': np.float32,
+    # Static schema (used for empty-event placeholder files, no runtime
+    # config/year available here) — covers every year this framework has a
+    # configs/<year>.yaml for, so whichever year a given run actually uses,
+    # its Recoil_JEC<source>_<year>Up/Down branch names are already present.
+    **{
+        f"Recoil_JEC{src}{direction}": np.float32
+        for _year in (2022, 2023, 2024, 2025, 2026)
+        for src in jes_sources(_year) for direction in ("Up", "Down")
+    },
     'costheta_star': np.float32,
     'njets': np.int32, 'n_bjets': np.int32, 'n_muons': np.int32,
     'n_electrons': np.int32, 'n_tight_muons': np.int32, 'n_tight_electrons': np.int32,
@@ -501,7 +521,7 @@ def compute_event_variables(
     out.update(met_vars)
 
     # --- Recoil ---
-    out.update(_recoil_variables(objects))
+    out.update(_recoil_variables(objects, config))
 
     # --- cos(theta*) ---
     try:

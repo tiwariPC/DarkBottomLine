@@ -27,6 +27,44 @@ except ImportError:
     _SCHEMAV2_AVAILABLE = False
 
 
+# Reduced 11-source JES uncertainty scheme (JetMET POG grouping for analyses
+# only mildly sensitive to JES): 6 sources fully correlated across all data-
+# taking periods (no year suffix), plus 5 sources uncorrelated across
+# periods (year-suffixed — e.g. "Absolute_2024" for a 2024 config,
+# "Absolute_2023" for 2023; the year comes from config["year"], NOT a
+# hardcoded constant, since this framework has a configs/*.yaml per year
+# from 2022 through 2026). Each name must match a
+# "{tag}_Regrouped_{name}_{algo}" correction in the jetJEC file (confirmed
+# present as Summer24Prompt24_V5_MC_Regrouped_{name}_AK4PFPuppi for 2024;
+# verify the equivalent exists in each other year's jet_jerc.json.gz before
+# relying on this for a non-2024 config).
+#
+# Single source of truth: darkbottomline/objects.py (the 11x2=22-variant
+# shifted-recoil rebuild), darkbottomline/variables.py (branch naming) and
+# darkbottomline/plotting.py (_kin_systs) all call jes_sources(year) rather
+# than redefining this list, so the three stay in sync by construction.
+_JES_SOURCES_UNCORRELATED = ("Absolute", "BBEC1", "EC2", "HF", "FlavorQCD", "RelativeBal")
+_JES_SOURCES_YEAR_SUFFIXED_BASE = ("Absolute", "BBEC1", "EC2", "HF", "RelativeSample")
+
+
+def jes_sources(year) -> "tuple[str, ...]":
+    """11 reduced-scheme JES uncertainty source names for the given data-taking
+    year (int or str, e.g. 2024 or "2024") — 6 fully-correlated + 5 that are
+    uncorrelated across years and therefore year-suffixed with the real year
+    (e.g. "Absolute_2024"). The JetMET POG table writes this suffix
+    generically as "_year" (meaning "gets a per-year suffix"), but both the
+    jetJEC correction-file lookup ("{tag}_Regrouped_{name}_{algo}") and this
+    framework's branch-naming convention use the REAL year number, not the
+    literal word "year" — so these names double as both the correction-file
+    lookup key and (with a "JEC" prefix) the branch-label source, no
+    separate label-conversion step needed. See the module-level comment
+    above for the full scheme description."""
+    year_str = str(year)
+    return _JES_SOURCES_UNCORRELATED + tuple(
+        f"{src}_{year_str}" for src in _JES_SOURCES_YEAR_SUFFIXED_BASE
+    )
+
+
 def _to_edge_float(x: Any) -> float:
     """Convert correctionlib edge value to float for ordering."""
     if isinstance(x, (int, float)):
@@ -890,139 +928,439 @@ class CorrectionManager:
                 continue
         return None
 
-    def get_jet_jec_weight_nominal_up_down(
+    # ------------------------------------------------------------------
+    # JEC: proper jet-pT/mass rescaling + Type-1 MET recompute.
+    #
+    # NanoAOD's stored Jet_pt/Jet_mass are ALREADY JEC-corrected at central
+    # production. The old get_jet_jec_weight_nominal_up_down (removed) took
+    # the OLD, already-corrected Jet_pt as input to the L1L2L3Res compound
+    # correction and used the result as a per-event WEIGHT — this silently
+    # double-counted the correction (measured +37% inflation on a real DY
+    # sample, scaling with njets) and never touched jet pt, so njets/n_bjets
+    # category assignment never reflected any JEC update either.
+    #
+    # Per the official JERC recommendation (user-provided): "undo the
+    # existing JECs and reapply the recommended versions" — i.e. recover
+    # raw pt via Jet_rawFactor, then reapply the full chain from scratch.
+    # Jet ID is unaffected by any of this: its energy-fraction branches
+    # (Jet_chHEF etc.) are ratios invariant under the jet's overall pt/mass
+    # rescaling, and get_jet_id_mask already reads them straight from
+    # NanoAOD without recomputing — no interaction with the code below.
+    #
+    # JER smearing is intentionally NOT implemented (TODO(JER) below) —
+    # deriving it requires GenJet dR/pt-window matching (hybrid method) or
+    # Gaussian stochastic smearing when unmatched, a separate, non-trivial
+    # procedure from the JEC chain. Central jets here are JES-corrected but
+    # unsmeared; see the project plan doc for the explicit scope decision.
+    # ------------------------------------------------------------------
+
+    def _evaluate_jec_chain(
         self,
-        jets: ak.Array,
-        events: ak.Array,
-    ) -> Dict[str, ak.Array]:
+        flat_raw_pt: np.ndarray,
+        flat_eta: np.ndarray,
+        flat_phi: np.ndarray,
+        flat_area: np.ndarray,
+        flat_rho: np.ndarray,
+        flat_run: Optional[np.ndarray],
+        is_data: bool,
+        jes_source: Optional[str] = None,
+        jes_direction: Optional[str] = None,
+    ) -> Optional[np.ndarray]:
         """
-        Get per-event JEC weights (central, up, down) as product of per-jet JEC factors.
-        Central: compound L1L2L3Res correction. Inputs are read from the correction
-        object by name (MC: JetA, JetEta, JetPt, Rho, JetPhi; DATA adds run).
-        Up/down: central factor * (1 ± Total uncertainty).
+        Per-jet JEC chain (Type1MET.pdf steps 3-6) on an ALREADY raw,
+        muon-subtracted flat pT array: L1FastJet -> L2Relative ->
+        [L2L3Residual if data] -> [(1 +- source uncertainty) if
+        jes_source given, else central/unvaried]. Returns the corrected
+        flat pt array (same shape as flat_raw_pt), or None if the required
+        individual (non-compound) correction entries aren't found.
+
+        jes_source: None for central (JES-corrected, no variation). A
+        regrouped-source name ("Absolute", "BBEC1_2024", ...) together with
+        jes_direction ("up"/"down") applies that source's fractional
+        uncertainty via Regrouped_{source} (correctionlib "up"/"down"
+        systematic on that single correction object) instead of the
+        unvaried chain — used only by the 11-source JES systematic rebuild,
+        not by the nominal/central path.
         """
-        n_events = len(events)
-        ones = ak.Array(np.ones(n_events, dtype=float))
-        out = {"central": ones, "up": ones, "down": ones}
-        if "jetJEC" not in self.corrections:
-            return out
-        cs = self.corrections["jetJEC"]
         corr_cfg = self.config.get("corrections", {})
         tag = corr_cfg.get("jetJEC_tag", "")
-        level = corr_cfg.get("jetJEC_level", "L1L2L3Res")
         algo = corr_cfg.get("jetJEC_algo", "AK4PFPuppi")
-        unc_name = corr_cfg.get("jetJEC_unc", "Total")
-        is_data = bool(self.config.get("data", {}).get("is_data", False))
-        compound_keys = list(cs.compound.keys()) if hasattr(cs, "compound") else []
+        if "jetJEC" not in self.corrections or not tag:
+            return None
+        cs = self.corrections["jetJEC"]
         correction_keys = list(cs.keys())
+        flavor = "_DATA_" if is_data else "_MC_"
 
-        def _pick_compound_key(name: str) -> Optional[str]:
-            exact_key = f"{tag}_{name}_{algo}" if tag else None
-            if exact_key and exact_key in cs.compound:
-                return exact_key
-
-            preferred_flavor = "_DATA_" if is_data else "_MC_"
-            for candidate in compound_keys:
-                if preferred_flavor in candidate and candidate.endswith(f"{name}_{algo}"):
+        def _pick_key(level_name: str) -> Optional[str]:
+            exact = f"{tag}_{level_name}_{algo}"
+            if exact in correction_keys:
+                return exact
+            for candidate in correction_keys:
+                if flavor in candidate and candidate.endswith(f"{level_name}_{algo}"):
                     return candidate
-
-            for candidate in compound_keys:
-                if candidate.endswith(f"{name}_{algo}"):
+            for candidate in correction_keys:
+                if candidate.endswith(f"{level_name}_{algo}"):
                     return candidate
+            return None
 
-            return exact_key
-
-        n_flat = len(ak.ravel(jets.pt))
-        if n_flat == 0:
-            return out
-
-        flat_pt = np.asarray(ak.ravel(jets.pt), dtype=float)
-        flat_eta = np.asarray(ak.ravel(jets.eta), dtype=float)
         try:
-            flat_phi = np.asarray(ak.ravel(jets.phi), dtype=float)
-        except Exception:
-            flat_phi = np.zeros(n_flat)
-        try:
-            flat_area = np.asarray(ak.ravel(jets.area), dtype=float)
-        except Exception:
-            flat_area = np.full(n_flat, 0.5)
-        counts = np.asarray(ak.num(jets.pt, axis=1))
-        rho_per_event = self._get_rho(events)
-        flat_rho = np.repeat(rho_per_event, counts) if rho_per_event is not None else np.full(n_flat, 15.0)
+            l1_key = _pick_key("L1FastJet")
+            l2_key = _pick_key("L2Relative")
+            if l1_key is None or l2_key is None:
+                return None
+            l1_corr = cs[l1_key]
+            l2_corr = cs[l2_key]
 
-        # Compound JEC correction (central)
-        jec_central = np.ones(n_flat, dtype=float)
-        compound_key = _pick_compound_key(level)
-        try:
-            if compound_key and compound_key in cs.compound:
-                sf_obj = cs.compound[compound_key]
-            else:
-                sf_obj = cs.compound[compound_keys[0]] if compound_keys else None
-            if sf_obj is not None:
-                if isinstance(sf_obj, str):
-                    sf_obj = cs.compound[sf_obj]
-                # Input order/count is correction-specific; read from the object.
-                # MC L1L2L3Res: JetA, JetEta, JetPt, Rho, JetPhi.
-                # DATA adds a trailing 'run' input.
-                input_names = [i.name for i in sf_obj.inputs]
+            def _eval_factor(corr, pt_in: np.ndarray) -> np.ndarray:
+                """correctionlib JEC levels return a multiplicative FACTOR
+                (close to 1.0), not a corrected pT — the running pT must be
+                multiplied by this, not replaced with it."""
+                input_names = [i.name for i in corr.inputs]
                 arg_map = {
-                    "JetA": flat_area, "JetEta": flat_eta, "JetPt": flat_pt,
+                    "JetA": flat_area, "JetEta": flat_eta, "JetPt": pt_in,
                     "Rho": flat_rho, "JetPhi": flat_phi,
-                    "run": np.repeat(
-                        np.asarray(ak.to_numpy(events["run"]), dtype=float)
-                        if "run" in events.fields else np.ones(n_events),
-                        counts,
-                    ),
+                    "run": flat_run if flat_run is not None else np.ones_like(pt_in),
                 }
                 args = [arg_map[name] for name in input_names]
-                jec_central = np.asarray(sf_obj.evaluate(*args), dtype=float)
-        except Exception as e:
-            logging.warning(f"JEC compound correction evaluation failed: {e}")
+                return np.asarray(corr.evaluate(*args), dtype=float)
 
-        # JEC Total uncertainty (for up/down)
-        jec_unc = np.zeros(n_flat, dtype=float)
-        unc_key_full = f"{tag}_{unc_name}_{algo}" if tag else None
-        if not unc_key_full or unc_key_full not in correction_keys:
-            preferred_flavor = "_DATA_" if is_data else "_MC_"
-            for candidate in correction_keys:
-                if preferred_flavor in candidate and candidate.endswith(f"{unc_name}_{algo}"):
-                    unc_key_full = candidate
-                    break
+            p_l1 = flat_raw_pt * _eval_factor(l1_corr, flat_raw_pt)
+            p_2 = p_l1 * _eval_factor(l2_corr, p_l1)
+
+            if is_data:
+                res_key = _pick_key("L2L3Residual")
+                p_out = p_2 * _eval_factor(cs[res_key], p_2) if res_key is not None else p_2
             else:
-                for candidate in correction_keys:
-                    if candidate.endswith(f"{unc_name}_{algo}"):
-                        unc_key_full = candidate
-                        break
-        try:
-            unc_obj = cs[unc_key_full] if unc_key_full and unc_key_full in correction_keys else None
-            if unc_obj is not None:
-                jec_unc = np.asarray(
-                    unc_obj.evaluate(flat_eta, flat_pt * jec_central), dtype=float
-                )
+                p_out = p_2
+                if jes_source is not None and jes_direction is not None:
+                    regrouped_key = f"{tag}_Regrouped_{jes_source}_{algo}"
+                    if regrouped_key not in correction_keys:
+                        for candidate in correction_keys:
+                            if candidate.endswith(f"Regrouped_{jes_source}_{algo}"):
+                                regrouped_key = candidate
+                                break
+                        else:
+                            return None
+                    unc_corr = cs[regrouped_key]
+                    # Regrouped_{source} takes only (JetEta, JetPt) and
+                    # returns the fractional uncertainty MAGNITUDE (no
+                    # "up"/"down" argument) — the +/- direction is applied
+                    # here, not passed into evaluate().
+                    delta = np.asarray(
+                        unc_corr.evaluate(flat_eta, p_2), dtype=float
+                    )
+                    p_out = p_2 * (1.0 + delta) if jes_direction == "up" else p_2 * (1.0 - delta)
+            return p_out
         except Exception as e:
-            logging.warning(f"JEC uncertainty evaluation failed: {e}")
+            logging.warning(f"JEC chain evaluation failed: {e}")
+            return None
 
-        for key, factors in [
-            ("central", jec_central),
-            ("up", jec_central * (1.0 + jec_unc)),
-            ("down", jec_central * (1.0 - jec_unc)),
-        ]:
-            out[key] = self._per_event_product(ak.unflatten(ak.Array(factors), counts))
-        return out
+    def get_corrected_jet_pt_mass(
+        self, events: ak.Array, jets: Optional[ak.Array] = None,
+        jes_source: Optional[str] = None, jes_direction: Optional[str] = None,
+    ) -> Optional["tuple[ak.Array, ak.Array]"]:
+        """
+        Recover raw pt (Jet_pt * (1 - Jet_rawFactor)), muon-subtract, and
+        reapply the JEC chain from scratch (see module-level note above).
+        Returns (corrected_pt, corrected_mass) as jagged arrays matching
+        events["Jet_pt"]'s structure, or None if jetJEC isn't configured or
+        the required branches are missing (callers fall back to raw
+        Jet_pt/Jet_mass, same "no correction, old behavior" philosophy as
+        get_jet_id_mask). TODO(JER): corrected_pt is JES-corrected but not
+        JER-smeared (see module-level note above).
 
-    def get_jet_jec_weight(
-        self,
-        jets: ak.Array,
-        events: ak.Array,
-        systematic: str = "central",
-    ) -> ak.Array:
-        """Get per-event JEC weight (central, up, or down)."""
-        var = self.get_jet_jec_weight_nominal_up_down(jets, events)
-        if systematic == "up":
-            return var["up"]
-        if systematic == "down":
-            return var["down"]
-        return var["central"]
+        jes_source/jes_direction: forwarded to _evaluate_jec_chain for the
+        11-source JES systematic rebuild; leave both None for central.
+        """
+        if "jetJEC" not in self.corrections:
+            return None
+        required = ("Jet_pt", "Jet_eta", "Jet_phi", "Jet_rawFactor")
+        if any(b not in events.fields for b in required):
+            return None
+        try:
+            jet_pt = events["Jet_pt"]
+            n_flat = len(ak.ravel(jet_pt))
+            if n_flat == 0:
+                return jet_pt, events["Jet_mass"] if "Jet_mass" in events.fields else ak.zeros_like(jet_pt)
+
+            flat_pt = np.asarray(ak.ravel(jet_pt), dtype=float)
+            flat_eta = np.asarray(ak.ravel(events["Jet_eta"]), dtype=float)
+            flat_phi = np.asarray(ak.ravel(events["Jet_phi"]), dtype=float)
+            flat_rawfactor = np.asarray(ak.ravel(events["Jet_rawFactor"]), dtype=float)
+            flat_musub = (
+                np.asarray(ak.ravel(events["Jet_muonSubtrFactor"]), dtype=float)
+                if "Jet_muonSubtrFactor" in events.fields else np.zeros(n_flat)
+            )
+            flat_area = (
+                np.asarray(ak.ravel(events["Jet_area"]), dtype=float)
+                if "Jet_area" in events.fields else np.full(n_flat, 0.5)
+            )
+            counts = np.asarray(ak.num(jet_pt, axis=1))
+            rho_per_event = self._get_rho(events)
+            flat_rho = np.repeat(rho_per_event, counts) if rho_per_event is not None else np.full(n_flat, 15.0)
+            is_data = bool(self.config.get("data", {}).get("is_data", False))
+            flat_run = (
+                np.repeat(np.asarray(ak.to_numpy(events["run"]), dtype=float), counts)
+                if is_data and "run" in events.fields else None
+            )
+
+            flat_raw_pt = flat_pt * (1.0 - flat_rawfactor)
+            flat_raw_pt_musub = flat_raw_pt * (1.0 - flat_musub)
+
+            corrected_flat_pt = self._evaluate_jec_chain(
+                flat_raw_pt_musub, flat_eta, flat_phi, flat_area, flat_rho,
+                flat_run, is_data, jes_source=jes_source, jes_direction=jes_direction,
+            )
+            if corrected_flat_pt is None:
+                return None
+
+            corrected_pt = ak.unflatten(ak.Array(corrected_flat_pt), counts)
+            # Scale mass by the same overall pt ratio to keep mass/pt
+            # consistent (JEC rescales the full 4-vector uniformly).
+            if "Jet_mass" in events.fields:
+                flat_mass = np.asarray(ak.ravel(events["Jet_mass"]), dtype=float)
+                safe_pt = np.where(flat_pt != 0.0, flat_pt, 1.0)
+                corrected_flat_mass = flat_mass * (corrected_flat_pt / safe_pt)
+                corrected_mass = ak.unflatten(ak.Array(corrected_flat_mass), counts)
+            else:
+                corrected_mass = ak.zeros_like(corrected_pt)
+            return corrected_pt, corrected_mass
+        except Exception as e:
+            logging.warning(f"Failed to compute corrected jet pt/mass: {e}")
+            return None
+
+    def get_type1_met_shift(
+        self, events: ak.Array,
+        jes_source: Optional[str] = None, jes_direction: Optional[str] = None,
+    ) -> Optional["tuple[np.ndarray, np.ndarray]"]:
+        """
+        Type-1 MET shift (Type1MET.pdf Sec 1.2-1.5): per-event
+        (delta_met_x, delta_met_y) to ADD to baseline MET_x/y (sign already
+        folded in below — see the per-jet accumulation). Propagates the
+        Jet branch UNION CorrT1METJet branch (merged, uniformly processed)
+        through the same JEC chain as get_corrected_jet_pt_mass, computing
+        ΔpT = p_full - p_L1 per eligible jet (p_full > 15 GeV, |eta| < 5.2,
+        EM fraction < 0.9 where available — CorrT1METJet has no
+        chEmEF/neEmEF branches in this NanoAOD version, so that cut is
+        skipped for those entries per the PDF's own footnote).
+        Returns None if jetJEC isn't configured or MET/jet branches are
+        missing. TODO(JER): p_full is JES-corrected but not JER-smeared.
+        """
+        if "jetJEC" not in self.corrections:
+            return None
+        if not all(b in events.fields for b in ("Jet_pt", "Jet_eta", "Jet_phi", "Jet_rawFactor")):
+            return None
+        try:
+            is_data = bool(self.config.get("data", {}).get("is_data", False))
+            n_events = len(events)
+
+            def _jet_branch_inputs():
+                """(raw_pt_musub, eta, phi, area, muonSubtrDeltaPhi, em_frac_or_none, counts) for Jet_*."""
+                jet_pt = events["Jet_pt"]
+                counts = np.asarray(ak.num(jet_pt, axis=1))
+                flat_pt = np.asarray(ak.ravel(jet_pt), dtype=float)
+                n_flat = len(flat_pt)
+                flat_rawfactor = np.asarray(ak.ravel(events["Jet_rawFactor"]), dtype=float)
+                flat_musub = (
+                    np.asarray(ak.ravel(events["Jet_muonSubtrFactor"]), dtype=float)
+                    if "Jet_muonSubtrFactor" in events.fields else np.zeros(n_flat)
+                )
+                flat_raw_pt = flat_pt * (1.0 - flat_rawfactor)
+                flat_raw_pt_musub = flat_raw_pt * (1.0 - flat_musub)
+                flat_eta = np.asarray(ak.ravel(events["Jet_eta"]), dtype=float)
+                flat_phi = np.asarray(ak.ravel(events["Jet_phi"]), dtype=float)
+                flat_area = (
+                    np.asarray(ak.ravel(events["Jet_area"]), dtype=float)
+                    if "Jet_area" in events.fields else np.full(n_flat, 0.5)
+                )
+                flat_dphi = (
+                    np.asarray(ak.ravel(events["Jet_muonSubtrDeltaPhi"]), dtype=float)
+                    if "Jet_muonSubtrDeltaPhi" in events.fields else np.zeros(n_flat)
+                )
+                if "Jet_chEmEF" in events.fields and "Jet_neEmEF" in events.fields:
+                    flat_emfrac = (
+                        np.asarray(ak.ravel(events["Jet_chEmEF"]), dtype=float)
+                        + np.asarray(ak.ravel(events["Jet_neEmEF"]), dtype=float)
+                    )
+                else:
+                    flat_emfrac = None
+                return flat_raw_pt_musub, flat_eta, flat_phi, flat_area, flat_dphi, flat_emfrac, counts
+
+            def _corrt1_branch_inputs():
+                """Same tuple shape as above, for CorrT1METJet_* (EM fraction always None)."""
+                if "CorrT1METJet_rawPt" not in events.fields:
+                    return None
+                pt_ref = events["CorrT1METJet_rawPt"]
+                counts = np.asarray(ak.num(pt_ref, axis=1))
+                flat_rawpt = np.asarray(ak.ravel(pt_ref), dtype=float)
+                n_flat = len(flat_rawpt)
+                flat_musub = (
+                    np.asarray(ak.ravel(events["CorrT1METJet_muonSubtrFactor"]), dtype=float)
+                    if "CorrT1METJet_muonSubtrFactor" in events.fields else np.zeros(n_flat)
+                )
+                flat_raw_pt_musub = flat_rawpt * (1.0 - flat_musub)
+                flat_eta = np.asarray(ak.ravel(events["CorrT1METJet_eta"]), dtype=float)
+                flat_phi = np.asarray(ak.ravel(events["CorrT1METJet_phi"]), dtype=float)
+                flat_area = (
+                    np.asarray(ak.ravel(events["CorrT1METJet_area"]), dtype=float)
+                    if "CorrT1METJet_area" in events.fields else np.full(n_flat, 0.5)
+                )
+                flat_dphi = (
+                    np.asarray(ak.ravel(events["CorrT1METJet_muonSubtrDeltaPhi"]), dtype=float)
+                    if "CorrT1METJet_muonSubtrDeltaPhi" in events.fields else np.zeros(n_flat)
+                )
+                return flat_raw_pt_musub, flat_eta, flat_phi, flat_area, flat_dphi, None, counts
+
+            parts = [_jet_branch_inputs()]
+            corrt1 = _corrt1_branch_inputs()
+            if corrt1 is not None:
+                parts.append(corrt1)
+
+            rho_per_event = self._get_rho(events)
+            flat_run_full = (
+                np.asarray(ak.to_numpy(events["run"]), dtype=float)
+                if is_data and "run" in events.fields else None
+            )
+
+            delta_met_x = np.zeros(n_events, dtype=float)
+            delta_met_y = np.zeros(n_events, dtype=float)
+            for raw_pt_musub, eta, phi, area, dphi, emfrac, counts in parts:
+                n_flat = len(raw_pt_musub)
+                if n_flat == 0:
+                    continue
+                flat_rho = np.repeat(rho_per_event, counts) if rho_per_event is not None else np.full(n_flat, 15.0)
+                flat_run = np.repeat(flat_run_full, counts) if flat_run_full is not None else None
+
+                p_l1 = self._eval_l1_only(raw_pt_musub, eta, phi, area, flat_rho, flat_run, is_data)
+                if p_l1 is None:
+                    continue
+                p_full = self._evaluate_jec_chain(
+                    raw_pt_musub, eta, phi, area, flat_rho, flat_run, is_data,
+                    jes_source=jes_source, jes_direction=jes_direction,
+                )
+                if p_full is None:
+                    continue
+
+                eligible = (p_full > 15.0) & (np.abs(eta) < 5.2)
+                if emfrac is not None:
+                    eligible &= (emfrac < 0.9)
+
+                delta_pt = np.where(eligible, p_full - p_l1, 0.0)
+                event_idx = np.repeat(np.arange(len(counts)), counts)
+                np.subtract.at(delta_met_x, event_idx, delta_pt * np.cos(phi + dphi))
+                np.subtract.at(delta_met_y, event_idx, delta_pt * np.sin(phi + dphi))
+
+            return delta_met_x, delta_met_y
+        except Exception as e:
+            logging.warning(f"Failed to compute Type-1 MET shift: {e}")
+            return None
+
+    def _eval_l1_only(
+        self, flat_raw_pt, flat_eta, flat_phi, flat_area, flat_rho, flat_run, is_data,
+    ) -> Optional[np.ndarray]:
+        """L1FastJet-only correction (Type1MET.pdf's p_L1, the ΔpT baseline)."""
+        corr_cfg = self.config.get("corrections", {})
+        tag = corr_cfg.get("jetJEC_tag", "")
+        algo = corr_cfg.get("jetJEC_algo", "AK4PFPuppi")
+        if "jetJEC" not in self.corrections or not tag:
+            return None
+        cs = self.corrections["jetJEC"]
+        correction_keys = list(cs.keys())
+        flavor = "_DATA_" if is_data else "_MC_"
+
+        def _pick_key(level_name: str) -> Optional[str]:
+            exact = f"{tag}_{level_name}_{algo}"
+            if exact in correction_keys:
+                return exact
+            for candidate in correction_keys:
+                if flavor in candidate and candidate.endswith(f"{level_name}_{algo}"):
+                    return candidate
+            for candidate in correction_keys:
+                if candidate.endswith(f"{level_name}_{algo}"):
+                    return candidate
+            return None
+
+        try:
+            l1_key = _pick_key("L1FastJet")
+            if l1_key is None:
+                return None
+            l1_corr = cs[l1_key]
+            input_names = [i.name for i in l1_corr.inputs]
+            arg_map = {
+                "JetA": flat_area, "JetEta": flat_eta, "JetPt": flat_raw_pt,
+                "Rho": flat_rho, "JetPhi": flat_phi,
+                "run": flat_run if flat_run is not None else np.ones_like(flat_raw_pt),
+            }
+            args = [arg_map[name] for name in input_names]
+            l1_factor = np.asarray(l1_corr.evaluate(*args), dtype=float)
+            return flat_raw_pt * l1_factor
+        except Exception as e:
+            logging.warning(f"L1FastJet-only evaluation failed: {e}")
+            return None
+
+    def get_jet_veto_mask(self, events: ak.Array) -> Optional[ak.Array]:
+        """
+        Per-EVENT jet-veto-map mask (True = event falls in a vetoed
+        detector region). NOTE: not yet wired into event selection —
+        this method exists, is callable, and is unit-testable, but
+        build_objects/processor.py deliberately do NOT call it this pass
+        (see project plan doc for the explicit scope decision). Mandatory
+        for Run 3 analyses per JME recommendations once activated.
+
+        Uses the manual tightLepVeto-equivalent jet-ID WP (NanoAODv15 has
+        no Jet_jetId branch) + (chEmEF + neEmEF) < 0.9 + jet pt_min as the
+        "minimal selection" gating which jets are checked against the map
+        (config.corrections.jetvetomaps / jetvetomaps_name).
+        """
+        if "jetvetomaps" not in self.corrections:
+            return None
+        required = ("Jet_pt", "Jet_eta", "Jet_phi", "Jet_chEmEF", "Jet_neEmEF",
+                    "Jet_chHEF", "Jet_neHEF", "Jet_muEF", "Jet_chMultiplicity", "Jet_neMultiplicity")
+        if any(b not in events.fields for b in required):
+            return None
+        try:
+            jetid_corr = self._get_correction_by_name(
+                "jetid", "jetvetomaps_jetid_name", ("AK4PUPPI_TightLeptonVeto",)
+            )
+            pt_mask = events["Jet_pt"] > self.config.get("objects", {}).get("jets", {}).get("pt_min", 15.0)
+            em_mask = (events["Jet_chEmEF"] + events["Jet_neEmEF"]) < 0.9
+            minimal_mask = pt_mask & em_mask
+            if jetid_corr is not None:
+                id_result = self._evaluate_correction_jagged_or_flat(
+                    jetid_corr, events["Jet_pt"],
+                    events["Jet_eta"], events["Jet_chHEF"], events["Jet_neHEF"],
+                    events["Jet_chEmEF"], events["Jet_neEmEF"], events["Jet_muEF"],
+                    events["Jet_chMultiplicity"], events["Jet_neMultiplicity"],
+                    events["Jet_chMultiplicity"] + events["Jet_neMultiplicity"],
+                )
+                if id_result is not None:
+                    minimal_mask = minimal_mask & ak.values_astype(id_result, bool)
+
+            cs = self.corrections["jetvetomaps"]
+            name = self.config.get("corrections", {}).get("jetvetomaps_name")
+            if not name:
+                keys = list(cs.keys()) if hasattr(cs, "keys") else []
+                name = keys[0] if keys else None
+            if name is None:
+                return None
+            vetomap_corr = cs[name]
+
+            eta = events["Jet_eta"][minimal_mask]
+            phi = events["Jet_phi"][minimal_mask]
+            flat_eta = np.asarray(ak.ravel(eta), dtype=float)
+            flat_phi = np.asarray(ak.ravel(phi), dtype=float)
+            n_flat = len(flat_eta)
+            if n_flat == 0:
+                return ak.Array(np.zeros(len(events), dtype=bool))
+            flat_veto = np.asarray(
+                vetomap_corr.evaluate("jetvetomap", flat_eta, flat_phi), dtype=float
+            )
+            counts = np.asarray(ak.num(eta, axis=1))
+            per_jet_veto = ak.unflatten(flat_veto != 0.0, counts)
+            return ak.values_astype(ak.any(per_jet_veto, axis=1), bool)
+        except Exception as e:
+            logging.warning(f"Failed to evaluate jet veto map: {e}")
+            return None
 
     def _per_event_product(self, jagged_sf: ak.Array) -> ak.Array:
         """
@@ -1109,7 +1447,7 @@ class CorrectionManager:
         Compute total event weight and per-systematic up/down variations.
 
         full_event_weight = genweight * weight_pileup * weight_btag * weight_muon
-                            * weight_electron * weight_electronHLT * weight_metHLT * weight_JEC
+                            * weight_electron * weight_electronHLT * weight_metHLT
 
         For each component X:
             weight_XUP   = (full_event_weight / weight_X_central) * weight_X_up
@@ -1119,7 +1457,14 @@ class CorrectionManager:
         weight_btagUP/DOWN (combined), weight_btag_trueUP/DOWN (true b-jets
         only), weight_btag_mistagUP/DOWN (c+light jets only), weight_muonUP/
         DOWN, weight_electronUP/DOWN, weight_electronHLTUP/DOWN,
-        weight_metHLTUP/DOWN, weight_JECUP/DOWN.
+        weight_metHLTUP/DOWN.
+
+        JEC is NOT an event weight (see the module-level note above
+        get_corrected_jet_pt_mass): it rescales jet pt/mass directly
+        (objects.py's build_jet_collection/select_jets), so there's no
+        weight_JEC component here. The JES systematic (11-source reduced
+        scheme) is a kinematic variation — shifted Recoil_JEC<Source>Up/Down
+        branches, not a weight — see objects.py/variables.py.
         """
         n_events = len(events)
         ones = ak.Array(np.ones(n_events, dtype=float))
@@ -1234,15 +1579,7 @@ class CorrectionManager:
         else:
             w_met_hlt = w_met_hlt_up = w_met_hlt_down = ones
 
-        # JEC
-        jets = objects.get("jets")
-        if jets is not None and len(ak.ravel(jets.pt)) > 0:
-            jec_var = self.get_jet_jec_weight_nominal_up_down(jets, events)
-            w_jec, w_jec_up, w_jec_down = jec_var["central"], jec_var["up"], jec_var["down"]
-        else:
-            w_jec = w_jec_up = w_jec_down = ones
-
-        sf_weight = w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_met_hlt * w_jec
+        sf_weight = w_pu * w_btag * w_muon * w_electron * w_ele_hlt * w_met_hlt
         full_event_weight = genweight * sf_weight
 
         def _vary(total, central, variation):
@@ -1279,8 +1616,6 @@ class CorrectionManager:
             "weight_electronHLTDOWN": _vary(full_event_weight, w_ele_hlt, w_ele_hlt_down),
             "weight_metHLTUP": _vary(full_event_weight, w_met_hlt, w_met_hlt_up),
             "weight_metHLTDOWN": _vary(full_event_weight, w_met_hlt, w_met_hlt_down),
-            "weight_JECUP": _vary(full_event_weight, w_jec, w_jec_up),
-            "weight_JECDOWN": _vary(full_event_weight, w_jec, w_jec_down),
             "weight_pdfUP":   (_fw * pdf_scale["pdf_up"]).astype(np.float32),
             "weight_pdfDOWN": (_fw * pdf_scale["pdf_down"]).astype(np.float32),
             "weight_scaleUP":   (_fw * pdf_scale["scale_up"]).astype(np.float32),
