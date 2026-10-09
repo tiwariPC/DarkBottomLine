@@ -99,6 +99,28 @@ def build_jet_collection(events: ak.Array, config: Dict[str, Any], corrections: 
         fields["hadronFlavour"] = events["Jet_hadronFlavour"]
     elif "Jet_partonFlavour" in events.fields:
         fields["hadronFlavour"] = events["Jet_partonFlavour"]
+    # Raw-level inputs needed to re-derive/audit JEC, jet-ID and Type-1 MET
+    # from EVENTSELECTION.root later WITHOUT rerunning from raw NanoAOD
+    # (these are not otherwise saved anywhere downstream — see
+    # darkbottomline/variables.py's _jagged_variables, which reads whatever
+    # fields exist on this "jets" object). Carried through unchanged
+    # regardless of the JEC correction's own corrected pt/mass above, so the
+    # saved raw_pt/rawFactor etc. always reflect the true NanoAOD input.
+    for raw_field, src_branch in (
+        ("rawFactor", "Jet_rawFactor"),
+        ("area", "Jet_area"),
+        ("muonSubtrFactor", "Jet_muonSubtrFactor"),
+        ("muonSubtrDeltaPhi", "Jet_muonSubtrDeltaPhi"),
+        ("chHEF", "Jet_chHEF"),
+        ("neHEF", "Jet_neHEF"),
+        ("chEmEF", "Jet_chEmEF"),
+        ("neEmEF", "Jet_neEmEF"),
+        ("muEF", "Jet_muEF"),
+        ("chMultiplicity", "Jet_chMultiplicity"),
+        ("neMultiplicity", "Jet_neMultiplicity"),
+    ):
+        if src_branch in events.fields:
+            fields[raw_field] = events[src_branch]
     return ak.zip(fields)
 
 

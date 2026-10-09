@@ -334,6 +334,40 @@ def _genmodel_variables(events: ak.Array) -> Dict[str, np.ndarray]:
     return out
 
 
+# Raw-level inputs needed to re-derive/audit JEC, jet-ID and Type-1 MET from
+# EVENTSELECTION.root without rerunning from raw NanoAOD. CorrT1METJet_* is
+# NanoAOD's separate low-pT MET-specific jet collection (not part of the
+# analysis's "jets" object, so it doesn't go through _jagged_variables'
+# objects-dict path above) and fixedGridRhoFastjetAll is an event-level
+# scalar (pileup density input to the L1FastJet correction) — both passed
+# through directly from raw `events` here, same style as
+# _genmodel_variables above.
+_CORRT1METJET_FIELDS = (
+    "rawPt", "eta", "phi", "area", "muonSubtrFactor", "muonSubtrDeltaPhi", "EmEF",
+)
+
+
+def _raw_jec_inputs_variables(events: ak.Array) -> Dict[str, Any]:
+    """CorrT1METJet_* passthrough (jagged) + fixedGridRhoFastjetAll (scalar).
+    Rho's branch name varies by NanoAOD version (flat
+    "fixedGridRhoFastjetAll" vs NanoAODv15's nested "Rho_fixedGridRhoFastjetAll")
+    — same candidate list as CorrectionManager._get_rho, saved under one
+    consistent output name regardless of which one the input file has."""
+    out: Dict[str, Any] = {}
+    for field in _CORRT1METJET_FIELDS:
+        branch = f"CorrT1METJet_{field}"
+        if branch in events.fields:
+            out[f"corrt1metjet_{field.lower()}"] = events[branch]
+    for rho_branch in ("fixedGridRhoFastjetAll", "Rho_fixedGridRhoFastjetAll", "rho"):
+        if rho_branch in events.fields:
+            try:
+                out["fixedGridRhoFastjetAll"] = ak.to_numpy(events[rho_branch]).astype(np.float32)
+            except Exception:
+                pass
+            break
+    return out
+
+
 def _jagged_variables(objects: Dict[str, Any]) -> Dict[str, ak.Array]:
     """Full jagged (per-event vector) branches for all objects."""
     out: Dict[str, ak.Array] = {}
@@ -351,6 +385,25 @@ def _jagged_variables(objects: Dict[str, Any]) -> Dict[str, ak.Array]:
         ('jets',      'eta',          'jet_eta'),
         ('jets',      'phi',          'jet_phi'),
         ('jets',      'btagScore',    'jet_btag'),
+        # Raw-level jet inputs (undefined on data-era files without e.g.
+        # Jet_muonSubtrFactor, or years where build_jet_collection didn't
+        # carry a given field through — _jagged_spec's "skip if missing"
+        # loop below handles that transparently) — saved so JEC/jet-ID/
+        # Type-1 MET can be re-derived or audited from EVENTSELECTION.root
+        # directly, without rerunning from raw NanoAOD. See
+        # objects.py:build_jet_collection's raw_field loop, which is the
+        # single source of truth for which of these actually get zipped in.
+        ('jets',      'rawFactor',          'jet_rawFactor'),
+        ('jets',      'area',               'jet_area'),
+        ('jets',      'muonSubtrFactor',    'jet_muonSubtrFactor'),
+        ('jets',      'muonSubtrDeltaPhi',  'jet_muonSubtrDeltaPhi'),
+        ('jets',      'chHEF',              'jet_chHEF'),
+        ('jets',      'neHEF',              'jet_neHEF'),
+        ('jets',      'chEmEF',             'jet_chEmEF'),
+        ('jets',      'neEmEF',             'jet_neEmEF'),
+        ('jets',      'muEF',               'jet_muEF'),
+        ('jets',      'chMultiplicity',     'jet_chMultiplicity'),
+        ('jets',      'neMultiplicity',     'jet_neMultiplicity'),
         ('bjets',     'pt',           'bjet_pt'),
         ('bjets',     'eta',          'bjet_eta'),
         ('bjets',     'phi',          'bjet_phi'),
@@ -380,6 +433,10 @@ _SCALAR_BRANCHES: Dict[str, Any] = {
     'event': np.int64, 'run': np.int64, 'luminosityBlock': np.int64,
     'Pileup_nTrueInt': np.float32, 'Pileup_nPU': np.int32,
     'PV_npvsGood': np.int32, 'PV_npvs': np.int32,
+    # Pileup density input to the L1FastJet JEC correction — saved so JEC
+    # can be re-derived/audited from EVENTSELECTION.root without rerunning
+    # from raw NanoAOD (see _raw_jec_inputs_variables).
+    'fixedGridRhoFastjetAll': np.float32,
     'MET_pt': np.float32, 'MET_phi': np.float32, 'MET_significance': np.float32,
     'Recoil': np.float32, 'RecoilPhi': np.float32,
     'Recoil_JERUp': np.float32, 'Recoil_JERDown': np.float32,
@@ -433,7 +490,16 @@ _JAGGED_BRANCHES: Dict[str, Any] = {
     'electron_pt': np.float32, 'electron_eta': np.float32, 'electron_phi': np.float32,
     'jet_pt': np.float32, 'jet_eta': np.float32, 'jet_phi': np.float32,
     'jet_btag': np.float32,
+    'jet_rawFactor': np.float32, 'jet_area': np.float32,
+    'jet_muonSubtrFactor': np.float32, 'jet_muonSubtrDeltaPhi': np.float32,
+    'jet_chHEF': np.float32, 'jet_neHEF': np.float32,
+    'jet_chEmEF': np.float32, 'jet_neEmEF': np.float32, 'jet_muEF': np.float32,
+    'jet_chMultiplicity': np.float32, 'jet_neMultiplicity': np.float32,
     'bjet_pt': np.float32, 'bjet_eta': np.float32, 'bjet_phi': np.float32,
+    'corrt1metjet_rawpt': np.float32, 'corrt1metjet_eta': np.float32,
+    'corrt1metjet_phi': np.float32, 'corrt1metjet_area': np.float32,
+    'corrt1metjet_muonsubtrfactor': np.float32, 'corrt1metjet_muonsubtrdeltaphi': np.float32,
+    'corrt1metjet_emef': np.float32,
 }
 
 
@@ -581,6 +647,11 @@ def compute_event_variables(
 
     # --- Jagged object branches ---
     out.update(_jagged_variables(objects))
+
+    # --- Raw JEC/Type-1-MET inputs not carried by the "jets" object (see
+    #     objects.py:build_jet_collection for the per-jet raw fields that
+    #     ARE on "jets" and already saved via _jagged_variables above) ---
+    out.update(_raw_jec_inputs_variables(events))
 
     # --- GenModel grid-point flags (signal only; no-op for bkg/data) ---
     out.update(_genmodel_variables(events))

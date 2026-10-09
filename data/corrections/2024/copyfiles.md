@@ -10,7 +10,17 @@
 
 ## MUO
 
--  `/cvmfs/cms-griddata.cern.ch/cat/metadata/MUO/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15/2025-11-27`
+-  `/cvmfs/cms-griddata.cern.ch/cat/metadata/MUO/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15/2026-06-18`
+   (bumped from 2025-11-27: muon_HighPt.json.gz and muon_JPsi.json.gz both
+   changed content between these snapshots — NUM_TightID_DEN_GlobalMuonProbes
+   and NUM_probe_TightRelTkIso_DEN_MediumIDProbes (the SFs this analysis
+   actually uses) went from internal `"version": 2` to `"version": 3`.
+   Neither the 2026-04-28 nor 2026-06-18 changes.md explicitly names
+   muon_HighPt.json.gz/muon_JPsi.json.gz (both only call out muon_Z.json.gz
+   and muon_scalesmearing*.json.gz, which this analysis doesn't use) — this
+   looks like an undocumented regeneration bundled with those releases.
+   Took the latest available snapshot as the standing policy: always pull
+   the newest POG release rather than pin to a specific dated one.)
 
 ## JME
 
