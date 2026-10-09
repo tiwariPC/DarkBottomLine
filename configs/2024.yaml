@@ -28,6 +28,13 @@ corrections:
    # without activating it this pass.
    jetvetomaps: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_jetvetomaps.json.gz
    jetvetomaps_name: "Summer24Prompt24_RunBCDEFGHI_V1"
+   # Default False: get_jet_id_mask/get_corrected_jet_pt_mass/
+   # get_type1_met_shift silently fall back (log a warning, return None ->
+   # caller uses raw/uncorrected values) if config/branches are missing or
+   # evaluation fails. Set true to RAISE instead, so a misconfigured run
+   # fails loudly rather than quietly reverting to uncorrected physics —
+   # useful when you need to be certain a correction is actually applying.
+   # strict: false
 
 # YAML-driven lepton scale factors (see CorrectionManager._sf_components).
 # Components per object are multiplied; SF = 1 outside a component's pt_range.

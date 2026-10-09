@@ -283,6 +283,25 @@ class CorrectionManager:
         self._load_corrections()
         self._btag_efficiency_maps: Optional[Dict[str, Any]] = None
         self._btag_efficiency_maps_loaded = False
+        # config.corrections.strict (default False, unchanged legacy
+        # behavior): when True, get_jet_id_mask/get_corrected_jet_pt_mass/
+        # get_type1_met_shift RAISE instead of silently returning None on
+        # missing config/branches or an evaluation exception — so a
+        # misconfigured run fails loudly instead of quietly reverting to
+        # raw/uncorrected physics. Opt-in: set this explicitly if you want
+        # to be certain a correction is actually applying, not falling back.
+        self.strict = bool(self.config.get("corrections", {}).get("strict", False))
+
+    def _fallback_or_raise(self, message: str, exc: Optional[Exception] = None):
+        """Shared strict-mode behavior for correction fallback points: log a
+        warning and return None (legacy behavior) or raise RuntimeError (if
+        self.strict) with the given message. Callers do
+        `return self._fallback_or_raise("...")` at each place that would
+        otherwise silently fall back."""
+        if self.strict:
+            raise RuntimeError(f"[strict corrections] {message}") from exc
+        logging.warning(message)
+        return None
 
     def _load_corrections(self):
         """Load correction files using correctionlib."""
@@ -358,15 +377,17 @@ class CorrectionManager:
         the JSON's own description). Returns None if unconfigured/unavailable/
         any required branch is missing, so callers can fall back to no jet-ID
         cut (same as before this correction existed) rather than silently
-        zeroing out jets.
+        zeroing out jets. Set config.corrections.strict: true to raise
+        instead of falling back (see CorrectionManager._fallback_or_raise).
         """
         corr = self._get_correction_by_name("jetid", "jetid_name", ("AK4PUPPI_Tight",))
         if corr is None:
-            return None
+            return self._fallback_or_raise("jet-ID correction not configured/loaded (config.corrections.jetid)")
         required = ("Jet_eta", "Jet_chHEF", "Jet_neHEF", "Jet_chEmEF",
                     "Jet_neEmEF", "Jet_muEF", "Jet_chMultiplicity", "Jet_neMultiplicity")
-        if any(b not in events.fields for b in required):
-            return None
+        missing = [b for b in required if b not in events.fields]
+        if missing:
+            return self._fallback_or_raise(f"jet-ID: missing required branches {missing}")
         try:
             eta = events["Jet_eta"]
             chHEF = events["Jet_chHEF"]
@@ -382,11 +403,10 @@ class CorrectionManager:
                 eta, chHEF, neHEF, chEmEF, neEmEF, muEF, chMult, neMult, multiplicity,
             )
             if result is None:
-                return None
+                return self._fallback_or_raise("jet-ID correction evaluation returned None")
             return ak.values_astype(result, bool) if not isinstance(result, bool) else result
         except Exception as e:
-            logging.warning(f"Failed to evaluate jet ID correction: {e}")
-            return None
+            return self._fallback_or_raise(f"Failed to evaluate jet ID correction: {e}", exc=e)
 
     def get_pileup_weight(
         self,
@@ -1066,17 +1086,19 @@ class CorrectionManager:
         events["Jet_pt"]'s structure, or None if jetJEC isn't configured or
         the required branches are missing (callers fall back to raw
         Jet_pt/Jet_mass, same "no correction, old behavior" philosophy as
-        get_jet_id_mask). TODO(JER): corrected_pt is JES-corrected but not
+        get_jet_id_mask — set config.corrections.strict: true to raise
+        instead). TODO(JER): corrected_pt is JES-corrected but not
         JER-smeared (see module-level note above).
 
         jes_source/jes_direction: forwarded to _evaluate_jec_chain for the
         11-source JES systematic rebuild; leave both None for central.
         """
         if "jetJEC" not in self.corrections:
-            return None
+            return self._fallback_or_raise("JEC not configured/loaded (config.corrections.jetJEC)")
         required = ("Jet_pt", "Jet_eta", "Jet_phi", "Jet_rawFactor")
-        if any(b not in events.fields for b in required):
-            return None
+        missing = [b for b in required if b not in events.fields]
+        if missing:
+            return self._fallback_or_raise(f"JEC: missing required branches {missing}")
         try:
             jet_pt = events["Jet_pt"]
             n_flat = len(ak.ravel(jet_pt))
@@ -1112,7 +1134,7 @@ class CorrectionManager:
                 flat_run, is_data, jes_source=jes_source, jes_direction=jes_direction,
             )
             if corrected_flat_pt is None:
-                return None
+                return self._fallback_or_raise("JEC chain evaluation returned None (see preceding warning for the specific cause)")
 
             corrected_pt = ak.unflatten(ak.Array(corrected_flat_pt), counts)
             # Scale mass by the same overall pt ratio to keep mass/pt
@@ -1126,8 +1148,7 @@ class CorrectionManager:
                 corrected_mass = ak.zeros_like(corrected_pt)
             return corrected_pt, corrected_mass
         except Exception as e:
-            logging.warning(f"Failed to compute corrected jet pt/mass: {e}")
-            return None
+            return self._fallback_or_raise(f"Failed to compute corrected jet pt/mass: {e}", exc=e)
 
     def get_type1_met_shift(
         self, events: ak.Array,
@@ -1144,12 +1165,15 @@ class CorrectionManager:
         chEmEF/neEmEF branches in this NanoAOD version, so that cut is
         skipped for those entries per the PDF's own footnote).
         Returns None if jetJEC isn't configured or MET/jet branches are
-        missing. TODO(JER): p_full is JES-corrected but not JER-smeared.
+        missing (set config.corrections.strict: true to raise instead).
+        TODO(JER): p_full is JES-corrected but not JER-smeared.
         """
         if "jetJEC" not in self.corrections:
-            return None
-        if not all(b in events.fields for b in ("Jet_pt", "Jet_eta", "Jet_phi", "Jet_rawFactor")):
-            return None
+            return self._fallback_or_raise("Type-1 MET: JEC not configured/loaded (config.corrections.jetJEC)")
+        _t1_required = ("Jet_pt", "Jet_eta", "Jet_phi", "Jet_rawFactor")
+        _t1_missing = [b for b in _t1_required if b not in events.fields]
+        if _t1_missing:
+            return self._fallback_or_raise(f"Type-1 MET: missing required branches {_t1_missing}")
         try:
             is_data = bool(self.config.get("data", {}).get("is_data", False))
             n_events = len(events)
@@ -1233,12 +1257,24 @@ class CorrectionManager:
 
                 p_l1 = self._eval_l1_only(raw_pt_musub, eta, phi, area, flat_rho, flat_run, is_data)
                 if p_l1 is None:
+                    if self.strict:
+                        raise RuntimeError(
+                            "[strict corrections] Type-1 MET: _eval_l1_only failed for one jet "
+                            "collection (see preceding warning) — would otherwise silently "
+                            "contribute zero to the Type-1 sum for these jets"
+                        )
                     continue
                 p_full = self._evaluate_jec_chain(
                     raw_pt_musub, eta, phi, area, flat_rho, flat_run, is_data,
                     jes_source=jes_source, jes_direction=jes_direction,
                 )
                 if p_full is None:
+                    if self.strict:
+                        raise RuntimeError(
+                            "[strict corrections] Type-1 MET: _evaluate_jec_chain failed for one "
+                            "jet collection (see preceding warning) — would otherwise silently "
+                            "contribute zero to the Type-1 sum for these jets"
+                        )
                     continue
 
                 eligible = (p_full > 15.0) & (np.abs(eta) < 5.2)
@@ -1251,9 +1287,10 @@ class CorrectionManager:
                 np.subtract.at(delta_met_y, event_idx, delta_pt * np.sin(phi + dphi))
 
             return delta_met_x, delta_met_y
+        except RuntimeError:
+            raise  # strict-mode raises from inside the try block above — don't swallow them below
         except Exception as e:
-            logging.warning(f"Failed to compute Type-1 MET shift: {e}")
-            return None
+            return self._fallback_or_raise(f"Failed to compute Type-1 MET shift: {e}", exc=e)
 
     def _eval_l1_only(
         self, flat_raw_pt, flat_eta, flat_phi, flat_area, flat_rho, flat_run, is_data,
