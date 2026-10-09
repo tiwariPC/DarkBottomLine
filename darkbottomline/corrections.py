@@ -1629,7 +1629,14 @@ class CorrectionManager:
         _fw = ak.to_numpy(full_event_weight).astype(np.float32)
 
         return {
-            "sf_weight": sf_weight,
+            # Individual central components (product with genweight == full_event_weight)
+            "weight_gen": genweight,
+            "weight_pu": w_pu,
+            "weight_btag": w_btag,
+            "weight_muon": w_muon,
+            "weight_electron": w_electron,
+            "weight_ele_hlt": w_ele_hlt,
+            "weight_met_hlt": w_met_hlt,
             "full_event_weight": full_event_weight,
             # full_event_weight with the pileup SF removed (all other SFs kept).
             # For the "no PU reweight" Pileup_nTrueInt cross-check plot.
