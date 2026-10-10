@@ -46,11 +46,13 @@ source start.sh
 ### Condor
 
 ```bash
-cd condorJobs
 voms-proxy-init --voms cms --valid 192:00
-cp /tmp/x509up_u$(id -u) /afs/cern.ch/user/u/username/private/
-condor_submit submit.sub
+cp /tmp/x509up_u$(id -u) /afs/cern.ch/user/${USER:0:1}/${USER}/private/
+python3 condorJobs/event-selection/submit_samples.py --year 2024 --dry-run
 ```
+
+See [condorJobs/event-selection/README.md](condorJobs/event-selection/README.md) for the
+pilot → production → resubmit workflow.
 
 ### Combine (optional)
 

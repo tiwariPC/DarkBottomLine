@@ -48,6 +48,11 @@ outputs/
 
 # Logs
 *.log
+# Condor job logs (stdout/stderr/event logs) and generated submit files, any job type/depth
+condorJobs/**/logs/
+condorJobs/**/*.out
+condorJobs/**/*.err
+condorJobs/**/submitfiles/
 
 # Temporary files
 *.tmp

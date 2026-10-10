@@ -1,196 +1,198 @@
 #!/bin/bash
-ulimit -s unlimited # Set unlimited stack size
-set -e  # Exit on error
-set -x  # Debug mode - show commands
+# ---------------------------------------------------------------------------
+# Condor executable: event selection for a slice of ROOT files from one
+# samplelist .txt. Files run sequentially, one
+# `darkbottomline analyze --mode event-selection` call each, so one bad file
+# never costs the rest of the slice. Per file:
+#   1. skip if <OUTDIR>/<YEAR>/eventsel/<sample>_I<idx>C<ClusterId>P<ProcId>_EVENTSELECTION.root
+#      already exists (a held+released retry keeps its ClusterId/ProcId; across
+#      submissions submit_samples.py dedups on (sample, idx))
+#   2. read via the CERN-local EOS replica when one exists, else the original
+#      redirector, then INFN / FNAL fallbacks
+#   3. write to worker scratch, verify it opens, xrdcp to EOS with an adler32
+#      checksum (EOS FUSE writes from many jobs have silently corrupted files,
+#      see condorJobs/btag-efficiency/run_slimmer.sh)
+# Exits non-zero if any file failed, so condor holds + retries the job; files
+# that made it to EOS are skipped on the retry.
+#
+# Args (from submit.sub):
+#   $1  PROXY_FILE  x509 proxy filename in the job sandbox
+#   $2  INDICES     colon-separated 0-based file indices into the .txt
+# Env (from submit.sub): DBL_REPO_DIR DBL_CONFIG DBL_YEAR DBL_SAMPLE_TXT
+#   DBL_OUTDIR DBL_DATA DBL_WORKERS DBL_CHUNK_SIZE DBL_MAX_EVENTS DBL_SLICE_ID
+# ---------------------------------------------------------------------------
+ulimit -s unlimited
+set -u -o pipefail
 
-# Get repository directory from environment variable (set at submission time)
-# This is the path from where condor jobs are submitted, not the condor cwd
-DBL_REPO_DIR="${DBL_REPO_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}"
+PROXY_FILE="$1"
+INDICES="$2"
 
-# Save condor cwd before changing directories (where transferred files are)
-CONDOR_CWD="$(pwd)"
+export X509_USER_PROXY="$(pwd)/${PROXY_FILE}"
+SCRATCH="${_CONDOR_SCRATCH_DIR:-$(mktemp -d)}"
 
-# Change to repository directory (like the working script)
-cd "${DBL_REPO_DIR}"
+REPO_DIR="${DBL_REPO_DIR}"
+CONFIG="${DBL_CONFIG}"
+YEAR="${DBL_YEAR}"
+SAMPLE_TXT="${DBL_SAMPLE_TXT}"
+OUTDIR_YEAR="${DBL_OUTDIR}/${YEAR}/eventsel"
+SAMPLE=$(basename "${SAMPLE_TXT}" .txt)
+EOS_HOST="eoscms.cern.ch"
 
-echo "=========================================="
-echo "DarkBottomLine Condor Job (event-selection)"
-echo "=========================================="
-echo "Job ID: ${1:-0}"
-echo "Repository directory: ${DBL_REPO_DIR}"
-echo "Working directory: $(pwd)"
-echo "Date: $(date)"
-echo ""
+# Submission tag for output names, from the job ad HTCondor writes into the sandbox.
+job_attr() { sed -n "s/^$1 = //p" "${_CONDOR_JOB_AD:-/dev/null}" 2>/dev/null | head -1; }
+CLUSTER_ID=$(job_attr ClusterId)
+PROC_ID=$(job_attr ProcId)
+CLUSTER_ID="${CLUSTER_ID:-0}"
+PROC_ID="${PROC_ID:-0}"
 
-# Source LCG environment (critical for CERN systems)
-if [ -f "/cvmfs/sft.cern.ch/lcg/views/LCG_109/x86_64-el9-gcc15-opt/setup.sh" ]; then
-    echo "Sourcing LCG environment..."
-    source /cvmfs/sft.cern.ch/lcg/views/LCG_109/x86_64-el9-gcc15-opt/setup.sh
-else
-    echo "⚠ Warning: LCG setup script not found. Continuing anyway..."
-fi
+echo "=== event-selection job ==="
+echo "host      : $(hostname)"
+echo "sample    : ${SAMPLE} (${YEAR}, data=${DBL_DATA})"
+echo "slice     : ${DBL_SLICE_ID} -> indices ${INDICES}"
+echo "job       : cluster ${CLUSTER_ID}, proc ${PROC_ID}"
+echo "outdir    : ${OUTDIR_YEAR}"
+echo "workers   : ${DBL_WORKERS}, chunk size ${DBL_CHUNK_SIZE}"
+echo "start     : $(date)"
 
-# Set up DarkBottomLine environment
-echo "Setting up DarkBottomLine environment..."
-LOCAL_DIR="${DBL_REPO_DIR}/.local"
-PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>/dev/null || echo "3.9")
-SITE_PACKAGES_DIR="${LOCAL_DIR}/lib/python${PYTHON_VERSION}/site-packages"
+cd "${REPO_DIR}" || { echo "✗ Error: cannot cd to ${REPO_DIR}" >&2; exit 1; }
 
-if [ -d "${SITE_PACKAGES_DIR}" ]; then
-    export PYTHONPATH="${SITE_PACKAGES_DIR}:${PYTHONPATH}"
-    echo "✓ Set PYTHONPATH: ${SITE_PACKAGES_DIR}"
-else
-    echo "⚠ Warning: .local directory not found at ${SITE_PACKAGES_DIR}"
-    echo "  Dependencies may not be available."
-fi
+# Environment: LCG view + the repo's .local site-packages (same as
+# condorJobs/btag-efficiency/run_slimmer.sh). LCG setup.sh references unset vars.
+LCG_SETUP="/cvmfs/sft.cern.ch/lcg/views/LCG_109/x86_64-el9-gcc15-opt/setup.sh"
+set +u
+source "${LCG_SETUP}" || { echo "✗ Error: cannot source ${LCG_SETUP}" >&2; exit 1; }
+set -u
+PYTHON_VERSION=$(python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
+export PYTHONPATH="${REPO_DIR}/.local/lib/python${PYTHON_VERSION}/site-packages:${REPO_DIR}:${PYTHONPATH:-}"
 
-# Set default values from environment or use defaults
-YEAR="${DBL_YEAR:-2022}"
-CONFIG="${DBL_CONFIG:-configs/${YEAR}.yaml}"
-EXECUTOR="${DBL_EXECUTOR:-futures}"
-CHUNK_SIZE="${DBL_CHUNK_SIZE:-50000}"
-WORKERS="${DBL_WORKERS:-4}"
-MAX_EVENTS="${DBL_MAX_EVENTS:-}"
-DATA_FLAG="${DBL_DATA:-false}"
-# Workers: Automatically derived from request_cpus in submit file
+voms-proxy-info -file "${X509_USER_PROXY}" -timeleft >/dev/null 2>&1 || \
+    echo "⚠ Warning: proxy ${X509_USER_PROXY} unreadable or expired; XRootD reads may fail"
 
-PROC_ID="${1:-0}"
-BKG_FILE="${DBL_BKG_FILE:-}"
+for f in "${SAMPLE_TXT}" "${CONFIG}"; do
+    [ -f "${f}" ] || { echo "✗ Error: not found: ${f}" >&2; exit 1; }
+done
 
-if [ -n "${BKG_FILE}" ]; then
-    # Sample lists live in data/samplelist/<year>/<name>.txt
-    if [[ ! "${BKG_FILE}" == *"/"* ]]; then
-        BKG_FILE="data/samplelist/${YEAR}/${BKG_FILE}"
+# Same line filter as submit_samples.py (strip, drop blanks and # comments) so
+# indices agree.
+mapfile -t FILES < <(sed 's/^[[:space:]]*//; s/[[:space:]]*$//' "${SAMPLE_TXT}" | grep -v '^#' | grep -v '^$')
+
+# Print candidate input URLs for one samplelist entry, best first.
+candidates() {
+    local url="$1"
+    if [[ "${url}" != root://* ]]; then
+        echo "${url}"
+        return
+    fi
+    # root://host//store/... -> /store/...
+    local lfn="${url#root://*/}"
+    while [[ "${lfn}" == /* ]]; do lfn="${lfn#/}"; done
+    lfn="/${lfn}"
+    if [[ "${lfn}" == /store/* ]]; then
+        if xrdfs "${EOS_HOST}" stat "/eos/cms${lfn}" >/dev/null 2>&1; then
+            echo "root://${EOS_HOST}//eos/cms${lfn}"
+        fi
+        echo "${url}"
+        for r in xrootd-cms.infn.it cmsxrootd.fnal.gov; do
+            [[ "${url}" == root://${r}/* ]] || echo "root://${r}/${lfn}"
+        done
+    else
+        echo "${url}"
+    fi
+}
+
+# Open the file fresh and read every key's metadata: catches truncated/corrupt output.
+verify_root() {
+    python3 - "$1" <<'EOF'
+import sys
+import uproot
+try:
+    with uproot.open(sys.argv[1]) as f:
+        if not f.keys():
+            sys.exit("no keys")
+        for k in f.keys():
+            f[k]
+except Exception as e:
+    sys.exit(f"verify failed: {e}")
+EOF
+}
+
+stage_out() {
+    local src="$1" dest="$2" attempt
+    for attempt in 1 2 3; do
+        if xrdcp --nopbar --force --posc --cksum adler32 "${src}" "root://${EOS_HOST}/${dest}"; then
+            return 0
+        fi
+        echo "⚠ xrdcp attempt ${attempt}/3 failed for ${dest}" >&2
+        sleep $((attempt * 30))
+    done
+    return 1
+}
+
+xrdfs "${EOS_HOST}" mkdir -p "${OUTDIR_YEAR}" >/dev/null 2>&1 || true
+
+N_DONE=0
+N_SKIPPED=0
+FAILED=()
+JOB_START=$(date +%s)
+
+for idx in ${INDICES//:/ }; do
+    if [ "${idx}" -ge "${#FILES[@]}" ]; then
+        echo "✗ Error: index ${idx} beyond ${#FILES[@]} files in ${SAMPLE_TXT}" >&2
+        FAILED+=("${idx}")
+        continue
+    fi
+    NAME="${SAMPLE}_I${idx}C${CLUSTER_ID}P${PROC_ID}_EVENTSELECTION.root"
+    DEST="${OUTDIR_YEAR}/${NAME}"
+    LOCAL_OUT="${SCRATCH}/${NAME}"
+
+    if xrdfs "${EOS_HOST}" stat "${DEST}" >/dev/null 2>&1; then
+        echo "→ [${idx}] already on EOS, skipping"
+        N_SKIPPED=$((N_SKIPPED + 1))
+        continue
     fi
 
-    if [ ! -f "${BKG_FILE}" ]; then
-        echo "✗ Error: Sample file not found: ${BKG_FILE}"
-        echo "  Repository directory: ${DBL_REPO_DIR}"
-        echo "  Current directory: $(pwd)"
-        echo "  Files in data/samplelist/${YEAR}/:"
-        ls -la "data/samplelist/${YEAR}/" 2>/dev/null || echo "    (directory not found)"
-        exit 1
-    fi
-    echo "✓ Sample file found: ${BKG_FILE}"
-    echo "  File size: $(ls -lh "${BKG_FILE}" | awk '{print $5}')"
-    echo "  First few lines of file:"
-    head -3 "${BKG_FILE}" | sed 's/^/    /'
     echo ""
+    echo "=== [${idx}] ${FILES[$idx]} ==="
+    OK=0
+    while read -r SRC; do
+        [ -n "${SRC}" ] || continue
+        echo "→ input: ${SRC}"
+        CMD=(python3 -m darkbottomline.cli analyze --mode event-selection
+             --config "${CONFIG}" --input "${SRC}"
+             --event-selection-output "${LOCAL_OUT}"
+             --executor futures --workers "${DBL_WORKERS}" --chunk-size "${DBL_CHUNK_SIZE}")
+        [ -n "${DBL_MAX_EVENTS}" ] && CMD+=(--max-events "${DBL_MAX_EVENTS}")
+        [ "${DBL_DATA}" = "true" ] && CMD+=(--data)
 
-    BKG_NAME=$(basename "${BKG_FILE}" .txt)
+        T0=$(date +%s)
+        "${CMD[@]}" </dev/null
+        RC=$?
+        SECONDS_USED=$(( $(date +%s) - T0 ))
+        if [ "${RC}" -eq 0 ] && verify_root "${LOCAL_OUT}"; then
+            OK=1
+            break
+        fi
+        echo "⚠ [${idx}] failed with ${SRC} (exit ${RC}, ${SECONDS_USED}s)" >&2
+        rm -f "${LOCAL_OUT}"
+    done < <(candidates "${FILES[$idx]}")
 
-    # Get the specific file from the background file based on ProcId
-    INPUT_LINE=$(grep -v '^#' "${BKG_FILE}" | grep -v '^$' | sed -n "$((PROC_ID + 1))p")
-
-    if [ -z "${INPUT_LINE}" ]; then
-        TOTAL_FILES=$(grep -v '^#' "${BKG_FILE}" | grep -v '^$' | wc -l)
-        echo "✗ Error: ProcId ${PROC_ID} exceeds number of files in ${BKG_FILE} (${TOTAL_FILES} files)"
-        exit 1
+    if [ "${OK}" -eq 1 ] && stage_out "${LOCAL_OUT}" "${DEST}"; then
+        N_DONE=$((N_DONE + 1))
+        # Machine-readable line parsed by pilot_report.py.
+        echo "DBL_TIMING sample=${SAMPLE} year=${YEAR} idx=${idx} seconds=${SECONDS_USED} workers=${DBL_WORKERS} data=${DBL_DATA}"
+        echo "✓ [${idx}] -> ${DEST} (${SECONDS_USED}s)"
+    else
+        echo "✗ [${idx}] FAILED" >&2
+        FAILED+=("${idx}")
     fi
+    rm -f "${LOCAL_OUT}"
+done
 
-    INPUT="${INPUT_LINE}"
-    FILE_INDEX="${PROC_ID}"
-    echo "✓ Processing file ${FILE_INDEX} from ${BKG_FILE}"
-    echo "  Input file: ${INPUT}"
-
-    # Auto-detect collision data from sample name (e.g. JetMET-Run2022D-...)
-    if [[ "${BKG_NAME}" =~ -Run20[0-9]{2} ]]; then
-        DATA_FLAG="true"
-        echo "  Detected collision data sample (name matches -Run20YY) → --data enabled"
-    fi
-
-    EVENT_SELECTION_OUTPUT="outputs/eventsel/${YEAR}/${BKG_NAME}_${FILE_INDEX}_EVENTSELECTION.root"
-else
-    echo "✗ Error: DBL_BKG_FILE not set. This script requires a sample file from data/samplelist/${YEAR}/."
+echo ""
+echo "=== summary: slice ${DBL_SLICE_ID} of ${SAMPLE} ==="
+echo "done ${N_DONE}, skipped ${N_SKIPPED}, failed ${#FAILED[@]}, wall $(( $(date +%s) - JOB_START ))s"
+if [ "${#FAILED[@]}" -gt 0 ]; then
+    echo "failed indices: ${FAILED[*]}" >&2
     exit 1
 fi
-
-# Validate configuration file exists
-if [ ! -f "${CONFIG}" ]; then
-    echo "✗ Error: Configuration file not found: ${CONFIG}"
-    exit 1
-fi
-
-# Validate input file exists (should be a ROOT file, local or xrootd)
-if [ ! -f "${INPUT}" ] && [[ ! "${INPUT}" == root://* ]]; then
-    echo "✗ Error: Input file not found: ${INPUT}"
-    exit 1
-fi
-
-TOTAL_FILES=$(grep -v '^#' "${BKG_FILE}" | grep -v '^$' | wc -l)
-
-# Create output directory
-OUTPUT_DIR=$(dirname "${EVENT_SELECTION_OUTPUT}")
-mkdir -p "${OUTPUT_DIR}"
-
-echo "=========================================="
-echo "Job Configuration"
-echo "=========================================="
-echo "ProcId: ${1:-0}"
-echo "Background File: ${BKG_FILE}"
-echo "File Index: ${FILE_INDEX} of ${TOTAL_FILES}"
-echo "Background Name: ${BKG_NAME}"
-echo "Year: ${YEAR}"
-echo "Config: ${CONFIG}"
-echo "Input: ${INPUT}"
-echo "Event-selection Output: ${EVENT_SELECTION_OUTPUT}"
-echo "Executor: ${EXECUTOR}"
-echo "Chunk Size: ${CHUNK_SIZE}"
-echo "Workers: ${WORKERS} (auto-derived from request_cpus)"
-echo "Data: ${DATA_FLAG}"
-if [ -n "${MAX_EVENTS}" ]; then
-    echo "Max Events: ${MAX_EVENTS}"
-fi
-echo ""
-
-# Build command: event-selection mode only (NanoAOD -> EVENTSELECTION.root)
-CMD="python3 -m darkbottomline.cli analyze"
-CMD="${CMD} --mode event-selection"
-CMD="${CMD} --config ${CONFIG}"
-CMD="${CMD} --input ${INPUT}"
-CMD="${CMD} --event-selection-output ${EVENT_SELECTION_OUTPUT}"
-CMD="${CMD} --executor ${EXECUTOR}"
-CMD="${CMD} --workers ${WORKERS}"
-
-if [ "${EXECUTOR}" = "futures" ] || [ "${EXECUTOR}" = "dask" ]; then
-    CMD="${CMD} --chunk-size ${CHUNK_SIZE}"
-fi
-
-if [ -n "${MAX_EVENTS}" ]; then
-    CMD="${CMD} --max-events ${MAX_EVENTS}"
-fi
-
-if [ "${DATA_FLAG}" = "true" ]; then
-    CMD="${CMD} --data"
-fi
-
-echo "=========================================="
-echo "Running Event Selection"
-echo "=========================================="
-echo "Command: ${CMD}"
-echo ""
-
-START_TIME=$(date +%s)
-if eval "${CMD}"; then
-    END_TIME=$(date +%s)
-    DURATION=$((END_TIME - START_TIME))
-    echo ""
-    echo "=========================================="
-    echo "Event Selection Completed Successfully!"
-    echo "=========================================="
-    echo "Output: ${EVENT_SELECTION_OUTPUT}"
-    echo "Duration: ${DURATION} seconds"
-    echo "Exit code: 0"
-    exit 0
-else
-    EXIT_CODE=$?
-    END_TIME=$(date +%s)
-    DURATION=$((END_TIME - START_TIME))
-    echo ""
-    echo "=========================================="
-    echo "Event Selection Failed!"
-    echo "=========================================="
-    echo "Exit code: ${EXIT_CODE}"
-    echo "Duration: ${DURATION} seconds"
-    exit ${EXIT_CODE}
-fi
+exit 0

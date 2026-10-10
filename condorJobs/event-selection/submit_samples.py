@@ -1,602 +1,303 @@
 #!/usr/bin/env python3
 """
-Simple script to submit condor jobs for event-selection sample files.
+Submit condor jobs for event selection (NanoAOD -> EVENTSELECTION.root).
 
-For each sample file (*.txt in data/samplelist/<year>/):
-  - Counts the number of ROOT files in it
-  - Submits N condor jobs (one job per file)
-  - Each sample gets its own condor cluster
-  - Runs `darkbottomline analyze --mode event-selection` (NanoAOD -> EVENTSELECTION.root)
+One cluster per samplelist .txt in data/samplelist/<year>/, one job per slice of
+BATCH ROOT files. Each job runs its files sequentially (runanalysis.sh) and
+xrdcp's every output to:
+    <OUTDIR>/<year>/eventsel/<sample>_I<fileIdx>C<ClusterId>P<ProcId>_EVENTSELECTION.root
 
-Usage:
-    python3 submit_samples.py --year 2022 [options]
+Files whose output is already on EOS are never submitted, so rerunning the same
+command after a round finishes resubmits only what is missing. Samples that still
+have jobs in the queue are skipped, so nothing runs twice.
 
-Example:
-    python3 submit_samples.py --year 2022 --config configs/2022.yaml
+Batch size per sample is either fixed (--batch) or derived from a pilot timing
+file (--timing, written by pilot_report.py) to give jobs of ~--target-minutes.
+
+Examples (run from anywhere):
+    # Dry run: show clusters/jobs, write slice files, submit nothing
+    python3 condorJobs/event-selection/submit_samples.py --year 2024 --dry-run
+
+    # Pilot: first file of a few samples, at 2 and 8 cores
+    python3 condorJobs/event-selection/submit_samples.py --year 2024 \\
+        --samples 'WtoLNu-2Jets_Bin-2J-PTLNu-40to100*' 'Muon0-Run2024G*' \\
+        --files 0:1 --batch 1 --cpus 2 --memory 8000
+
+    # Production with pilot timing
+    python3 condorJobs/event-selection/submit_samples.py --year 2024 \\
+        --timing condorJobs/event-selection/timing_2024.json --target-minutes 90
 """
 
 import argparse
-import logging
+import fnmatch
+import json
+import math
 import os
-import pwd
 import re
 import subprocess
 import sys
 from pathlib import Path
-from typing import List, Tuple, Optional, Union
 
-# Parse chunk size argument (simple inline function - no external dependency needed)
-def parse_chunk_size_arg(chunk_size_str: str) -> Optional[int]:
-    """
-    Parse chunk size argument, accepting 'auto' or an integer.
+CONDOR_DIR = Path(__file__).resolve().parent
+REPO_DIR = CONDOR_DIR.parent.parent
+DEFAULT_OUTDIR = "/eos/cms/store/group/phys_susy/sus-23-008/run3_bbMET/20260917-849194d_10102026"
 
-    Args:
-        chunk_size_str: String value from command line
-
-    Returns:
-        None if 'auto', otherwise integer chunk size
-
-    Raises:
-        ValueError: If chunk_size_str is neither 'auto' nor a valid integer
-    """
-    if chunk_size_str.lower() == 'auto':
-        return None
-    try:
-        return int(chunk_size_str)
-    except ValueError:
-        raise ValueError(f"Invalid chunk-size value: {chunk_size_str}. Must be 'auto' or an integer.")
+# Schedd limits on lxplus (condor_config_val -schedd, 2026-10-10).
+MAX_JOBS_PER_SUBMISSION = 20000
+MAX_JOBS_PER_OWNER = 100000
 
 
-def get_request_memory_from_template(template_file: Path) -> int:
-    """
-    Extract request_memory value from Condor submit template file.
-
-    Args:
-        template_file: Path to submit.sub template
-
-    Returns:
-        Memory request in MB (default: 8000)
-    """
-    try:
-        with open(template_file, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith('request_memory'):
-                    # Parse: request_memory = 8000
-                    parts = line.split('=')
-                    if len(parts) == 2:
-                        try:
-                            return int(parts[1].strip())
-                        except ValueError:
-                            pass
-    except Exception:
-        pass
-
-    # Default fallback
-    return 8000
+def read_files(sample_txt: Path):
+    """ROOT entries of a samplelist; same filter as runanalysis.sh."""
+    with open(sample_txt) as f:
+        return [s for s in (line.strip() for line in f) if s and not s.startswith("#")]
 
 
-def get_request_cpus_from_template(template_file: Path) -> int:
-    """
-    Extract request_cpus value from Condor submit template file.
-
-    Args:
-        template_file: Path to submit.sub template
-
-    Returns:
-        Number of CPUs/workers (default: 4)
-    """
-    try:
-        with open(template_file, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith('request_cpus'):
-                    # Parse: request_cpus = 4
-                    parts = line.split('=')
-                    if len(parts) == 2:
-                        try:
-                            return int(parts[1].strip())
-                        except ValueError:
-                            pass
-    except Exception:
-        pass
-
-    # Default fallback
-    return 4
-
-
-def count_files_in_sample(sample_file: Path) -> int:
-    """Count non-empty, non-comment lines in a sample file."""
-    count = 0
-    with open(sample_file, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#'):
-                count += 1
-    return count
-
-
-def find_sample_files(input_dir: Path) -> List[Path]:
-    """Find all *.txt files in the input directory."""
-    sample_files = sorted(input_dir.glob('*.txt'))
-    return sample_files
-
-
-def create_submit_file(
-    template_file: Path,
-    output_file: Path,
-    sample_file: str,
-    num_jobs: int,
-    config: str,
-    year: str,
-    executor: str,
-    chunk_size: Union[int, str],
-    workers: int,
-    is_data: bool,
-    max_events: str = "",
-) -> None:
-    """Create a submit file from template with specific settings."""
-    with open(template_file, 'r') as f:
-        lines = f.readlines()
-
-    # Get repository directory (absolute path from submission location)
-    condor_dir = output_file.parent.parent  # condorJobs/event-selection directory
-    repo_dir = condor_dir.parent.parent  # Repository root directory
-    repo_dir_abs = repo_dir.resolve()
-
-    # Build environment variable string
-    # Config paths are relative to repository (script will cd to repo directory)
-    # Workers are automatically derived from request_cpus in the template
-    env_parts = [
-        f'DBL_REPO_DIR={repo_dir_abs}',
-        f'DBL_CONFIG={config}',
-        f'DBL_BKG_FILE={sample_file}',
-        f'DBL_YEAR={year}',
-        f'DBL_EXECUTOR={executor}',
-        f'DBL_CHUNK_SIZE={chunk_size}',
-        f'DBL_WORKERS={workers}',
-        f'DBL_DATA={"true" if is_data else "false"}',
-    ]
-    if max_events:
-        env_parts.append(f'DBL_MAX_EVENTS={max_events}')
-
-    env_vars = ' \\\n'.join(env_parts)
-
-    # Background file is in repository, accessible from condor nodes
-    # No need to transfer - file is read from DBL_REPO_DIR/data/samplelist/<year>/
-    # So we don't need transfer_input_files for the background file
-
-    # Get username and user ID for x509userproxy path
-    try:
-        username = os.getenv('USER') or os.getenv('LOGNAME') or pwd.getpwuid(os.getuid()).pw_name
-        uid = os.getuid()
-        first_letter = username[0].lower()
-        x509_path = f'/afs/cern.ch/user/{first_letter}/{username}/private/x509up_u{uid}'
-    except Exception:
-        # Fallback to template value if detection fails
-        x509_path = '/afs/cern.ch/user/u/username/private/x509up_u98885'
-
-    # Replace lines
-    new_lines = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-
-        # Replace x509userproxy line
-        if line.strip().startswith('x509userproxy'):
-            new_lines.append(f'x509userproxy = {x509_path}\n')
-            i += 1
-            continue
-
-        # Replace environment block
-        if line.strip().startswith('environment ='):
-            new_lines.append(f'environment = "{env_vars}"\n')
-            # Skip continuation lines until we find the closing quote
-            i += 1
-            while i < len(lines) and ('\\' in lines[i] or lines[i].strip().endswith('"') or not lines[i].strip()):
-                i += 1
-            continue
-
-        # Remove transfer_input_files line (background file is in repository, not transferred)
-        if line.strip().startswith('transfer_input_files'):
-            # Skip this line - background file is read from repository directory
-            i += 1
-            continue
-
-        # Replace queue line
-        if line.strip().startswith('queue'):
-            new_lines.append(f'queue {num_jobs}\n')
-            i += 1
-            continue
-
-        new_lines.append(line)
-        i += 1
-
-    with open(output_file, 'w') as f:
-        f.writelines(new_lines)
+# Collision data primary datasets this analysis uses; any other data PD (e.g. Muon0/1)
+# is skipped. Data samples are named like JetMET0-Run2024G-MINIv6NANOv15-v2.
+DATA_PRIMARY_DATASETS = ("EGamma", "JetMET")
 
 
 def is_data_sample(sample_name: str) -> bool:
-    """Detect collision data samples by name, e.g. JetMET-Run2022D-22Sep2023-v1."""
-    return re.search(r'-Run20\d{2}', sample_name) is not None
+    return re.search(r"-Run20\d{2}", sample_name) is not None
 
 
-def submit_sample(
-    sample_file: Path,
-    condor_dir: Path,
-    template_file: Path,
-    config: str,
-    year: str,
-    executor: str,
-    chunk_size: Optional[int],
-    workers: int,
-    max_events: str,
-    request_memory_mb: int = 8000,
-    dry_run: bool = False,
-) -> Tuple[str, int]:
-    """Submit condor jobs for a single sample file."""
-    sample_name = sample_file.stem  # e.g., "Zto2Nu-2Jets_..." from "Zto2Nu-2Jets_....txt"
-    sample_filename = sample_file.name  # e.g., "Zto2Nu-2Jets_....txt"
+def is_signal_sample(sample_name: str) -> bool:
+    """Same rule as darkbottomline.cli._is_signal_sample (fastsim 2HDMa signal)."""
+    return "2hdma" in sample_name.lower()
 
-    # Count files in sample
-    num_files = count_files_in_sample(sample_file)
 
-    if num_files == 0:
-        print(f"⚠  Skipping {sample_filename}: No files found")
-        return sample_name, 0
+def sample_kind(sample_name: str) -> str:
+    """DATA, SIG or MC; SKIP for data primary datasets not in DATA_PRIMARY_DATASETS."""
+    if is_data_sample(sample_name):
+        pd = re.sub(r"\d*$", "", sample_name.split("-Run")[0])
+        return "DATA" if pd in DATA_PRIMARY_DATASETS else "SKIP"
+    return "SIG" if is_signal_sample(sample_name) else "MC"
 
-    print(f"\n{'='*60}")
-    print(f"Sample: {sample_filename}")
-    print(f"{'='*60}")
-    print(f"  Files in sample: {num_files}")
-    print(f"  Will submit: {num_files} jobs (1 job per file)")
 
-    is_data = is_data_sample(sample_name)
-    print(f"  Sample type: {'DATA' if is_data else 'MC'}")
+# <sample>_I<fileIdx>C<ClusterId>P<ProcId>_EVENTSELECTION.root, plus the older
+# <sample>_<fileIdx>[_<ClusterId>-<ProcId>]_EVENTSELECTION.root so those are not redone.
+OUTPUT_RES = (
+    re.compile(r"^(.*)_I(\d+)C\d+P\d+_EVENTSELECTION\.root$"),
+    re.compile(r"^(.*)_(\d+)(?:_\d+-\d+)?_EVENTSELECTION\.root$"),
+)
 
-    # Handle chunk size: if None (auto), pass "auto" string to let each worker optimize
-    # Otherwise, use the provided value (int or "auto" string)
-    if chunk_size is None:
-        chunk_size_str = "auto"
-        print(f"  Using chunk size: auto (will optimize per job based on input file)")
-    else:
-        chunk_size_str = str(chunk_size)
-        if chunk_size_str == "auto":
-            print(f"  Using chunk size: auto (will optimize per job based on input file)")
-        else:
-            print(f"  Using chunk size: {chunk_size_str}")
 
-    # Create temporary submit file in submitfiles directory
-    submitfiles_dir = condor_dir / 'submitfiles'
-    submitfiles_dir.mkdir(parents=True, exist_ok=True)
-    temp_submit = submitfiles_dir / f"submit_{sample_name}.sub"
+def parse_output_name(name: str):
+    """(sample, fileIdx) of an EVENTSELECTION output name, or None."""
+    for rx in OUTPUT_RES:
+        m = rx.match(name)
+        if m:
+            return m.group(1), int(m.group(2))
+    return None
 
-    create_submit_file(
-        template_file=template_file,
-        output_file=temp_submit,
-        sample_file=sample_filename,
-        num_jobs=num_files,
-        config=config,
-        year=year,
-        executor=executor,
-        chunk_size=chunk_size_str,
-        workers=workers,
-        is_data=is_data,
-        max_events=max_events,
-    )
 
-    if dry_run:
-        print(f"  [DRY RUN] Would submit: condor_submit {temp_submit}")
-        print(f"  [DRY RUN] Submit file created: {temp_submit}")
-        return sample_name, num_files
-
-    # Submit to condor
+def existing_outputs(outdir_year: Path):
+    """(sample, fileIdx) pairs that already have an output on EOS (one FUSE listing)."""
     try:
-        result = subprocess.run(
-            ['condor_submit', str(temp_submit)],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-
-        # Extract cluster ID from output
-        cluster_id = None
-        for line in result.stdout.split('\n'):
-            if 'submitted to cluster' in line.lower():
-                parts = line.split()
-                for i, part in enumerate(parts):
-                    if part.isdigit():
-                        cluster_id = part
-                        break
-
-        print(f"  ✓ Submitted cluster: {cluster_id}")
-        print(f"  ✓ Jobs: {num_files} (one per file)")
-        print(f"  ✓ Each file will run on a separate node")
-
-        return sample_name, num_files
-
-    except subprocess.CalledProcessError as e:
-        print(f"  ✗ Error submitting: {e}")
-        print(f"  stderr: {e.stderr}")
-        return sample_name, 0
+        names = os.listdir(outdir_year)
     except FileNotFoundError:
-        print(f"  ✗ Error: condor_submit not found. Are you on a condor-enabled system?")
-        return sample_name, 0
+        return set()
+    return {key for key in map(parse_output_name, names) if key}
+
+
+def queued_batch_names():
+    """JobBatchName of every job this user has in the queue."""
+    try:
+        out = subprocess.run(["condor_q", "-af", "JobBatchName"], capture_output=True,
+                             text=True, check=True, timeout=120).stdout
+    except (subprocess.SubprocessError, FileNotFoundError) as e:
+        sys.exit(f"✗ Could not query condor_q ({e}); pass --allow-duplicates to skip this check")
+    return {line.strip() for line in out.splitlines() if line.strip()}
+
+
+def queued_job_count():
+    try:
+        out = subprocess.run(["condor_q", "-totals"], capture_output=True, text=True,
+                             check=True, timeout=120).stdout
+    except (subprocess.SubprocessError, FileNotFoundError):
+        return 0
+    m = re.search(r"Total for \S+: (\d+) jobs", out)
+    return int(m.group(1)) if m else 0
+
+
+def batch_for(sample, is_data, timing, args):
+    """Files per job: from pilot timing when available, else --batch."""
+    if not timing:
+        return args.batch
+    entry = timing.get("samples", {}).get(sample) or timing.get("default", {}).get("data" if is_data else "mc")
+    if not entry:
+        return args.batch
+    batch = round(args.target_minutes * 60 / max(entry["sec_per_file"], 1))
+    return max(1, min(args.max_batch, batch))
+
+
+def parse_file_range(spec, n):
+    if not spec:
+        return range(n)
+    start, _, end = spec.partition(":")
+    return range(int(start or 0), min(int(end) if end else n, n))
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description='Submit condor jobs for event-selection sample files',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Examples:
-  # Run from repo root
-  python3 condorJobs/event-selection/submit_samples.py --year 2022
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--year", required=True, choices=["2022", "2022EE", "2023", "2024"])
+    p.add_argument("--outdir", default=DEFAULT_OUTDIR, help="EOS base dir; outputs go to <outdir>/<year>/eventsel/")
+    p.add_argument("--input-dir", type=Path, default=None, help="Samplelist dir (default: data/samplelist/<year>/)")
+    p.add_argument("--config", default=None, help="Config YAML, repo-relative (default: configs/<year>.yaml)")
+    p.add_argument("--samples", nargs="+", default=None, metavar="GLOB", help="Only samples matching these globs")
+    p.add_argument("--exclude", nargs="+", default=[], metavar="GLOB", help="Skip samples matching these globs")
+    p.add_argument("--files", default=None, metavar="START:END", help="Only file indices [START, END) of each sample")
+    p.add_argument("--batch", type=int, default=10, help="Files per job when no timing is available (default: 10)")
+    p.add_argument("--timing", type=Path, default=None, help="Pilot timing JSON from pilot_report.py")
+    p.add_argument("--target-minutes", type=float, default=90, help="Target job length with --timing (default: 90)")
+    p.add_argument("--max-batch", type=int, default=50, help="Upper bound on files per job (default: 50)")
+    p.add_argument("--cpus", type=int, default=2, help="request_cpus = executor workers (default: 2)")
+    p.add_argument("--memory", type=int, default=None, help="request_memory in MB (default: 2000 per cpu)")
+    p.add_argument("--flavour", default="workday",
+                   choices=["espresso", "microcentury", "longlunch", "workday", "tomorrow", "testmatch", "nextweek"])
+    p.add_argument("--chunk-size", default="50000", help="Executor chunk size, integer or 'auto' (default: 50000)")
+    p.add_argument("--max-events", default="", help="Max events per file (testing only)")
+    p.add_argument("--proxy", default=None, help="x509 proxy (default: ~/private/x509up_u<uid> on AFS)")
+    p.add_argument("--no-skip-existing", action="store_true", help="Submit files even if their output is on EOS")
+    p.add_argument("--allow-duplicates", action="store_true", help="Submit samples that still have jobs queued")
+    p.add_argument("--dry-run", action="store_true", help="Write slice files and print the plan, submit nothing")
+    args = p.parse_args()
 
-  # Submit all *.txt files in data/samplelist/2022/
-  python3 submit_samples.py --year 2022
+    if args.chunk_size != "auto" and not args.chunk_size.isdigit():
+        sys.exit(f"✗ --chunk-size must be an integer or 'auto' (got {args.chunk_size})")
+    memory = args.memory or 2000 * args.cpus
+    config = args.config or f"configs/{args.year}.yaml"
+    if not (REPO_DIR / config).is_file():
+        sys.exit(f"✗ Config not found: {REPO_DIR / config}")
+    input_dir = (args.input_dir if args.input_dir and args.input_dir.is_absolute()
+                 else REPO_DIR / (args.input_dir or Path("data/samplelist") / args.year)).resolve()
+    if not input_dir.is_dir():
+        sys.exit(f"✗ Samplelist dir not found: {input_dir}")
 
-  # Override input directory
-  python3 submit_samples.py --year 2022 --input-dir /path/to/samplelist
-
-  # Dry run (don't actually submit)
-  python3 submit_samples.py --year 2022 --dry-run
-
-  # Custom configuration
-  python3 submit_samples.py --year 2022 --config configs/2022.yaml --workers 8
-
-  # Auto-optimize chunk size per sample
-  python3 submit_samples.py --year 2022 --chunk-size auto
-
-  # Use fixed chunk size
-  python3 submit_samples.py --year 2022 --chunk-size 100000
-        """
-    )
-
-    parser.add_argument(
-        '--year',
-        type=str,
-        required=True,
-        choices=['2022', '2022EE', '2023', '2024'],
-        help='Data-taking year: selects data/samplelist/<year>/ and configs/<year>.yaml by default',
-    )
-
-    # Default to data/samplelist/<year>/ relative to repo root (set after --year is known)
-    parser.add_argument(
-        '--input-dir',
-        type=Path,
-        default=None,
-        help='Directory containing *.txt sample files (default: data/samplelist/<year>/)',
-    )
-
-    parser.add_argument(
-        '--config',
-        type=str,
-        default=None,
-        help='Configuration file (default: configs/<year>.yaml)',
-    )
-
-    parser.add_argument(
-        '--executor',
-        type=str,
-        default='futures',
-        choices=['iterative', 'futures', 'dask'],
-        help='Executor type (default: futures)',
-    )
-
-    parser.add_argument(
-        '--chunk-size',
-        type=str,
-        default='50000',
-        help='Chunk size for futures/dask. Use "auto" for automatic optimization based on file characteristics, or specify an integer (default: 50000)',
-    )
-
-    parser.add_argument(
-        '--workers',
-        type=int,
-        default=4,
-        help='Number of workers (default: 4)',
-    )
-
-    parser.add_argument(
-        '--max-events',
-        type=str,
-        default='',
-        help='Maximum events to process (optional)',
-    )
-
-    parser.add_argument(
-        '--template',
-        type=Path,
-        default=Path(__file__).parent / 'submit.sub',
-        help='Template submit file (default: submit.sub)',
-    )
-
-    parser.add_argument(
-        '--dry-run',
-        action='store_true',
-        help='Show what would be submitted without actually submitting',
-    )
-
-    args = parser.parse_args()
-
-    # Setup logging (warnings level to show optimization messages)
-    logging.basicConfig(
-        level=logging.WARNING,
-        format='%(levelname)s: %(message)s'
-    )
-
-    # Get script directory and repository root (condorJobs/event-selection/../..)
-    condor_dir = Path(__file__).parent
-    repo_dir = condor_dir.parent.parent
-
-    # Default config: configs/<year>.yaml
-    if args.config is None:
-        args.config = f'configs/{args.year}.yaml'
-
-    # Handle input directory path: default to data/samplelist/<year>/ at repo root
-    if args.input_dir is None:
-        input_dir = (repo_dir / 'data' / 'samplelist' / args.year).resolve()
-    elif args.input_dir.is_absolute():
-        input_dir = args.input_dir
-    else:
-        input_dir = (repo_dir / args.input_dir).resolve()
-
-    # Check input directory exists
-    if not input_dir.exists():
-        print(f"✗ Error: Input directory not found: {input_dir}")
-        sys.exit(1)
-
-    # Check template file exists
-    if not args.template.exists():
-        print(f"✗ Error: Template file not found: {args.template}")
-        sys.exit(1)
-
-    # Parse chunk size argument
-    try:
-        chunk_size = parse_chunk_size_arg(args.chunk_size)
-    except ValueError as e:
-        print(f"✗ Error: {e}")
-        sys.exit(1)
-
-    # Get request_memory and request_cpus from template file
-    request_memory_mb = get_request_memory_from_template(args.template)
-    request_cpus = get_request_cpus_from_template(args.template)
-
-    # Use request_cpus as workers (automatically derived from Condor template)
-    # This ensures workers match the allocated CPUs
-    workers = request_cpus
-
-    # Create log directories inside condorJobs
-    logs_dir = condor_dir / 'logs'
-    logs_output_dir = logs_dir / 'output'
-    logs_error_dir = logs_dir / 'error'
-
-    for log_dir in [logs_dir, logs_output_dir, logs_error_dir]:
-        log_dir.mkdir(parents=True, exist_ok=True)
-
-    # Create submitfiles directory (will create if doesn't exist)
-    submitfiles_dir = condor_dir / 'submitfiles'
-    submitfiles_dir.mkdir(parents=True, exist_ok=True)
-
-    # Delete existing submit files from previous jobs (automatic cleanup)
-    existing_submit_files = []
-    for submit_file in submitfiles_dir.glob('submit_*.sub'):
-        if submit_file.is_file():
-            existing_submit_files.append(submit_file)
-
-    if existing_submit_files:
-        if not args.dry_run:
-            deleted_count = 0
-            for submit_file in existing_submit_files:
-                try:
-                    submit_file.unlink()
-                    deleted_count += 1
-                except Exception as e:
-                    print(f"  ✗ Error deleting {submit_file}: {e}")
-            if deleted_count > 0:
-                print(f"✓ Deleted {deleted_count} old submit file(s) from previous jobs")
+    user = os.environ.get("USER") or os.getlogin()
+    proxy = Path(args.proxy or f"/afs/cern.ch/user/{user[0]}/{user}/private/x509up_u{os.getuid()}")
+    if not proxy.is_file():
+        sys.exit(f"✗ Proxy not found: {proxy}\n  voms-proxy-init --voms cms --valid 192:00 && cp /tmp/x509up_u{os.getuid()} {proxy.parent}/")
+    left = subprocess.run(["voms-proxy-info", "-file", str(proxy), "-timeleft"], capture_output=True, text=True)
+    hours_left = int(left.stdout.strip() or 0) / 3600 if left.returncode == 0 else 0
+    if hours_left < 48:
+        msg = f"proxy {proxy} has {hours_left:.0f}h left"
+        if args.dry_run:
+            print(f"⚠  {msg} (would refuse to submit with < 48h)")
         else:
-            print(f"  [DRY RUN] Would delete {len(existing_submit_files)} old submit file(s)")
+            sys.exit(f"✗ {msg}; renew it (voms-proxy-init --voms cms --valid 192:00) and copy it to {proxy.parent}/")
 
-    # Check for existing log files and prompt to delete
-    existing_logs = []
-    for log_dir in [logs_output_dir, logs_error_dir, logs_dir]:
-        if log_dir.exists():
-            # Find all log files (dbl.*.out, dbl.*.err, dbl.*.log)
-            for log_file in log_dir.glob('dbl.*'):
-                if log_file.is_file():
-                    existing_logs.append(log_file)
+    timing = json.loads(args.timing.read_text()) if args.timing else None
+    outdir_year = Path(args.outdir) / args.year / "eventsel"
+    done = set() if args.no_skip_existing else existing_outputs(outdir_year)
+    queued = set() if (args.dry_run or args.allow_duplicates) else queued_batch_names()
 
-    if existing_logs and not args.dry_run:
-        print(f"\n⚠  Found {len(existing_logs)} existing log file(s) from previous jobs:")
-        # Show first few files
-        for log_file in existing_logs[:5]:
-            print(f"  - {log_file}")
-        if len(existing_logs) > 5:
-            print(f"  ... and {len(existing_logs) - 5} more")
+    log_dir = CONDOR_DIR / "logs" / args.year
+    slice_dir = CONDOR_DIR / "submitfiles" / args.year
+    for d in (log_dir / "output", log_dir / "error", slice_dir):
+        d.mkdir(parents=True, exist_ok=True)
 
-        response = input("\nDo you want to delete these log files? [y/N]: ").strip().lower()
-        if response in ['y', 'yes']:
-            deleted_count = 0
-            for log_file in existing_logs:
-                try:
-                    log_file.unlink()
-                    deleted_count += 1
-                except Exception as e:
-                    print(f"  ✗ Error deleting {log_file}: {e}")
-            print(f"✓ Deleted {deleted_count} log file(s)")
-        else:
-            print("⚠  Keeping existing log files (new logs will be appended/overwritten)")
-        print()
+    # Build the per-sample plan.
+    plan = []
+    n_selected = 0
+    skipped_pds = []
+    for txt in sorted(input_dir.glob("*.txt")):
+        sample = txt.stem
+        if args.samples and not any(fnmatch.fnmatch(sample, g) for g in args.samples):
+            continue
+        if any(fnmatch.fnmatch(sample, g) for g in args.exclude):
+            continue
+        kind = sample_kind(sample)
+        if kind == "SKIP":
+            skipped_pds.append(sample)
+            continue
+        n_selected += 1
+        batch_name = f"{sample}_{args.year}"
+        files = read_files(txt)
+        todo = [i for i in parse_file_range(args.files, len(files)) if (sample, i) not in done]
+        if batch_name in queued:
+            print(f"⚠  {sample}: jobs still queued, skipping (rerun once they finish)")
+            continue
+        if not todo:
+            continue
+        data = kind == "DATA"
+        batch = batch_for(sample, data, timing, args)
+        slices = [todo[i:i + batch] for i in range(0, len(todo), batch)]
+        plan.append(dict(txt=txt, sample=sample, batch_name=batch_name, data=data, kind=kind,
+                         n_files=len(files), todo=todo, batch=batch, slices=slices))
 
-    # Find sample files
-    sample_files = find_sample_files(input_dir)
+    if skipped_pds:
+        print(f"⚠  Skipping {len(skipped_pds)} data samplelist(s) not in DATA_PRIMARY_DATASETS "
+              f"{DATA_PRIMARY_DATASETS}: {', '.join(skipped_pds)}")
+    if not n_selected:
+        sys.exit(f"✗ No samplelist in {input_dir} matches --samples {args.samples} / --exclude {args.exclude}")
+    if not plan:
+        print("Nothing to submit: every selected file already has an output on EOS (or is queued).")
+        return
 
-    if not sample_files:
-        print(f"✗ No *.txt files found in {input_dir}")
-        sys.exit(1)
+    # Largest clusters first so their tails start earliest.
+    plan.sort(key=lambda s: len(s["todo"]), reverse=True)
+    total_jobs = sum(len(s["slices"]) for s in plan)
+    biggest = max(len(s["slices"]) for s in plan)
+    already_queued = 0 if args.dry_run else queued_job_count()
+    if biggest > MAX_JOBS_PER_SUBMISSION:
+        sys.exit(f"✗ A cluster would have {biggest} jobs > MAX_JOBS_PER_SUBMISSION={MAX_JOBS_PER_SUBMISSION}; raise --batch")
+    if already_queued + total_jobs > MAX_JOBS_PER_OWNER:
+        sys.exit(f"✗ {already_queued} queued + {total_jobs} new > MAX_JOBS_PER_OWNER={MAX_JOBS_PER_OWNER}; raise --batch")
 
-    print("="*60)
-    print("DarkBottomLine Condor Job Submission (event-selection)")
-    print("="*60)
-    print(f"Year: {args.year}")
-    print(f"Config: {args.config}")
-    print(f"Input directory: {input_dir}")
-    print(f"Log directories: {logs_dir}/")
-    print(f"Request memory: {request_memory_mb} MB")
-    print(f"Workers per job: {workers} (auto-derived from request_cpus={request_cpus})")
-    print(f"Executor: {args.executor}")
-    if chunk_size is None:
-        print(f"Chunk size: AUTO (will optimize per sample)")
-    else:
-        print(f"Chunk size: {chunk_size:,} events")
-    print(f"Found {len(sample_files)} sample file(s):")
-    for sample in sample_files:
-        num_files = count_files_in_sample(sample)
-        tag = "DATA" if is_data_sample(sample.stem) else "MC"
-        print(f"  - {sample.name} [{tag}]: {num_files} files")
-    print()
+    print("=" * 72)
+    print(f"Event selection {args.year}: {len(plan)} clusters, {total_jobs} jobs, "
+          f"{sum(len(s['todo']) for s in plan)} files ({len(done)} outputs already on EOS)")
+    print(f"Output: {outdir_year}/")
+    print(f"Per job: {args.cpus} cpus, {memory} MB, flavour {args.flavour}, chunk size {args.chunk_size}")
+    print("=" * 72)
+    print(f"{'sample':<75} {'type':<4} {'files':>6} {'batch':>5} {'jobs':>5}")
+    for s in plan:
+        print(f"{s['sample'][:75]:<75} {s['kind']:<4} {len(s['todo']):>6} {s['batch']:>5} {len(s['slices']):>5}")
+
+    submitted = 0
+    for s in plan:
+        slicefile = slice_dir / f"{s['sample']}.slices"
+        slicefile.write_text("".join(f"{i} {':'.join(map(str, sl))}\n" for i, sl in enumerate(s["slices"])))
+        if args.dry_run:
+            continue
+        appends = {
+            "EXEC": CONDOR_DIR / "runanalysis.sh",
+            "REPO_DIR": REPO_DIR,
+            "CONFIG": config,
+            "YEAR": args.year,
+            "SAMPLE_TXT": s["txt"].resolve(),
+            "OUTDIR": args.outdir,
+            "IS_DATA": "true" if s["data"] else "false",
+            "WORKERS": args.cpus,
+            "CHUNK_SIZE": args.chunk_size,
+            "MAX_EVENTS": args.max_events,
+            "PROXY_PATH": proxy,
+            "PROXY_FILE": proxy.name,
+            "LOGDIR": log_dir,
+            "BATCH_NAME": s["batch_name"],
+            "CPUS": args.cpus,
+            "MEMORY": memory,
+            "FLAVOUR": args.flavour,
+            "SLICEFILE": slicefile,
+        }
+        cmd = ["condor_submit", str(CONDOR_DIR / "submit.sub")]
+        for k, v in appends.items():
+            cmd += ["-append", f"{k}={v}"]
+        res = subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL)
+        if res.returncode != 0:
+            print(f"✗ {s['sample']}: condor_submit failed\n{res.stderr.strip()}")
+            continue
+        m = re.search(r"submitted to cluster (\d+)", res.stdout)
+        print(f"✓ {s['sample']}: cluster {m.group(1) if m else '?'}, {len(s['slices'])} jobs")
+        submitted += len(s["slices"])
 
     if args.dry_run:
-        print("⚠  DRY RUN MODE - No jobs will be submitted")
-        print()
-
-    # Submit each sample
-    results = []
-    for sample_file in sample_files:
-        sample_name, num_jobs = submit_sample(
-            sample_file=sample_file,
-            condor_dir=condor_dir,
-            template_file=args.template,
-            config=args.config,
-            year=args.year,
-            executor=args.executor,
-            chunk_size=chunk_size,
-            workers=workers,  # Use auto-derived workers from request_cpus
-            max_events=args.max_events,
-            request_memory_mb=request_memory_mb,
-            dry_run=args.dry_run,
-        )
-        results.append((sample_name, num_jobs))
-
-    # Summary
-    print("\n" + "="*60)
-    print("Summary")
-    print("="*60)
-    total_jobs = 0
-    for sample_name, num_jobs in results:
-        if num_jobs > 0:
-            print(f"  {sample_name}: {num_jobs} jobs")
-            total_jobs += num_jobs
-        else:
-            print(f"  {sample_name}: Failed or skipped")
-
-    print(f"\nTotal jobs submitted: {total_jobs}")
-    print("\nEach sample runs on separate condor cluster.")
-    print("Each file from a sample runs on a separate node.")
-    print("\nMonitor jobs with: condor_q")
+        print(f"\n[DRY RUN] slice files in {slice_dir}/, nothing submitted")
+    else:
+        print(f"\nSubmitted {submitted} jobs. Monitor: condor_q -batch    Logs: {log_dir}/")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
