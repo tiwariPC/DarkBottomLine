@@ -519,6 +519,85 @@ def get_empty_branch_types() -> Dict[str, Any]:
     return types
 
 
+def prepare_event_branches(branches: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalise compute_event_variables() output for writing, the same way for
+    every executor (iterative, futures, dask), so all of them save the same
+    branches with the same types.
+
+    - list of lists (materialised jagged)  -> awkward float32 jagged
+    - empty list (zero events, jagged)     -> kept; write_events_tree types it
+    - flat list                            -> numpy (floats as float32)
+    - awkward array                        -> kept as is
+    - numpy: unsigned -> int64, non-numeric -> float64, others kept
+    """
+    out: Dict[str, Any] = {}
+    for k, v in branches.items():
+        if isinstance(v, list) and not v:
+            out[k] = v
+        elif isinstance(v, list):
+            try:
+                arr = ak.Array(v)
+                if arr.ndim > 1:
+                    out[k] = ak.values_astype(arr, np.float32)
+                else:
+                    a = np.asarray(arr)
+                    out[k] = a.astype(np.float32) if a.dtype.kind == 'f' else a
+            except Exception:
+                out[k] = v
+        elif isinstance(v, ak.Array):
+            out[k] = v
+        else:
+            a = np.asarray(v)
+            if a.dtype.kind == 'u':
+                a = a.astype(np.int64)
+            elif a.dtype.kind not in ('i', 'f'):
+                a = a.astype(np.float64)
+            out[k] = a
+    return out
+
+
+def write_events_tree(f, branches: Dict[str, Any], name: str = "Events") -> int:
+    """Write *branches* into the open uproot file *f* as a classic TTree.
+
+    Always use this instead of ``f[name] = branches``: from uproot 5.7 dict
+    assignment writes an RNTuple, which hadd (ROOT 6.38) cannot merge. mktree +
+    extend gives a TTree whatever uproot's default is, and with zero-length
+    arrays it writes an empty tree with the full schema, so files with no
+    selected events still merge with the rest.
+
+    Branch values may be 1-D numpy arrays, or awkward arrays / lists of lists for
+    jagged branches. Returns the number of entries written.
+    """
+    types: Dict[str, Any] = {}
+    data: Dict[str, Any] = {}
+    n_entries = None
+    for k, v in branches.items():
+        if isinstance(v, np.ndarray) and v.dtype != object:
+            arr = v
+            types[k] = arr.dtype
+        else:
+            arr = v if isinstance(v, ak.Array) else ak.Array(v)
+            if arr.ndim > 1 or "unknown" in str(arr.type):
+                # Every jagged branch is float32 (_JAGGED_BRANCHES), as the
+                # iterative path has always written them. Cast so the type does
+                # not depend on how values arrived (Python floats -> float64,
+                # NanoAOD multiplicities -> int64, empty list -> unknown).
+                arr = ak.values_astype(arr, np.float32) if len(arr) else arr
+                types[k] = "var * float32"
+            else:
+                arr = np.asarray(arr)
+                types[k] = arr.dtype
+        data[k] = arr
+        if n_entries is None:
+            n_entries = len(arr)
+        elif len(arr) != n_entries:
+            raise ValueError(f"branch {k!r} has {len(arr)} entries, expected {n_entries}")
+    f.mktree(name, types)
+    if n_entries:
+        f[name].extend(data)
+    return n_entries or 0
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------

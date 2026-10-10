@@ -1792,8 +1792,20 @@ def apply_dnn(args):
                     scores = inference.predict(X, masses).ravel()
                     score_branches[_mass_branch_name(score_branch, mh3, mh4)] = scores.astype("f4")
 
-            # Collect all existing branches
-            arrays = tree.arrays(library="np")
+            # Collect all existing branches (awkward keeps jagged branches jagged;
+            # library="np" would turn them into object arrays a TTree cannot hold),
+            # minus the n<branch> counters that mktree regenerates.
+            ev = tree.arrays()
+            counters = set()
+            for f in ev.fields:
+                cb = getattr(tree[f], "count_branch", None)  # TTree only; RNTuple has none
+                if cb is not None:
+                    counters.add(cb.name)
+            arrays = {f: ev[f] for f in ev.fields if f not in counters}
+            # Everything else in the file (total_events, weighted_total_events,
+            # selected_events, cutflow, ...) — the normalisation inputs — is
+            # copied over unchanged; rewriting only Events would drop it.
+            others = {k.split(";")[0]: in_f[k] for k in in_f.keys(cycle=False) if k != "Events"}
 
         arrays.update(score_branches)
 
@@ -1802,8 +1814,11 @@ def apply_dnn(args):
         else:
             out_path = fpath  # overwrite in-place
 
+        from .variables import write_events_tree
         with uproot.recreate(str(out_path)) as out_f:
-            out_f["Events"] = arrays
+            for k, obj in others.items():
+                out_f[k] = obj
+            write_events_tree(out_f, arrays)
 
         logging.info("Scored %s: n=%d → %s (branches: %s)", Path(fpath).name, n, out_path, list(score_branches))
 

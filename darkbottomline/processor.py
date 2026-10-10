@@ -522,7 +522,7 @@ class DarkBottomLineProcessor:
 
                 logging.info(f"Creating ROOT file: {output_file_root}")
 
-                from .variables import get_empty_branch_types
+                from .variables import get_empty_branch_types, prepare_event_branches, write_events_tree
 
                 # Compute all output branches via variables module
                 branches = {}
@@ -530,6 +530,20 @@ class DarkBottomLineProcessor:
                     branches = compute_event_variables(
                         events, objects, self.config, event_weights
                     )
+                elif events is not None:
+                    # Zero selected events: compute the branches on the zero-length
+                    # array anyway, so the empty Events has exactly the fields and
+                    # dtypes a file with events gets. Objects are missing when the
+                    # golden JSON mask removed everything; build them on the empty
+                    # events too.
+                    try:
+                        if not objects:
+                            objects = build_objects(events, self.config, corrections=self.correction_manager)
+                        branches = compute_event_variables(events, objects, self.config, event_weights)
+                    except Exception as e:
+                        logging.warning(f"Could not derive the Events schema from zero events ({e}); "
+                                        "using the static schema from get_empty_branch_types()")
+                        branches = {}
                     # Forward extra event fields (e.g. ml_score from DNN) not in standard variable set
                     for _ef in ("ml_score",):
                         if _ef in events.fields:
@@ -546,36 +560,20 @@ class DarkBottomLineProcessor:
                 _ew = event_weights.get("full_event_weight") if event_weights else None
                 selected_events = float(np.sum(_ew)) if _ew is not None and len(_ew) > 0 else float(0 if no_events else len(events))
                 with uproot.recreate(output_file_root) as f:
-                    if not no_events and branches:
-                        write_branches = {}
-                        for k, v in branches.items():
-                            if isinstance(v, list):
-                                # Materialised jagged (ak.to_list()) — convert back to
-                                # ak.Array with explicit float32 dtype so uproot writes
-                                # the correct basket dtype even when all sub-lists are empty.
-                                try:
-                                    arr = ak.Array(v)
-                                    if arr.ndim > 1:
-                                        write_branches[k] = ak.values_astype(arr, np.float32)
-                                    else:
-                                        a = np.asarray(arr)
-                                        write_branches[k] = a.astype(np.float32) if a.dtype.kind == 'f' else a
-                                except Exception:
-                                    write_branches[k] = v
-                            elif isinstance(v, ak.Array):
-                                write_branches[k] = v
-                            else:
-                                a = np.asarray(v)
-                                if a.dtype.kind == 'u':
-                                    a = a.astype(np.int64)
-                                elif a.dtype.kind not in ('i', 'f'):
-                                    a = a.astype(np.float64)
-                                write_branches[k] = a
-                        f["Events"] = write_branches
+                    if branches:
+                        # Same conversion as the futures/dask writer (analyzer.py).
+                        write_branches = prepare_event_branches(branches)
+                        n_written = write_events_tree(f, write_branches)
+                        if no_events:
+                            logging.info(f"No selected events — wrote empty Events TTree with "
+                                         f"{len(write_branches)} branches for hadd compatibility")
+                        else:
+                            logging.info(f"Wrote Events TTree with {n_written} entries, {len(write_branches)} branches")
                     else:
-                        # Always write an empty Events tree with the correct schema so
-                        # hadd can merge this file with chunks that have selected events.
-                        logging.info("No selected events — writing empty Events tree for hadd compatibility")
+                        # Last resort (no events object to derive the schema from):
+                        # static schema, which may not match files with events exactly.
+                        logging.warning("No selected events and no derivable schema — writing empty "
+                                        "Events TTree from get_empty_branch_types()")
                         f.mktree("Events", get_empty_branch_types())
 
                     # Flat 1-bin TH1 per scalar — hadd sums bin contents correctly

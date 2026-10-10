@@ -1707,6 +1707,11 @@ if COFFEA_AVAILABLE:
                     merged_branches: Dict[str, list] = {}   # branch_name → list of np.ndarray
                     merged_cutflow: Dict[str, int] = {}
                     total_selected = 0
+                    # Branches of the first chunk, kept even when it selected nothing:
+                    # compute_event_variables still returns every branch (zero-length),
+                    # so a file with no selected events gets an empty Events with the
+                    # same fields and dtypes as files that have events.
+                    schema_branches: Optional[Dict[str, Any]] = None
 
                     for chunk_file in sorted(chunk_files):
                         if not os.path.exists(chunk_file):
@@ -1722,6 +1727,8 @@ if COFFEA_AVAILABLE:
                             n_ev = int(chunk_data.get("n_events", 0))
                             cutflow = chunk_data.get("cutflow")
 
+                            if branches and schema_branches is None:
+                                schema_branches = branches
                             if n_ev > 0 and branches:
                                 total_selected += n_ev
                                 for bname, barr in branches.items():
@@ -1753,9 +1760,20 @@ if COFFEA_AVAILABLE:
                                 merged_list.extend(a)
                             flat_branches[bname] = merged_list
 
-                    if not flat_branches:
+                    if not flat_branches and schema_branches:
+                        # Zero-length copy of every branch: numpy for flat ones, an
+                        # empty list for jagged ones (written as var * float32).
+                        flat_branches = {
+                            k: (v[:0] if isinstance(v, np.ndarray) else [])
+                            for k, v in schema_branches.items()
+                        }
+                        logging.info(
+                            f"No selected events in {len(chunk_files)} chunk files — "
+                            f"writing an empty Events with {len(flat_branches)} branches"
+                        )
+                    elif not flat_branches:
                         logging.warning(
-                            f"No selected events found in {len(chunk_files)} chunk files — "
+                            f"No selected events and no branch schema in {len(chunk_files)} chunk files — "
                             f"writing metadata-only output to {self.event_selection_output}"
                         )
 
@@ -1881,25 +1899,14 @@ if COFFEA_AVAILABLE:
                         cf_edges   = np.arange(len(cut_counts) + 1, dtype=float)
                         f["cutflow"] = (cut_counts, cf_edges)
 
-                # Events TTree — flat numpy branches only (jagged ak.Arrays corrupt uproot output)
+                # Events TTree — every branch the iterative path saves, jagged ones
+                # included, converted and written exactly as processor.py does.
                 if branches:
                     try:
-                        flat_branches = {}
-                        for k, v in branches.items():
-                            if isinstance(v, np.ndarray):
-                                if v.dtype == object or v.ndim != 1:
-                                    continue  # jagged or multi-dim numpy
-                                flat_branches[k] = v
-                            elif isinstance(v, ak.Array):
-                                try:
-                                    arr = ak.to_numpy(v)
-                                    if arr.dtype == object or arr.ndim != 1:
-                                        continue  # jagged
-                                    flat_branches[k] = arr.astype(np.float32)
-                                except Exception:
-                                    continue
-                        f["Events"] = flat_branches
-                        logging.info(f"Wrote Events tree with {n_selected} entries, {len(flat_branches)} branches")
+                        from .variables import prepare_event_branches, write_events_tree
+                        write_branches = prepare_event_branches(branches)
+                        n_written = write_events_tree(f, write_branches)
+                        logging.info(f"Wrote Events TTree with {n_written} entries, {len(write_branches)} branches")
                     except Exception as e:
                         logging.error(f"Failed to write Events tree: {e}", exc_info=True)
 
