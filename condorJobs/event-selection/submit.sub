@@ -3,7 +3,7 @@
 # per samplelist .txt, ONE job per slice of ROOT files. Each job runs its files
 # sequentially (one `darkbottomline analyze --mode event-selection` per file),
 # writes to worker scratch and xrdcp's each output to EOS:
-#   <OUTDIR>/<YEAR>/eventsel/<sample>_I<fileIdx>C<ClusterId>P<ProcId>_EVENTSELECTION.root
+#   <OUTDIR>/<YEAR>/eventsel/<sample>/<sample>_I<fileIdx>C<ClusterId>P<ProcId>_EVENTSELECTION.root
 #
 # Submitted once per .txt by submit_samples.py, which passes every variable
 # below via -append (do not hardcode here). SLICEFILE has one line per job:

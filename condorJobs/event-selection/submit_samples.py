@@ -5,7 +5,7 @@ Submit condor jobs for event selection (NanoAOD -> EVENTSELECTION.root).
 One cluster per samplelist .txt in data/samplelist/<year>/, one job per slice of
 BATCH ROOT files. Each job runs its files sequentially (runanalysis.sh) and
 xrdcp's every output to:
-    <OUTDIR>/<year>/eventsel/<sample>_I<fileIdx>C<ClusterId>P<ProcId>_EVENTSELECTION.root
+    <OUTDIR>/<year>/eventsel/<sample>/<sample>_I<fileIdx>C<ClusterId>P<ProcId>_EVENTSELECTION.root
 
 Files whose output is already on EOS are never submitted, so rerunning the same
 command after a round finishes resubmits only what is missing. Samples that still
@@ -93,11 +93,21 @@ def parse_output_name(name: str):
 
 
 def existing_outputs(outdir_year: Path):
-    """(sample, fileIdx) pairs that already have an output on EOS (one FUSE listing)."""
+    """(sample, fileIdx) pairs that already have an output on EOS.
+
+    Outputs live in <outdir_year>/<sample>/; files directly in <outdir_year> (the
+    earlier flat layout) are counted too.
+    """
     try:
-        names = os.listdir(outdir_year)
+        entries = list(os.scandir(outdir_year))
     except FileNotFoundError:
         return set()
+    names = []
+    for e in entries:
+        if e.is_dir():
+            names += os.listdir(e.path)
+        else:
+            names.append(e.name)
     return {key for key in map(parse_output_name, names) if key}
 
 
@@ -142,7 +152,7 @@ def parse_file_range(spec, n):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--year", required=True, choices=["2022", "2022EE", "2023", "2024"])
-    p.add_argument("--outdir", default=DEFAULT_OUTDIR, help="EOS base dir; outputs go to <outdir>/<year>/eventsel/")
+    p.add_argument("--outdir", default=DEFAULT_OUTDIR, help="EOS base dir; outputs go to <outdir>/<year>/eventsel/<sample>/")
     p.add_argument("--input-dir", type=Path, default=None, help="Samplelist dir (default: data/samplelist/<year>/)")
     p.add_argument("--config", default=None, help="Config YAML, repo-relative (default: configs/<year>.yaml)")
     p.add_argument("--samples", nargs="+", default=None, metavar="GLOB", help="Only samples matching these globs")

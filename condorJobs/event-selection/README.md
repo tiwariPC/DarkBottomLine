@@ -12,12 +12,16 @@ on lxplus HTCondor for every samplelist in `data/samplelist/<year>/`.
   checksum (no FUSE writes, see `condorJobs/btag-efficiency/run_slimmer.sh` for why):
 
   ```
-  <OUTDIR>/<year>/eventsel/<sample>_I<fileIdx>C<ClusterId>P<ProcId>_EVENTSELECTION.root
+  <OUTDIR>/<year>/eventsel/<sample>/<sample>_I<fileIdx>C<ClusterId>P<ProcId>_EVENTSELECTION.root
   OUTDIR default: /eos/cms/store/group/phys_susy/sus-23-008/run3_bbMET/20260917-849194d_10102026
   ```
 
 - Files already on EOS are never resubmitted: **rerunning the same command resubmits only
   what is missing.** Samples with jobs still in the queue are skipped, so nothing runs twice.
+
+  One subdirectory per sample. Region analysis globs `*.root` in a single folder (not
+  recursive), so either merge each sample into one file in a flat folder first
+  (`scripts/merge_rootfiles.py`) or point `--input` at one sample's folder.
 
   Output name fields: `I` = line index in the samplelist (identifies the input file),
   `C`/`P` = Condor ClusterId/ProcId of the job that wrote it. A held+released retry keeps
@@ -139,7 +143,7 @@ different `C`/`P`, and a `*_EVENTSELECTION.root` glob would then count those eve
 | Option | Default | |
 |---|---|---|
 | `--year` | required | 2022, 2022EE, 2023, 2024 |
-| `--outdir` | see above | EOS base; outputs go to `<outdir>/<year>/eventsel/` |
+| `--outdir` | see above | EOS base; outputs go to `<outdir>/<year>/eventsel/<sample>/` |
 | `--samples` / `--exclude` | all | sample-name globs |
 | `--files START:END` | all | restrict file indices per sample (pilots/tests) |
 | `--batch` | 10 | files per job without `--timing` |

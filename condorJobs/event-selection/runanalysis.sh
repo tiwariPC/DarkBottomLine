@@ -4,7 +4,7 @@
 # samplelist .txt. Files run sequentially, one
 # `darkbottomline analyze --mode event-selection` call each, so one bad file
 # never costs the rest of the slice. Per file:
-#   1. skip if <OUTDIR>/<YEAR>/eventsel/<sample>_I<idx>C<ClusterId>P<ProcId>_EVENTSELECTION.root
+#   1. skip if <OUTDIR>/<YEAR>/eventsel/<sample>/<sample>_I<idx>C<ClusterId>P<ProcId>_EVENTSELECTION.root
 #      already exists (a held+released retry keeps its ClusterId/ProcId; across
 #      submissions submit_samples.py dedups on (sample, idx))
 #   2. read via the CERN-local EOS replica when one exists, else the original
@@ -34,7 +34,7 @@ REPO_DIR="${DBL_REPO_DIR}"
 CONFIG="${DBL_CONFIG}"
 YEAR="${DBL_YEAR}"
 SAMPLE_TXT="${DBL_SAMPLE_TXT}"
-OUTDIR_YEAR="${DBL_OUTDIR}/${YEAR}/eventsel"
+OUTDIR_SAMPLE="${DBL_OUTDIR}/${YEAR}/eventsel/$(basename "${DBL_SAMPLE_TXT}" .txt)"
 SAMPLE=$(basename "${SAMPLE_TXT}" .txt)
 EOS_HOST="eoscms.cern.ch"
 
@@ -50,7 +50,7 @@ echo "host      : $(hostname)"
 echo "sample    : ${SAMPLE} (${YEAR}, data=${DBL_DATA})"
 echo "slice     : ${DBL_SLICE_ID} -> indices ${INDICES}"
 echo "job       : cluster ${CLUSTER_ID}, proc ${PROC_ID}"
-echo "outdir    : ${OUTDIR_YEAR}"
+echo "outdir    : ${OUTDIR_SAMPLE}"
 echo "workers   : ${DBL_WORKERS}, chunk size ${DBL_CHUNK_SIZE}"
 echo "start     : $(date)"
 
@@ -128,7 +128,7 @@ stage_out() {
     return 1
 }
 
-xrdfs "${EOS_HOST}" mkdir -p "${OUTDIR_YEAR}" >/dev/null 2>&1 || true
+xrdfs "${EOS_HOST}" mkdir -p "${OUTDIR_SAMPLE}" >/dev/null 2>&1 || true
 
 N_DONE=0
 N_SKIPPED=0
@@ -142,7 +142,7 @@ for idx in ${INDICES//:/ }; do
         continue
     fi
     NAME="${SAMPLE}_I${idx}C${CLUSTER_ID}P${PROC_ID}_EVENTSELECTION.root"
-    DEST="${OUTDIR_YEAR}/${NAME}"
+    DEST="${OUTDIR_SAMPLE}/${NAME}"
     LOCAL_OUT="${SCRATCH}/${NAME}"
 
     if xrdfs "${EOS_HOST}" stat "${DEST}" >/dev/null 2>&1; then
