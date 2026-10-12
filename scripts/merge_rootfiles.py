@@ -191,7 +191,7 @@ def _resolve_input_dirs(input_dirs: Sequence[str], input_root: Optional[str]) ->
     return sorted(p for p in root.iterdir() if p.is_dir())
 
 
-def _collect_tasks(input_dirs: Sequence[Path], output_dir: Path) -> List[MergeTask]:
+def _collect_tasks(input_dirs: Sequence[Path], output_dir: Path, suffix: str = "") -> List[MergeTask]:
     tasks: List[MergeTask] = []
     for in_dir in input_dirs:
         if not in_dir.is_dir():
@@ -207,7 +207,7 @@ def _collect_tasks(input_dirs: Sequence[Path], output_dir: Path) -> List[MergeTa
                 folder=in_dir,
                 group_key=in_dir.name,
                 files=files,
-                output_root=output_dir / f"{in_dir.name}.root",
+                output_root=output_dir / f"{in_dir.name}{suffix}.root",
             )
         )
     return tasks
@@ -332,6 +332,11 @@ def _parse_args() -> argparse.Namespace:
         "--max-staging-gb", type=float, default=8.0,
         help="Cap total concurrent temporary staging size in GB for /eos/ outputs (default: 8). Set <=0 to disable.",
     )
+    parser.add_argument(
+        "--suffix", default="",
+        help="Appended to each sample folder name for the output file, e.g. "
+             "'_EVENTSELECTION' gives <sample>_EVENTSELECTION.root (default: none).",
+    )
     parser.add_argument("--dry-run", action="store_true", help="Only print planned hadd commands.")
     return parser.parse_args()
 
@@ -351,7 +356,7 @@ def main() -> int:
     work_dir.mkdir(parents=True, exist_ok=True)
     staging_budget = _ByteBudget(int(args.max_staging_gb * 1024**3)) if args.max_staging_gb > 0 else None
 
-    tasks = _collect_tasks(input_dirs, output_dir)
+    tasks = _collect_tasks(input_dirs, output_dir, args.suffix)
     if not tasks:
         print("No ROOT files found to merge.")
         return 0

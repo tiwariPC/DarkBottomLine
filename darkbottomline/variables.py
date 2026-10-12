@@ -10,9 +10,14 @@ Return value of compute_event_variables(): flat dict[str, np.ndarray | ak.Array]
   - SENTINEL (-9.0)  → variable undefined for this event (e.g. < N jets required)
 """
 
+import json
+import logging
+from functools import lru_cache
+from pathlib import Path
+
 import numpy as np
 import awkward as ak
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 from darkbottomline.objects import SENTINEL
 from darkbottomline.corrections import jes_sources
 
@@ -322,15 +327,48 @@ def _dphi_jet_met(objects: Dict[str, Any], met_phi: np.ndarray) -> np.ndarray:
     return np.where(raw >= 0, np.minimum(raw, np.float32(2 * np.pi) - raw), raw).astype(np.float32)
 
 
+_SIGNAL_XSEC_JSON = Path(__file__).resolve().parent.parent / "data" / "cross-section" / "xsection_signal.json"
+
+
+@lru_cache(maxsize=1)
+def _signal_grid_branches() -> Tuple[str, ...]:
+    """GenModel_<point> branch name for every signal grid point in
+    xsection_signal.json ({model: {point: xsec}}; keys starting with '_' are
+    comments)."""
+    try:
+        with open(_SIGNAL_XSEC_JSON) as f:
+            table = json.load(f)
+    except (OSError, ValueError) as e:
+        logging.warning(f"Could not read signal grid points from {_SIGNAL_XSEC_JSON}: {e}")
+        return ()
+    return tuple(sorted(
+        f"GenModel_{point}"
+        for points in table.values() if isinstance(points, dict)
+        for point in points if not point.startswith("_")
+    ))
+
+
 def _genmodel_variables(events: ak.Array) -> Dict[str, np.ndarray]:
-    """Pass through GenModel_* boolean branches (signal grid-point flags)."""
+    """GenModel_* grid-point flags (signal only; no-op for bkg/data).
+
+    A NanoAOD signal file only has GenModel_ branches for the grid points it
+    contains, so outputs would differ in branch set between files and hadd
+    silently drops the events of files whose branch set differs. Every signal
+    output therefore gets a flag for every grid point in xsection_signal.json,
+    0 for points absent from this file.
+    """
     out: Dict[str, np.ndarray] = {}
-    for field in events.fields:
-        if field.startswith('GenModel_'):
-            try:
-                out[field] = ak.to_numpy(events[field]).astype(np.int8)
-            except Exception:
-                pass
+    present = [f for f in events.fields if f.startswith('GenModel_')]
+    if not present:
+        return out
+    for field in present:
+        try:
+            out[field] = ak.to_numpy(events[field]).astype(np.int8)
+        except Exception:
+            pass
+    for branch in _signal_grid_branches():
+        if branch not in out:
+            out[branch] = np.zeros(len(events), dtype=np.int8)
     return out
 
 
