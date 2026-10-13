@@ -1194,6 +1194,13 @@ if COFFEA_AVAILABLE:
             self.processed_events += len(events_to_process)
             logging.info(f"Processing {len(events_to_process)} events (total processed: {self.processed_events}/{self.max_events if self.max_events else 'unlimited'})")
 
+            # Golden JSON mask up front: the event_selection_output collection
+            # below re-runs apply_selection on events_to_process directly, so
+            # relying on the mask inside analyzer.process() alone leaks
+            # uncertified lumisections into EVENTSELECTION.root for data.
+            if self.analyzer.base_processor.is_data:
+                events_to_process = self.analyzer.base_processor.apply_lumi_mask(events_to_process)
+
             # Accumulate weighted_total_events across chunks.
             # Also persist to a temp file so postprocess() can sum across
             # workers (futures/dask workers run in separate processes and do
