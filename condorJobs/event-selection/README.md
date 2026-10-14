@@ -13,8 +13,15 @@ on lxplus HTCondor for every samplelist in `data/samplelist/<year>/`.
 
   ```
   <OUTDIR>/<year>/eventsel/<sample>/<sample>_I<fileIdx>C<ClusterId>P<ProcId>_EVENTSELECTION.root
-  OUTDIR default: /eos/cms/store/group/phys_susy/sus-23-008/run3_bbMET/20260917-849194d_10102026
+  OUTDIR = <base>/<tag>_<DDMMYYYY>/     base default: /eos/cms/store/group/phys_susy/sus-23-008/run3_bbMET
   ```
+
+  You only pass the base (`--outdir`, optional); the run directory is created from the git version
+  tag (`darkbottomline/_version.py` with `+` → `-`, e.g. `20261014-d110783`) and the submission
+  date. To resubmit missing files on a later day, pass the original run directory as `--outdir`
+  (e.g. `.../run3_bbMET/20261014-d110783_14102026`); a path already ending in `<tag>_<DDMMYYYY>`
+  is used as is. The submitter prints whether today's run directory already exists (reused, files already
+  there are skipped) or will be created, and lists same-tag directories from other days.
 
 - Files already on EOS are never resubmitted: **rerunning the same command resubmits only
   what is missing.** Samples with jobs still in the queue are skipped, so nothing runs twice.
@@ -111,9 +118,14 @@ What was submitted for 2024 (69 clusters, 1,715 jobs, 25,191 files):
 
 ```bash
 python3 condorJobs/event-selection/submit_samples.py --year 2024 --dry-run \
-    --batch 15 --cpus 2 --memory 4000
+    --batch 15 --cpus 2 --memory 4000 \
+    --outdir /eos/cms/store/group/phys_susy/sus-23-008/run3_bbMET/
 # check the table, then drop --dry-run
 ```
+
+The 2026-10-14 submission (tag `20261014-d110783`) used exactly this with `--dry-run` dropped
+(outputs in `.../run3_bbMET/20261014-d110783_14102026/`):
+79 clusters, 2,288 jobs, 33,722 files, Muon0/Muon1 skipped (not in `DATA_PRIMARY_DATASETS`).
 
 At roughly 100–265 s per file, 15 files per job gives jobs of about 25–70 minutes, well
 inside the 8 h `workday` limit. `--batch 10` gives 2,550 jobs of about 17–45 minutes.

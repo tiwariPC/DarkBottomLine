@@ -29,7 +29,9 @@ Examples (run from anywhere):
 """
 
 import argparse
+from datetime import datetime
 import fnmatch
+import glob
 import json
 import math
 import os
@@ -40,7 +42,29 @@ from pathlib import Path
 
 CONDOR_DIR = Path(__file__).resolve().parent
 REPO_DIR = CONDOR_DIR.parent.parent
-DEFAULT_OUTDIR = "/eos/cms/store/group/phys_susy/sus-23-008/run3_bbMET/20260917-849194d_10102026"
+DEFAULT_OUTDIR = "/eos/cms/store/group/phys_susy/sus-23-008/run3_bbMET"
+RUN_DIR_RE = re.compile(r"^\d{8}-[0-9a-f]+_\d{8}$")  # <tag>_<DDMMYYYY>
+
+
+def resolve_outdir(base: str) -> str:
+    """<base>/<tag>_<DDMMYYYY>: tag = _version.py version with '+' -> '-' (the git tag, e.g.
+    20261014-d110783), date = today. A base that already ends in such a directory is used
+    as is, so a resubmission on a later day can reuse the original run directory."""
+    base = base.rstrip("/")
+    if RUN_DIR_RE.match(os.path.basename(base)):
+        return base
+    text = (REPO_DIR / "darkbottomline" / "_version.py").read_text()
+    version = re.search(r'__version__\s*=\s*"([^"]+)"', text).group(1)
+    tag = version.replace("+", "-")
+    run_dir = f"{base}/{tag}_{datetime.now():%d%m%Y}"
+    if os.path.isdir(run_dir):
+        print(f"Run directory exists, reusing it (files already there are skipped): {run_dir}")
+    else:
+        print(f"Run directory will be created: {run_dir}")
+        earlier = sorted(d for d in glob.glob(f"{base}/{tag}_*") if os.path.isdir(d))
+        for d in earlier:
+            print(f"  note: same-tag run from another day exists, pass it as --outdir to resubmit into it: {d}")
+    return run_dir
 
 # Schedd limits on lxplus (condor_config_val -schedd, 2026-10-10).
 MAX_JOBS_PER_SUBMISSION = 20000
@@ -152,7 +176,10 @@ def parse_file_range(spec, n):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--year", required=True, choices=["2022", "2022EE", "2023", "2024"])
-    p.add_argument("--outdir", default=DEFAULT_OUTDIR, help="EOS base dir; outputs go to <outdir>/<year>/eventsel/<sample>/")
+    p.add_argument("--outdir", default=DEFAULT_OUTDIR,
+                   help="EOS base dir; a <tag>_<DDMMYYYY> run directory is created in it and outputs go to "
+                        "<outdir>/<tag>_<DDMMYYYY>/<year>/eventsel/<sample>/. Pass an existing run directory "
+                        "to resubmit into it (default: %(default)s)")
     p.add_argument("--input-dir", type=Path, default=None, help="Samplelist dir (default: data/samplelist/<year>/)")
     p.add_argument("--config", default=None, help="Config YAML, repo-relative (default: configs/<year>.yaml)")
     p.add_argument("--samples", nargs="+", default=None, metavar="GLOB", help="Only samples matching these globs")
@@ -173,6 +200,7 @@ def main():
     p.add_argument("--allow-duplicates", action="store_true", help="Submit samples that still have jobs queued")
     p.add_argument("--dry-run", action="store_true", help="Write slice files and print the plan, submit nothing")
     args = p.parse_args()
+    args.outdir = resolve_outdir(args.outdir)
 
     if args.chunk_size != "auto" and not args.chunk_size.isdigit():
         sys.exit(f"✗ --chunk-size must be an integer or 'auto' (got {args.chunk_size})")
