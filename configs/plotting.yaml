@@ -634,6 +634,8 @@ process_groups:
     patterns:
     - TBbarQtoLNu-t-channel-4FS
     - TbarBQtoLNu-t-channel-4FS
+    - TBbarQ_t-channel_4FS
+    - TbarBQ_t-channel_4FS
     - TBbartoLplusNuBbar-s-channel-4FS
     - TbarBtoLminusNuB-s-channel-4FS
     - TbarWplustoLNu2Q

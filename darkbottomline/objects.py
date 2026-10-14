@@ -4,7 +4,8 @@ Physics object selection and cleaning functions for DarkBottomLine framework.
 
 import awkward as ak
 import numpy as np
-from typing import Dict, Any, Tuple
+import logging
+from typing import Dict, Any, Optional, Tuple
 
 from darkbottomline.corrections import jes_sources
 
@@ -540,6 +541,35 @@ def _met_field(events: ak.Array, *candidates):
     raise KeyError(f"No MET branch found among {candidates}")
 
 
+def _type1_met(events: ak.Array, corrections: Any = None,
+               jes_source: Optional[str] = None, jes_direction: Optional[str] = None):
+    """(met_pt, met_phi): Type-1 MET recomputed from our corrected jets.
+
+    The Type-1 shift must be added to the RAW MET (RawPuppiMET):
+    NanoAOD's PuppiMET is already Type-1 corrected, so adding the shift to
+    it applies the jet correction twice (~+9 GeV mean, ~2x the events with
+    MET>250 on 2024 test files). Without RawPuppiMET_* or a usable shift,
+    returns the stored MET unchanged.
+    """
+    met_pt  = _met_field(events, "PuppiMET_pt",  "PFMET_pt",  "MET_pt")
+    met_phi = _met_field(events, "PuppiMET_phi", "PFMET_phi", "MET_phi")
+    if corrections is None or not hasattr(corrections, "get_type1_met_shift"):
+        return met_pt, met_phi
+    if "RawPuppiMET_pt" not in events.fields or "RawPuppiMET_phi" not in events.fields:
+        logging.warning("Type-1 MET: no RawPuppiMET_pt/phi branches — keeping stored PuppiMET "
+                        "(the shift cannot be applied to an already Type-1 corrected MET)")
+        return met_pt, met_phi
+    shift = corrections.get_type1_met_shift(events, jes_source=jes_source, jes_direction=jes_direction)
+    if shift is None:
+        return met_pt, met_phi
+    delta_met_x, delta_met_y = shift
+    raw_pt = np.asarray(ak.to_numpy(events["RawPuppiMET_pt"]), dtype=float)
+    raw_phi = np.asarray(ak.to_numpy(events["RawPuppiMET_phi"]), dtype=float)
+    met_x = raw_pt * np.cos(raw_phi) + delta_met_x
+    met_y = raw_pt * np.sin(raw_phi) + delta_met_y
+    return ak.Array(np.sqrt(met_x**2 + met_y**2)), ak.Array(np.arctan2(met_y, met_x))
+
+
 def calculate_recoil(events: ak.Array, objects: Dict[str, Any], corrections: Any = None):
     """Recoil = |-(MET_vec + sum pT(loose muons+electrons))|. Returns (recoil_pt, recoil_phi).
 
@@ -552,16 +582,7 @@ def calculate_recoil(events: ak.Array, objects: Dict[str, Any], corrections: Any
     official recommendation. Falls back to the stored MET unchanged if
     unconfigured/unavailable.
     """
-    met_pt  = _met_field(events, "PuppiMET_pt",  "PFMET_pt",  "MET_pt")
-    met_phi = _met_field(events, "PuppiMET_phi", "PFMET_phi", "MET_phi")
-    if corrections is not None and hasattr(corrections, "get_type1_met_shift"):
-        shift = corrections.get_type1_met_shift(events)
-        if shift is not None:
-            delta_met_x, delta_met_y = shift
-            met_x = np.asarray(ak.to_numpy(met_pt)) * np.cos(np.asarray(ak.to_numpy(met_phi))) + delta_met_x
-            met_y = np.asarray(ak.to_numpy(met_pt)) * np.sin(np.asarray(ak.to_numpy(met_phi))) + delta_met_y
-            met_pt = ak.Array(np.sqrt(met_x**2 + met_y**2))
-            met_phi = ak.Array(np.arctan2(met_y, met_x))
+    met_pt, met_phi = _type1_met(events, corrections)
     muons     = objects.get("muons",     ak.Array([]))
     electrons = objects.get("electrons", ak.Array([]))
     return _recoil_from_met(met_pt, met_phi, muons, electrons)
@@ -700,8 +721,10 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
         print(f"    B-jets identified: {ak.sum(ak.num(selected_bjets, axis=1))}")
 
     # Compute central recoil + JES/JER shifted variants
-    _lep_objs = {"muons": selected_muons, "electrons": selected_electrons}
-    recoil, recoil_phi = calculate_recoil(events, _lep_objs, corrections=corrections)
+    # Type-1 MET computed once here and reused for recoil, the stored MET
+    # branches and the dPhi(jet, MET) cut, so all of them see the same MET.
+    met_pt, met_phi = _type1_met(events, corrections)
+    recoil, recoil_phi = _recoil_from_met(met_pt, met_phi, selected_muons, selected_electrons)
 
     # Lepton pT sums are invariant across MET shifts — compute once, reuse for all
     # 4 JES/JER variants (only met_px/met_py differ per shift).
@@ -744,19 +767,9 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
         for source in _jes_source_names:
             for direction in ("up", "down"):
                 label = _jes_label(source, direction)
-                shift = corrections.get_type1_met_shift(
-                    events, jes_source=source, jes_direction=direction,
+                shifted_met_pt, shifted_met_phi = _type1_met(
+                    events, corrections, jes_source=source, jes_direction=direction,
                 )
-                if shift is None:
-                    recoil_jes_variants[label] = recoil
-                    continue
-                delta_met_x, delta_met_y = shift
-                met_pt_base  = _met_field(events, "PuppiMET_pt",  "PFMET_pt",  "MET_pt")
-                met_phi_base = _met_field(events, "PuppiMET_phi", "PFMET_phi", "MET_phi")
-                met_x = np.asarray(ak.to_numpy(met_pt_base)) * np.cos(np.asarray(ak.to_numpy(met_phi_base))) + delta_met_x
-                met_y = np.asarray(ak.to_numpy(met_pt_base)) * np.sin(np.asarray(ak.to_numpy(met_phi_base))) + delta_met_y
-                shifted_met_pt = ak.Array(np.sqrt(met_x**2 + met_y**2))
-                shifted_met_phi = ak.Array(np.arctan2(met_y, met_x))
                 rpt, _ = _recoil_from_sums(shifted_met_pt, shifted_met_phi, _lep_px, _lep_py)
                 recoil_jes_variants[label] = rpt
     else:
@@ -770,6 +783,8 @@ def build_objects(events: ak.Array, config: Dict[str, Any], verbose: bool = Fals
     if verbose:
         print("  Object building complete!")
     return {
+        "met_pt": met_pt,
+        "met_phi": met_phi,
         "recoil": recoil,
         "recoil_phi": recoil_phi,
         "recoil_JERUp": recoil_JERUp,

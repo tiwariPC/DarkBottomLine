@@ -12,7 +12,9 @@ corrections:
    electronHLT: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_electronHlt.json.gz
    metHlt: data/corrections/2024/Run3-Summer24-NanoAODv15_metHlt.json.gz
    jetJEC: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_jet_jerc.json.gz
-   jetJEC_tag: "Summer24Prompt24_V5_MC"
+   jetJEC_tag_mc: "Summer24Prompt24_V5_MC"
+   # Data: L1/L2 from the DATA set plus the run-dependent L2L3Residual.
+   jetJEC_tag_data: "Summer24Prompt24_V5_DATA"
    jetJEC_algo: "AK4PFPuppi"
    jetJEC_level: "L1L2L3Res"
    jetJEC_unc: "Total"

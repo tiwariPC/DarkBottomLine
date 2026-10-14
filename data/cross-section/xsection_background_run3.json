@@ -1,7 +1,7 @@
 {
   "WtoLNu-2Jets": [
     {
-      "process": "WtoLNu-2Jets_PTLNu-40to100",
+      "process": "WtoLNu-2Jets_PTLNu-40to100_2J",
       "xsection": 1598,
       "full_dataset": [
         "WtoLNu-2Jets_PTLNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -9,7 +9,7 @@
       ]
     },
     {
-      "process": "WtoLNu-2Jets_PTLNu-100to200",
+      "process": "WtoLNu-2Jets_PTLNu-100to200_2J",
       "xsection": 421.9,
       "full_dataset": [
         "WtoLNu-2Jets_PTLNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -17,7 +17,7 @@
       ]
     },
     {
-      "process": "WtoLNu-2Jets_PTLNu-200to400",
+      "process": "WtoLNu-2Jets_PTLNu-200to400_2J",
       "xsection": 54.77,
       "full_dataset": [
         "WtoLNu-2Jets_PTLNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -25,7 +25,7 @@
       ]
     },
     {
-      "process": "WtoLNu-2Jets_PTLNu-400to600",
+      "process": "WtoLNu-2Jets_PTLNu-400to600_2J",
       "xsection": 3.119,
       "full_dataset": [
         "WtoLNu-2Jets_PTLNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -33,17 +33,52 @@
       ]
     },
     {
-      "process": "WtoLNu-2Jets_PTLNu-600",
+      "process": "WtoLNu-2Jets_PTLNu-600_2J",
       "xsection": 0.5261,
       "full_dataset": [
         "WtoLNu-2Jets_PTLNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
         "WtoLNu-2Jets_Bin-2J-PTLNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
       ]
+    },
+    {
+      "process": "WtoLNu-2Jets_PTLNu-40to100_1J",
+      "xsection": 4211,
+      "full_dataset": [
+        "WtoLNu-2Jets_Bin-1J-PTLNu-40to100_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      ]
+    },
+    {
+      "process": "WtoLNu-2Jets_PTLNu-100to200_1J",
+      "xsection": 342.3,
+      "full_dataset": [
+        "WtoLNu-2Jets_Bin-1J-PTLNu-100to200_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      ]
+    },
+    {
+      "process": "WtoLNu-2Jets_PTLNu-200to400_1J",
+      "xsection": 21.84,
+      "full_dataset": [
+        "WtoLNu-2Jets_Bin-1J-PTLNu-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      ]
+    },
+    {
+      "process": "WtoLNu-2Jets_PTLNu-400to600_1J",
+      "xsection": 0.6845,
+      "full_dataset": [
+        "WtoLNu-2Jets_Bin-1J-PTLNu-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      ]
+    },
+    {
+      "process": "WtoLNu-2Jets_PTLNu-600_1J",
+      "xsection": 0.07753,
+      "full_dataset": [
+        "WtoLNu-2Jets_Bin-1J-PTLNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      ]
     }
   ],
   "Zto2Nu-2Jets": [
     {
-      "process": "Zto2Nu-2Jets_PTNuNu-40to100",
+      "process": "Zto2Nu-2Jets_PTNuNu-40to100_2J",
       "xsection": 335.5,
       "full_dataset": [
         "Zto2Nu-2Jets_PTNuNu-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -51,7 +86,7 @@
       ]
     },
     {
-      "process": "Zto2Nu-2Jets_PTNuNu-100to200",
+      "process": "Zto2Nu-2Jets_PTNuNu-100to200_2J",
       "xsection": 100.4,
       "full_dataset": [
         "Zto2Nu-2Jets_PTNuNu-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -59,7 +94,7 @@
       ]
     },
     {
-      "process": "Zto2Nu-2Jets_PTNuNu-200to400",
+      "process": "Zto2Nu-2Jets_PTNuNu-200to400_2J",
       "xsection": 13.86,
       "full_dataset": [
         "Zto2Nu-2Jets_PTNuNu-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -67,7 +102,7 @@
       ]
     },
     {
-      "process": "Zto2Nu-2Jets_PTNuNu-400to600",
+      "process": "Zto2Nu-2Jets_PTNuNu-400to600_2J",
       "xsection": 0.7816,
       "full_dataset": [
         "Zto2Nu-2Jets_PTNuNu-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -75,17 +110,52 @@
       ]
     },
     {
-      "process": "Zto2Nu-2Jets_PTNuNu-600",
+      "process": "Zto2Nu-2Jets_PTNuNu-600_2J",
       "xsection": 0.1311,
       "full_dataset": [
         "Zto2Nu-2Jets_PTNuNu-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
         "Zto2Nu-2Jets_Bin-2J-PTNuNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
       ]
+    },
+    {
+      "process": "Zto2Nu-2Jets_PTNuNu-40to100_1J",
+      "xsection": 885.7,
+      "full_dataset": [
+        "Zto2Nu-2Jets_Bin-1J-PTNuNu-40to100_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      ]
+    },
+    {
+      "process": "Zto2Nu-2Jets_PTNuNu-100to200_1J",
+      "xsection": 78.91,
+      "full_dataset": [
+        "Zto2Nu-2Jets_Bin-1J-PTNuNu-100to200_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      ]
+    },
+    {
+      "process": "Zto2Nu-2Jets_PTNuNu-200to400_1J",
+      "xsection": 5.406,
+      "full_dataset": [
+        "Zto2Nu-2Jets_Bin-1J-PTNuNu-200to400_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      ]
+    },
+    {
+      "process": "Zto2Nu-2Jets_PTNuNu-400to600_1J",
+      "xsection": 0.1693,
+      "full_dataset": [
+        "Zto2Nu-2Jets_Bin-1J-PTNuNu-400to600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      ]
+    },
+    {
+      "process": "Zto2Nu-2Jets_PTNuNu-600_1J",
+      "xsection": 0.01895,
+      "full_dataset": [
+        "Zto2Nu-2Jets_Bin-1J-PTNuNu-600_TuneCP5_13p6TeV_amcatnloFXFX-pythia8"
+      ]
     }
   ],
   "DYto2L-2Jets": [
     {
-      "process": "DYto2L-2Jets_MLL-50_PTLL-40to100",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-40to100_2J",
       "xsection": 179.3,
       "full_dataset": [
         "DYto2L-2Jets_MLL-50_PTLL-40to100_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -93,7 +163,7 @@
       ]
     },
     {
-      "process": "DYto2L-2Jets_MLL-50_PTLL-100to200",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-100to200_2J",
       "xsection": 51.68,
       "full_dataset": [
         "DYto2L-2Jets_MLL-50_PTLL-100to200_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -101,7 +171,7 @@
       ]
     },
     {
-      "process": "DYto2L-2Jets_MLL-50_PTLL-200to400",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-200to400_2J",
       "xsection": 7.159,
       "full_dataset": [
         "DYto2L-2Jets_MLL-50_PTLL-200to400_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -109,7 +179,7 @@
       ]
     },
     {
-      "process": "DYto2L-2Jets_MLL-50_PTLL-400to600",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-400to600_2J",
       "xsection": 0.4157,
       "full_dataset": [
         "DYto2L-2Jets_MLL-50_PTLL-400to600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -117,7 +187,7 @@
       ]
     },
     {
-      "process": "DYto2L-2Jets_MLL-50_PTLL-600",
+      "process": "DYto2L-2Jets_MLL-50_PTLL-600_2J",
       "xsection": 0.07019,
       "full_dataset": [
         "DYto2L-2Jets_MLL-50_PTLL-600_2J_TuneCP5_13p6TeV_amcatnloFXFX-pythia8",
@@ -128,7 +198,7 @@
   "Top": [
     {
       "process": "TTto2L2Nu",
-      "xsection": 82.00,
+      "xsection": 82.0,
       "full_dataset": [
         "TTto2L2Nu_TuneCP5_13p6TeV_powheg-pythia8"
       ]
@@ -173,31 +243,43 @@
   ],
   "SingleTop": [
     {
-      "process": "TBbarQtoLNu-t-channel-4FS",
+      "process": "TBbarQ_t-channel_4FS",
       "xsection": 123.8,
       "full_dataset": [
-        "TBbarQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+        "TBbarQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8"
+      ]
+    },
+    {
+      "process": "TBbarQtoLNu-t-channel-4FS",
+      "xsection": 40.33,
+      "full_dataset": [
         "TBbarQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8"
       ]
     },
     {
-      "process": "TbarBQtoLNu-t-channel-4FS",
+      "process": "TbarBQ_t-channel_4FS",
       "xsection": 75.47,
       "full_dataset": [
-        "TbarBQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+        "TbarBQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8"
+      ]
+    },
+    {
+      "process": "TbarBQtoLNu-t-channel-4FS",
+      "xsection": 24.59,
+      "full_dataset": [
         "TbarBQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8"
       ]
     },
     {
       "process": "TbarWplustoLNu2Q",
-      "xsection": 36.05,
+      "xsection": 15.84,
       "full_dataset": [
         "TbarWplustoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8"
       ]
     },
     {
       "process": "TWminustoLNu2Q",
-      "xsection": 35.99,
+      "xsection": 15.81,
       "full_dataset": [
         "TWminustoLNu2Q_TuneCP5_13p6TeV_powheg-pythia8"
       ]

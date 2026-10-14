@@ -17,7 +17,7 @@ from pathlib import Path
 
 import numpy as np
 import awkward as ak
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Optional, Tuple
 from darkbottomline.objects import SENTINEL
 from darkbottomline.corrections import jes_sources
 
@@ -73,17 +73,21 @@ def _dijet(px1, py1, pz1, e1, px2, py2, pz2, e2):
 # Variable groups
 # ---------------------------------------------------------------------------
 
-def _met_variables(events: ak.Array) -> Dict[str, np.ndarray]:
-    """MET kinematics. PuppiMET preferred; falls back to PFMET then MET."""
+def _met_variables(events: ak.Array, objects: Optional[Dict[str, Any]] = None) -> Dict[str, np.ndarray]:
+    """MET kinematics. The Type-1 MET recomputed in build_objects
+    (objects["met_pt"/"met_phi"], same MET as Recoil) when available;
+    otherwise PuppiMET, falling back to PFMET then MET."""
     def _get(*candidates, default=SENTINEL):
         for v in candidates:
             if v in events.fields:
                 return ak.to_numpy(events[v])
         return np.full(len(events), default, dtype=np.float32)
 
+    objects = objects or {}
+    met_pt, met_phi = objects.get('met_pt'), objects.get('met_phi')
     return {
-        'MET_pt':           _get('PuppiMET_pt',  'PFMET_pt',  'MET_pt'),
-        'MET_phi':          _get('PuppiMET_phi', 'PFMET_phi', 'MET_phi'),
+        'MET_pt':  np.asarray(ak.to_numpy(met_pt)) if met_pt is not None else _get('PuppiMET_pt',  'PFMET_pt',  'MET_pt'),
+        'MET_phi': np.asarray(ak.to_numpy(met_phi)) if met_phi is not None else _get('PuppiMET_phi', 'PFMET_phi', 'MET_phi'),
         'MET_significance': _get('PFMET_significance', 'MET_significance'),
     }
 
@@ -704,7 +708,7 @@ def compute_event_variables(
         out['pass_ele_trigger'] = _trig_decision(_ele_trig_paths)
 
     # --- MET ---
-    met_vars = _met_variables(events)
+    met_vars = _met_variables(events, objects)
     out.update(met_vars)
 
     # --- Recoil ---

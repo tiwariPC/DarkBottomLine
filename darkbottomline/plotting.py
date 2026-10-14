@@ -130,10 +130,9 @@ _DATASET_ALIASES = [
     ("GluGluHto2B_M-125",          "GluGluH-Hto2B_Par-M-125"),
     ("VBFHto2B_M-125",             "VBFH-Hto2B_Par-M-125"),
     ("ttHto2B_M-125",              "TTH-Hto2B_Par-M-125"),
-    # Single top t-channel: 2022/23 "TBbarQ_t-channel_4FS" (underscore, no toLNu)
-    # → canonical 2024 "TBbarQtoLNu-t-channel-4FS".
-    ("TBbarQ_t-channel_4FS", "TBbarQtoLNu-t-channel-4FS"),
-    ("TbarBQ_t-channel_4FS", "TbarBQtoLNu-t-channel-4FS"),
+    # No single-top t-channel alias: 2022/23 "TBbarQ_t-channel_4FS" is
+    # inclusive in the top decay while 2024 "TBbarQtoLNu-t-channel-4FS" is
+    # leptonic-only, so they are different processes with different xsecs.
 ]
 
 
@@ -171,8 +170,17 @@ def _clean_sample_name(name: str) -> str:
         if old in result:
             result = result.replace(old, canon)
             break
-    # 2. V+jets jet-bin token → canonical (no bin token). Handles the 2024
-    #    "_Bin-2J-" prefix form and the 2022/2023 "_2J" infix/suffix form.
+    # 2. V+jets jet-bin token → canonical. The 2J bin keeps the historical
+    #    canonical form (no bin token); the 1J bin is a different sample with
+    #    its own xsec, so it canonicalizes to the same core plus a "_1J"
+    #    suffix (appended after suffix stripping below). Handles the 2024
+    #    "_Bin-NJ-" prefix form and the 2022/2023 "_NJ" infix/suffix form.
+    one_jet = False
+    if "_Bin-1J-" in result or "_1J_" in result or result.endswith("_1J"):
+        one_jet = True
+        result = result.replace("_Bin-1J-", "_").replace("_1J_", "_")
+        if result.endswith("_1J"):
+            result = result[:-len("_1J")]
     result = result.replace("_Bin-2J-", "_").replace("_Bin-2J", "")
     result = result.replace("_2J_", "_")
     if result.endswith("_2J"):
@@ -183,6 +191,8 @@ def _clean_sample_name(name: str) -> str:
     for suffix in suffixes:
         if suffix in result:
             result = result[:result.index(suffix)]
+    if one_jet:
+        result += "_1J"
     return result
 
 
@@ -199,9 +209,14 @@ def _find_xsec(stem: str, cross_sections: Dict[str, float]) -> Optional[float]:
     xsec = cross_sections.get(clean)
     if xsec is not None:
         return xsec
-    # 3. cleaned substring match in either direction
+    # 3. cleaned substring match in either direction — never across V+jets
+    #    jet bins, or a 1J sample without its own entry would silently get
+    #    the 2J xsec (the 2J canonical name is a substring of the 1J one).
+    one_jet = clean.endswith("_1J")
     for k, v in cross_sections.items():
         k_clean = _clean_sample_name(k)
+        if k_clean.endswith("_1J") != one_jet:
+            continue
         if k_clean == clean or k_clean in clean or clean in k_clean:
             return v
     return None

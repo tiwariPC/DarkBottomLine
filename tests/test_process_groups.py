@@ -2,6 +2,7 @@
 Tests for process-group pattern matching, sample-label normalisation,
 PlotManager yaml parsing, data-group region routing, and histogram normalisation.
 """
+import json
 import pickle
 import tempfile
 import textwrap
@@ -464,13 +465,6 @@ class TestCrossYearCanonicalization:
         ("ttHto2B_M-125" + _POW,
          "TTH-Hto2B_Par-M-125" + _POW,
          "TTH-Hto2B_Par-M-125"),
-        # Single top t-channel: 2022/23 underscore/no-toLNu vs 2024 dash/toLNu
-        ("TBbarQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
-         "TBbarQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
-         "TBbarQtoLNu-t-channel-4FS"),
-        ("TbarBQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
-         "TbarBQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
-         "TbarBQtoLNu-t-channel-4FS"),
     ]
 
     @pytest.mark.parametrize("old,new,canon", PAIRS)
@@ -479,6 +473,48 @@ class TestCrossYearCanonicalization:
         c_new = _clean_sample_name(new)
         assert c_old == canon, f"{old} -> {c_old}, expected {canon}"
         assert c_new == canon, f"{new} -> {c_new}, expected {canon}"
+
+    @pytest.mark.parametrize("inclusive,leptonic,xsec_incl,xsec_lep", [
+        ("TBbarQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+         "TBbarQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8", 123.8, 40.33),
+        ("TbarBQ_t-channel_4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8",
+         "TbarBQtoLNu-t-channel-4FS_TuneCP5_13p6TeV_powheg-madspin-pythia8", 75.47, 24.59),
+    ])
+    def test_single_top_inclusive_and_leptonic_stay_distinct(self, inclusive, leptonic,
+                                                             xsec_incl, xsec_lep):
+        # 2022/23 t-channel is inclusive in the top decay, 2024 is leptonic-only:
+        # different processes, so they must not canonicalize to the same name
+        # or share a cross section.
+        assert _clean_sample_name(inclusive) != _clean_sample_name(leptonic)
+        xs = PlotManager._normalize_cross_sections(json.loads(
+            (Path(__file__).resolve().parent.parent
+             / "data/cross-section/xsection_background_run3.json").read_text()))
+        assert _find_xsec(inclusive + "_EVENTSELECTION", xs) == pytest.approx(xsec_incl)
+        assert _find_xsec(leptonic + "_EVENTSELECTION", xs) == pytest.approx(xsec_lep)
+
+    @pytest.mark.parametrize("one_jet,two_jet,canon_2j", [
+        ("WtoLNu-2Jets_Bin-1J-PTLNu-200to400" + _TUNE,
+         "WtoLNu-2Jets_Bin-2J-PTLNu-200to400" + _TUNE, "WtoLNu-2Jets_PTLNu-200to400"),
+        ("WtoLNu-2Jets_PTLNu-200to400_1J" + _TUNE,
+         "WtoLNu-2Jets_PTLNu-200to400_2J" + _TUNE, "WtoLNu-2Jets_PTLNu-200to400"),
+        ("Zto2Nu-2Jets_Bin-1J-PTNuNu-600" + _TUNE,
+         "Zto2Nu-2Jets_Bin-2J-PTNuNu-600" + _TUNE, "Zto2Nu-2Jets_PTNuNu-600"),
+    ])
+    def test_vjets_1j_bin_distinct_from_2j(self, one_jet, two_jet, canon_2j):
+        # 1J and 2J FxFx bins are different samples: the 2J canonical form is
+        # unchanged, the 1J one gets a "_1J" suffix, and is idempotent.
+        assert _clean_sample_name(two_jet) == canon_2j
+        assert _clean_sample_name(one_jet) == canon_2j + "_1J"
+        assert _clean_sample_name(_clean_sample_name(one_jet)) == canon_2j + "_1J"
+
+    def test_vjets_1j_never_gets_2j_xsec(self):
+        # Without a 1J entry the substring fallback must not hand the 1J
+        # sample the 2J xsec (the 2J canonical name is a substring of it).
+        only_2j = {"WtoLNu-2Jets_Bin-2J-PTLNu-200to400" + _TUNE: 54.77}
+        assert _find_xsec("WtoLNu-2Jets_Bin-1J-PTLNu-200to400" + _TUNE + "_EVENTSELECTION", only_2j) is None
+        both = dict(only_2j, **{"WtoLNu-2Jets_Bin-1J-PTLNu-200to400" + _TUNE: 21.84})
+        assert _find_xsec("WtoLNu-2Jets_Bin-1J-PTLNu-200to400" + _TUNE + "_EVENTSELECTION", both) == pytest.approx(21.84)
+        assert _find_xsec("WtoLNu-2Jets_Bin-2J-PTLNu-200to400" + _TUNE + "_EVENTSELECTION", both) == pytest.approx(54.77)
 
     @pytest.mark.parametrize("old,new,canon", PAIRS)
     def test_idempotent(self, old, new, canon):

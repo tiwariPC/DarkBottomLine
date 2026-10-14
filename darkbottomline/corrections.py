@@ -987,8 +987,9 @@ class CorrectionManager:
         jes_direction: Optional[str] = None,
     ) -> Optional[np.ndarray]:
         """
-        Per-jet JEC chain (Type1MET.pdf steps 3-6) on an ALREADY raw,
-        muon-subtracted flat pT array: L1FastJet -> L2Relative ->
+        Per-jet JEC chain (Type1MET.pdf steps 3-6) on an ALREADY raw flat pT
+        array (muon-subtracted when called from the Type-1 MET sum, full raw
+        pT for the jet collection itself): L1FastJet -> L2Relative ->
         [L2L3Residual if data] -> [(1 +- source uncertainty) if
         jes_source given, else central/unvaried]. Returns the corrected
         flat pt array (same shape as flat_raw_pt), or None if the required
@@ -1002,30 +1003,16 @@ class CorrectionManager:
         unvaried chain — used only by the 11-source JES systematic rebuild,
         not by the nominal/central path.
         """
-        corr_cfg = self.config.get("corrections", {})
-        tag = corr_cfg.get("jetJEC_tag", "")
-        algo = corr_cfg.get("jetJEC_algo", "AK4PFPuppi")
-        if "jetJEC" not in self.corrections or not tag:
+        if "jetJEC" not in self.corrections:
             return None
         cs = self.corrections["jetJEC"]
-        correction_keys = list(cs.keys())
-        flavor = "_DATA_" if is_data else "_MC_"
-
-        def _pick_key(level_name: str) -> Optional[str]:
-            exact = f"{tag}_{level_name}_{algo}"
-            if exact in correction_keys:
-                return exact
-            for candidate in correction_keys:
-                if flavor in candidate and candidate.endswith(f"{level_name}_{algo}"):
-                    return candidate
-            for candidate in correction_keys:
-                if candidate.endswith(f"{level_name}_{algo}"):
-                    return candidate
-            return None
 
         try:
-            l1_key = _pick_key("L1FastJet")
-            l2_key = _pick_key("L2Relative")
+            # Every level goes through _jec_key, which picks the tag for this
+            # sample type: corrections.jetJEC_tag_data for data,
+            # corrections.jetJEC_tag_mc for MC.
+            l1_key = self._jec_key("L1FastJet", is_data)
+            l2_key = self._jec_key("L2Relative", is_data)
             if l1_key is None or l2_key is None:
                 return None
             l1_corr = cs[l1_key]
@@ -1048,19 +1035,24 @@ class CorrectionManager:
             p_2 = p_l1 * _eval_factor(l2_corr, p_l1)
 
             if is_data:
-                res_key = _pick_key("L2L3Residual")
-                p_out = p_2 * _eval_factor(cs[res_key], p_2) if res_key is not None else p_2
+                # A missing data residual is a hard failure (None -> caller's
+                # fallback/strict handling), not "skip the residual".
+                res_key = self._jec_key("L2L3Residual", is_data)
+                if res_key is None:
+                    return None
+                p_out = p_2 * _eval_factor(cs[res_key], p_2)
             else:
                 p_out = p_2
                 if jes_source is not None and jes_direction is not None:
-                    regrouped_key = f"{tag}_Regrouped_{jes_source}_{algo}"
-                    if regrouped_key not in correction_keys:
-                        for candidate in correction_keys:
-                            if candidate.endswith(f"Regrouped_{jes_source}_{algo}"):
-                                regrouped_key = candidate
-                                break
-                        else:
-                            return None
+                    # JES uncertainty sources exist for MC only.
+                    corr_cfg = self.config.get("corrections", {})
+                    mc_tag = corr_cfg.get("jetJEC_tag_mc", "")
+                    algo = corr_cfg.get("jetJEC_algo", "AK4PFPuppi")
+                    regrouped_key = f"{mc_tag}_Regrouped_{jes_source}_{algo}"
+                    if regrouped_key not in cs:
+                        logging.warning(f"JEC: {regrouped_key} not in the jetJEC file "
+                                        f"(check corrections.jetJEC_tag_mc)")
+                        return None
                     unc_corr = cs[regrouped_key]
                     # Regrouped_{source} takes only (JetEta, JetPt) and
                     # returns the fractional uncertainty MAGNITUDE (no
@@ -1080,8 +1072,9 @@ class CorrectionManager:
         jes_source: Optional[str] = None, jes_direction: Optional[str] = None,
     ) -> Optional["tuple[ak.Array, ak.Array]"]:
         """
-        Recover raw pt (Jet_pt * (1 - Jet_rawFactor)), muon-subtract, and
-        reapply the JEC chain from scratch (see module-level note above).
+        Recover raw pt (Jet_pt * (1 - Jet_rawFactor)) and reapply the JEC
+        chain from scratch (see module-level note above). No muon
+        subtraction here — that is only for the Type-1 MET sum.
         Returns (corrected_pt, corrected_mass) as jagged arrays matching
         events["Jet_pt"]'s structure, or None if jetJEC isn't configured or
         the required branches are missing (callers fall back to raw
@@ -1109,10 +1102,6 @@ class CorrectionManager:
             flat_eta = np.asarray(ak.ravel(events["Jet_eta"]), dtype=float)
             flat_phi = np.asarray(ak.ravel(events["Jet_phi"]), dtype=float)
             flat_rawfactor = np.asarray(ak.ravel(events["Jet_rawFactor"]), dtype=float)
-            flat_musub = (
-                np.asarray(ak.ravel(events["Jet_muonSubtrFactor"]), dtype=float)
-                if "Jet_muonSubtrFactor" in events.fields else np.zeros(n_flat)
-            )
             flat_area = (
                 np.asarray(ak.ravel(events["Jet_area"]), dtype=float)
                 if "Jet_area" in events.fields else np.full(n_flat, 0.5)
@@ -1126,11 +1115,14 @@ class CorrectionManager:
                 if is_data and "run" in events.fields else None
             )
 
+            # Full raw pt, NOT muon-subtracted: muon subtraction belongs only
+            # to the Type-1 MET sum (get_type1_met_shift). Correcting the
+            # muon-subtracted pt here drops the muon from the jet itself
+            # (~15% low pt for the ~6% of jets carrying a muon).
             flat_raw_pt = flat_pt * (1.0 - flat_rawfactor)
-            flat_raw_pt_musub = flat_raw_pt * (1.0 - flat_musub)
 
             corrected_flat_pt = self._evaluate_jec_chain(
-                flat_raw_pt_musub, flat_eta, flat_phi, flat_area, flat_rho,
+                flat_raw_pt, flat_eta, flat_phi, flat_area, flat_rho,
                 flat_run, is_data, jes_source=jes_source, jes_direction=jes_direction,
             )
             if corrected_flat_pt is None:
@@ -1292,33 +1284,42 @@ class CorrectionManager:
         except Exception as e:
             return self._fallback_or_raise(f"Failed to compute Type-1 MET shift: {e}", exc=e)
 
+    def _jec_key(self, level_name: str, is_data: bool) -> Optional[str]:
+        """Correction-set key for one JEC level, for data or MC.
+
+        The tags come only from the year config: corrections.jetJEC_tag_mc
+        for MC and corrections.jetJEC_tag_data for data. The key must exist
+        exactly as f"{tag}_{level}_{algo}"; nothing is guessed. In
+        particular data never falls back to an MC key: the MC L2L3Residual
+        is an identity, so that silently drops the residual correction.
+        Returns None (with a warning) if the tag is unset or the key is
+        missing; callers turn that into a fallback or, in strict mode, an error.
+        """
+        corr_cfg = self.config.get("corrections", {})
+        algo = corr_cfg.get("jetJEC_algo", "AK4PFPuppi")
+        tag_key = "jetJEC_tag_data" if is_data else "jetJEC_tag_mc"
+        tag = corr_cfg.get(tag_key)
+        if "jetJEC" not in self.corrections:
+            return None
+        if not tag:
+            logging.warning(f"JEC: corrections.{tag_key} not set in the config")
+            return None
+        key = f"{tag}_{level_name}_{algo}"
+        if key not in self.corrections["jetJEC"]:
+            logging.warning(f"JEC: {key} not in the jetJEC file (check corrections.{tag_key})")
+            return None
+        return key
+
     def _eval_l1_only(
         self, flat_raw_pt, flat_eta, flat_phi, flat_area, flat_rho, flat_run, is_data,
     ) -> Optional[np.ndarray]:
         """L1FastJet-only correction (Type1MET.pdf's p_L1, the ΔpT baseline)."""
-        corr_cfg = self.config.get("corrections", {})
-        tag = corr_cfg.get("jetJEC_tag", "")
-        algo = corr_cfg.get("jetJEC_algo", "AK4PFPuppi")
-        if "jetJEC" not in self.corrections or not tag:
+        if "jetJEC" not in self.corrections:
             return None
         cs = self.corrections["jetJEC"]
-        correction_keys = list(cs.keys())
-        flavor = "_DATA_" if is_data else "_MC_"
-
-        def _pick_key(level_name: str) -> Optional[str]:
-            exact = f"{tag}_{level_name}_{algo}"
-            if exact in correction_keys:
-                return exact
-            for candidate in correction_keys:
-                if flavor in candidate and candidate.endswith(f"{level_name}_{algo}"):
-                    return candidate
-            for candidate in correction_keys:
-                if candidate.endswith(f"{level_name}_{algo}"):
-                    return candidate
-            return None
 
         try:
-            l1_key = _pick_key("L1FastJet")
+            l1_key = self._jec_key("L1FastJet", is_data)
             if l1_key is None:
                 return None
             l1_corr = cs[l1_key]

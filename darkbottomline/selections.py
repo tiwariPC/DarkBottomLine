@@ -77,7 +77,10 @@ def _build_event_cut_masks(
     delta_phi_min = selection.get("delta_phi_min")
     if delta_phi_min is not None:
         jets = objects.get("jets", ak.Array([]))
-        met_phi = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
+        # Prefer the Type-1 MET recomputed in build_objects (same MET as recoil).
+        met_phi = objects.get("met_phi")
+        if met_phi is None:
+            met_phi = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
         if met_phi is None:
             raise KeyError("No MET phi branch found (tried PuppiMET_phi, PFMET_phi, MET_phi)")
         if len(ak.flatten(jets)) > 0:
