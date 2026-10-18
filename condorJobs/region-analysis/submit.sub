@@ -1,0 +1,46 @@
+# ---------------------------------------------------------------------------
+# Condor submit: region analysis (merged <sample>_EVENTSELECTION.root -> per-sample
+# region PKL with DNN scores), ONE job per sample file. Runs as the "regions" node
+# of the DAG written by submit_regions.py (condor_submit_dag), whose child is the
+# plot job (plot.sub). Every variable below comes from that DAG's VARS lines,
+# except INFILE/STEM/IS_DATA/MEMORY/CPUS, which come from the job list:
+#   <INFILE> <STEM> <IS_DATA> <MEMORY_MB> <CPUS>        one line per job
+# Output: <OUTDIR>/per_sample/<stem>.pkl
+#
+# Vars: EXEC REPO_DIR CONFIG REGIONS_CONFIG XSEC_JSON DNN_MODEL DNN_CONFIG OUTDIR
+#       PROXY_PATH PROXY_FILE LOGDIR BATCH_NAME FLAVOUR JOBLIST
+# ---------------------------------------------------------------------------
+
+universe   = vanilla
+executable = $(EXEC)
+arguments  = $(PROXY_FILE) $(INFILE) $(IS_DATA)
+
+environment = "DBL_REPO_DIR=$(REPO_DIR) DBL_CONFIG=$(CONFIG) DBL_REGIONS_CONFIG=$(REGIONS_CONFIG) DBL_XSEC_JSON=$(XSEC_JSON) DBL_DNN_MODEL=$(DNN_MODEL) DBL_DNN_CONFIG=$(DNN_CONFIG) DBL_OUTDIR=$(OUTDIR)"
+
+# x509 proxy shipped into the sandbox for XRootD access; EOS writes use the
+# Kerberos credentials HTCondor forwards at CERN.
+use_x509userproxy       = true
+x509userproxy           = $(PROXY_PATH)
+should_transfer_files   = YES
+when_to_transfer_output = ON_EXIT
+transfer_output_files   = ""
+
+output = $(LOGDIR)/output/$(BATCH_NAME).$(ClusterId).$(ProcId).out
+error  = $(LOGDIR)/error/$(BATCH_NAME).$(ClusterId).$(ProcId).err
+log    = $(LOGDIR)/$(BATCH_NAME).$(ClusterId).log
+
+batch_name     = $(BATCH_NAME)
+MY.WantOS      = "el9"
+request_cpus   = $(CPUS)
+request_memory = $(MEMORY)
++JobFlavour    = "$(FLAVOUR)"
+
+# Hold on failure; release after 10 min, up to 3 starts. A PKL that already reached
+# EOS is skipped on restart. After 3 starts the job is removed, which fails the DAG
+# node, so the plot job does not run: rerun submit_regions.py (it only submits
+# samples whose PKL is missing).
+on_exit_hold     = (ExitBySignal == True) || (ExitCode != 0)
+periodic_release = (NumJobStarts < 3) && ((time() - EnteredCurrentStatus) > 600)
+periodic_remove  = (JobStatus == 5) && (NumJobStarts >= 3)
+
+queue INFILE, STEM, IS_DATA, MEMORY, CPUS from $(JOBLIST)

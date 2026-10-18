@@ -460,13 +460,250 @@ def _plot_dnn_score_only(scores: np.ndarray, plot_dir: str) -> None:
     logging.info("DNN score plot saved to %s", out)
 
 
+# Events per chunk when reading an EVENTSELECTION.root Events tree for region
+# analysis. The chunk sets the working-set floor; the rest of the peak is the selected
+# events kept per region (all fields), which is why jobs on region-heavy samples
+# (DY, W+jets) need more memory than their input size suggests.
+EVENTSEL_STEP_SIZE = 100_000
+
+
+def _read_weighted_total_events(f) -> float:
+    """weighted_total_events TH1 of an EVENTSELECTION.root, 0.0 if absent/unreadable."""
+    for key in ("weighted_total_events", "weighted_total_events;1"):
+        if key in f:
+            try:
+                return float(f[key].values()[0])
+            except Exception:
+                pass
+    return 0.0
+
+
+def _concat_optional(parts: list):
+    """Concatenate numpy/awkward parts; None if there are none or any part is None."""
+    import awkward as ak
+    if not parts or any(p is None for p in parts):
+        return None
+    if any(isinstance(p, ak.Array) for p in parts):
+        return ak.concatenate([ak.Array(p) for p in parts])
+    return np.concatenate([np.asarray(p) for p in parts])
+
+
+def _finalize_chunked_validation(val: Dict, region_totals: Dict[str, int],
+                                 overlaps: Dict[str, int], n_total: int,
+                                 region_manager) -> Dict:
+    """Rebuild region_validation from whole-file totals (RegionManager.validate_regions logic)."""
+    if val.get("status") != "completed":
+        return val
+    settings = region_manager.settings
+    min_events = settings.get("min_events", 10)
+    max_overlap = settings.get("max_overlap", 0.1)
+    check_overlap = region_manager.validation.get("check_overlap", True)
+    out = {"status": "completed", "regions": {}, "overlaps": {}, "warnings": []}
+    names = list(region_totals)
+    for name in names:
+        n = region_totals[name]
+        out["regions"][name] = {"n_events": n, "fraction": n / n_total if n_total > 0 else 0.0}
+        if n < min_events:
+            out["warnings"].append(f"Region {name} has only {n} events (minimum: {min_events})")
+    if check_overlap:
+        for i in range(len(names)):
+            for j in range(i + 1, len(names)):
+                t1, t2 = region_totals[names[i]], region_totals[names[j]]
+                if t1 > 0 and t2 > 0:
+                    key = f"{names[i]}_{names[j]}"
+                    n_ov = overlaps.get(key, 0)
+                    frac = float(n_ov) / min(t1, t2)
+                    out["overlaps"][key] = {"n_overlap": n_ov, "fraction": frac}
+                    if frac > max_overlap:
+                        out["warnings"].append(
+                            f"High overlap between {names[i]} and {names[j]}: {frac:.2f}")
+    return out
+
+
+def process_eventselection_file(
+    file_path: str,
+    config: Dict[str, Any],
+    regions_config: str,
+    *,
+    is_data: bool,
+    xsec: Optional[float],
+    dnn_inference=None,
+    dnn_mass_scan=None,
+    step_size: int = EVENTSEL_STEP_SIZE,
+) -> Optional[Dict[str, Any]]:
+    """
+    Region analysis of ONE EVENTSELECTION.root, reading its Events tree in chunks.
+
+    Returns the same per-sample result dict as one process_from_eventselection call on the
+    whole tree (region_histograms concatenated, cutflows and counts summed), with
+    metadata.weighted_total_events / xsec / sample set. Returns None if the file has no
+    Events tree. Memory scales with step_size and with the selected events kept per region,
+    not with the file size.
+    """
+    import copy
+    import uproot
+
+    stem = Path(str(file_path)).stem
+    analyzer = DarkBottomLineAnalyzer(config, regions_config)
+    rm = analyzer.region_manager
+
+    total: Optional[Dict[str, Any]] = None
+    hist_w: Dict[str, list] = {}
+    hist_v: Dict[str, Dict[str, list]] = {}
+    reg_parts: Dict[str, list] = {}
+    val_regions: Dict[str, int] = {}
+    val_overlaps: Dict[str, int] = {}
+    n_total = 0
+    n_chunks = 0
+
+    with uproot.open(str(file_path)) as f:
+        if "Events" not in f:
+            logging.warning("No Events tree in %s — skipping", stem)
+            return None
+        wte = _read_weighted_total_events(f)
+        wte = wte if wte > 0 else 1.0
+        tree = f["Events"]
+        if tree.num_entries == 0:
+            chunks = iter([tree.arrays(library="np")])
+        else:
+            chunks = tree.iterate(library="np", step_size=step_size)
+
+        for chunk in chunks:
+            # analyzer.accumulator is reused across calls: everything except
+            # region_histograms (a fresh dict each call) is read out right here.
+            res = analyzer.process_from_eventselection(
+                branches=dict(chunk),
+                weighted_total_events=wte,
+                is_data=is_data,
+                dnn_inference=dnn_inference,
+                dnn_mass_scan=dnn_mass_scan,
+            )
+            n_chunks += 1
+            n_ev = int(res["metadata"]["n_events_processed"])
+            n_total += n_ev
+
+            for region, payload in res["region_histograms"].items():
+                hist_w.setdefault(region, []).append(np.asarray(payload["weight"]))
+                fields = hist_v.setdefault(region, {})
+                for field, arr in payload["values"].items():
+                    fields.setdefault(field, []).append(np.asarray(arr))
+
+            for region, r in res["regions"].items():
+                if r.get("n_events", 0) > 0:
+                    reg_parts.setdefault(region, []).append(r)
+                else:
+                    reg_parts.setdefault(region, [])
+
+            val = res.get("region_validation", {})
+            if val.get("status") == "completed":
+                for region, v in val["regions"].items():
+                    val_regions[region] = val_regions.get(region, 0) + int(v["n_events"])
+                for key, v in val["overlaps"].items():
+                    val_overlaps[key] = val_overlaps.get(key, 0) + int(v["n_overlap"])
+
+            if total is None:
+                total = {k: copy.deepcopy(v) for k, v in res.items()
+                         if k not in ("region_histograms", "regions", "region_validation")}
+                total["region_validation"] = {"status": val.get("status")}
+                total["region_cutflow_steps"] = {
+                    r: {c: float(y) for c, y in s.items()}
+                    for r, s in res.get("region_cutflow_steps", {}).items()}
+                total["region_cutflow"] = {
+                    "total_events": n_ev,
+                    "regions": {r: {"n_events": int(v["n_events"])}
+                                for r, v in res["region_cutflow"]["regions"].items()},
+                }
+                total["metadata"] = dict(res["metadata"])
+                total["metadata"]["n_events_processed"] = n_ev
+            else:
+                for region, steps in res.get("region_cutflow_steps", {}).items():
+                    dest = total["region_cutflow_steps"].setdefault(region, {})
+                    for label, y in steps.items():
+                        dest[label] = dest.get(label, 0.0) + float(y)
+                cf = total["region_cutflow"]
+                cf["total_events"] += n_ev
+                for region, v in res["region_cutflow"]["regions"].items():
+                    d = cf["regions"].setdefault(region, {"n_events": 0})
+                    d["n_events"] += int(v["n_events"])
+                total["metadata"]["n_events_processed"] += n_ev
+                total["metadata"]["processing_time"] += res["metadata"].get("processing_time", 0.0)
+
+    if total is None:
+        return None
+
+    # Region histograms: concatenate raw per-event arrays across chunks.
+    region_histograms: Dict[str, Dict[str, Any]] = {}
+    for region in list(hist_w):
+        w_parts = [w for w in hist_w.pop(region) if len(w)]
+        fields = hist_v.pop(region, {})
+        values = {}
+        for field in list(fields):
+            parts = fields.pop(field)  # drop the list so each field's parts are freed once joined
+            if parts:
+                values[field] = np.concatenate(parts)
+            del parts
+        region_histograms[region] = {
+            "values": values,
+            "weight": np.concatenate(w_parts) if w_parts else np.zeros(0, dtype=np.float64),
+        }
+    total["region_histograms"] = region_histograms
+
+    # Per-region payload: events summed; variables / dnn_scores concatenated.
+    regions_out: Dict[str, Any] = {}
+    for region, parts in reg_parts.items():
+        if not parts:
+            regions_out[region] = {"n_events": 0, "variables": {}, "dnn_scores": None}
+            continue
+        keys = list(parts[0]["variables"])
+        regions_out[region] = {
+            "n_events": sum(int(p["n_events"]) for p in parts),
+            "variables": {k: _concat_optional([p["variables"].get(k) for p in parts]) for k in keys},
+            "dnn_scores": _concat_optional([p["dnn_scores"] for p in parts]),
+            "region_name": region,
+        }
+    total["regions"] = regions_out
+
+    cf = total["region_cutflow"]
+    for v in cf["regions"].values():
+        v["fraction"] = v["n_events"] / cf["total_events"] if cf["total_events"] > 0 else 0.0
+    total["region_validation"] = _finalize_chunked_validation(
+        total.get("region_validation", {}), val_regions, val_overlaps, n_total, rm)
+
+    meta = total["metadata"]
+    meta["weighted_total_events"] = float(wte)  # file-level, NOT summed over chunks
+    meta["xsec"] = xsec
+    meta["sample"] = stem
+    logging.info("%s: %d events in %d chunk(s)", stem, n_total, n_chunks)
+    return total
+
+
+def _write_pickle_atomic(obj: Any, path: str) -> None:
+    """Pickle to <path>.tmp then rename, so a reader never sees a partial file."""
+    import os
+    import pickle
+    tmp = path + ".tmp"
+    with open(tmp, "wb") as fh:
+        pickle.dump(obj, fh)
+    os.replace(tmp, path)
+
+
+def _region_output_dir(output: str) -> str:
+    """--output is a directory unless it names a file (.pkl/.root/.parquet): then its parent."""
+    import os
+    if os.path.splitext(output)[1] in (".pkl", ".root", ".parquet"):
+        return os.path.dirname(output) or "."
+    return output
+
+
 def _run_analyzer_from_eventselection(args):
     """
     Path 2b: load per-sample EVENTSELECTION.root files, run region analysis, save PKL output.
 
     Reads all ROOT files matching process_groups patterns from --input (folder or list of files),
-    runs region cuts via RegionManager, fills histograms, and saves a merged PKL identical in
-    structure to the output of Path 1 analyze.
+    runs region cuts via RegionManager (chunked, see process_eventselection_file) and writes one
+    PKL per sample to <output>/per_sample/<stem>.pkl. The cross-sample merged.pkl is only built
+    with --write-merged: it is not used by plotting (which replays per_sample/) and holds the
+    events of every sample in memory.
     """
     import json
     import os
@@ -478,6 +715,7 @@ def _run_analyzer_from_eventselection(args):
         config.setdefault("data", {})["is_data"] = True
     is_data = config.get("data", {}).get("is_data", False)
 
+    failed: List[str] = []
     cross_sections: Dict[str, float] = {}
     if getattr(args, "xsection_json", None):
         with open(args.xsection_json) as f:
@@ -520,13 +758,15 @@ def _run_analyzer_from_eventselection(args):
         else:
             input_files.append(p)
 
-    if args.output:
-        outdir = os.path.dirname(args.output)
-        if outdir:
-            os.makedirs(outdir, exist_ok=True)
+    out_dir = _region_output_dir(args.output) if args.output else None
+    pkl_dir = None
+    if out_dir:
+        pkl_dir = os.path.join(out_dir, "per_sample")
+        os.makedirs(pkl_dir, exist_ok=True)
 
+    write_merged = getattr(args, "write_merged", False)
     merged_result: Optional[Dict] = None
-    analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
+    n_processed = 0
 
     from darkbottomline.plotting import _find_xsec
     from dnn.make_trees import _is_data as _fname_is_data, _is_signal_heuristic
@@ -539,37 +779,18 @@ def _run_analyzer_from_eventselection(args):
         if xsec is None:
             xsec = _find_xsec(stem.replace("_EVENTSELECTION", ""), cross_sections)
         try:
-            with uproot.open(str(file_path)) as f:
-                wte = 0.0
-                for key in ("weighted_total_events", "weighted_total_events;1"):
-                    if key in f:
-                        try:
-                            wte = float(f[key].values()[0])
-                            break
-                        except Exception:
-                            pass
-                if "Events" not in f:
-                    logging.warning("No Events tree in %s — skipping", stem)
-                    continue
-                raw = f["Events"].arrays(library="np")
-                branches = dict(raw)
-        except Exception as exc:
-            logging.warning("Could not load %s: %s — skipping", stem, exc)
-            continue
-
-        # Scale wte by xsec if provided (consistent with make-event-plots normalisation)
-        effective_wte = wte if wte > 0 else 1.0
-        try:
-            result = analyzer.process_from_eventselection(
-                branches=branches,
-                weighted_total_events=effective_wte,
-                is_data=is_data,
-                dnn_inference=dnn_inference,
-                dnn_mass_scan=dnn_mass_scan,
+            result = process_eventselection_file(
+                file_path, config, args.regions_config,
+                is_data=is_data, xsec=xsec,
+                dnn_inference=dnn_inference, dnn_mass_scan=dnn_mass_scan,
             )
         except Exception as exc:
             logging.error("Region analysis failed for %s: %s", stem, exc, exc_info=True)
+            failed.append(stem)
             continue
+        if result is None:
+            continue
+        n_processed += 1
 
         if dnn_inference is not None:
             if is_data or _fname_is_data(file_path):
@@ -579,25 +800,14 @@ def _run_analyzer_from_eventselection(args):
             else:
                 n_bkg_scored += 1
 
-        # Tag result with xsec for downstream normalisation
-        result.setdefault("metadata", {})["xsec"] = xsec
-        result["metadata"]["sample"] = stem
-
-        # Save per-sample PKL
-        if args.output:
-            import os as _os2
-            _out_dir = args.output if _os2.path.isdir(args.output) else _os2.path.dirname(args.output) or '.'
-            _pkl_dir = _os2.path.join(_out_dir, 'per_sample')
-            _os2.makedirs(_pkl_dir, exist_ok=True)
-            _pkl_path = _os2.path.join(_pkl_dir, stem + '.pkl')
-            import pickle as _pkl2
-            with open(_pkl_path, 'wb') as _pf:
-                _pkl2.dump(result, _pf)
-        if merged_result is None:
-            merged_result = result
-        else:
-            merged_result = _merge_region_results(merged_result, result)
-        logging.debug("Processed %s (wte=%.1f)", stem, effective_wte)
+        if pkl_dir:
+            # DNN-scored PKLs carry _DNNAPPLIED so they are never mistaken for unscored ones;
+            # plotting.py cuts names at "_EVENTSELECTION", so xsec/pattern matching is unaffected.
+            pkl_name = stem + ("_DNNAPPLIED" if dnn_inference is not None else "") + ".pkl"
+            _write_pickle_atomic(result, os.path.join(pkl_dir, pkl_name))
+        if write_merged:
+            merged_result = result if merged_result is None else _merge_region_results(merged_result, result)
+        logging.debug("Processed %s (wte=%.1f)", stem, result["metadata"]["weighted_total_events"])
 
     if dnn_inference is not None:
         logging.info(
@@ -606,29 +816,31 @@ def _run_analyzer_from_eventselection(args):
             n_bkg_scored, n_sig_scored, n_data_scored,
         )
 
-    if merged_result is None:
+    strict = getattr(args, "per_sample_only", False)  # batch jobs: failures must reach the exit code
+    if n_processed == 0:
         logging.error("No files processed — nothing to save.")
+        if strict:
+            sys.exit(1)
         return
 
-    import os as _os2
-    # Save merged result (for backward compat) + per-sample PKLs already saved above
-    if args.output:
-        _out_dir2 = args.output if _os2.path.isdir(args.output) else _os2.path.dirname(args.output) or '.'
-        _merged_out = _os2.path.join(_out_dir2, 'merged.pkl')
+    if out_dir:
+        logging.info("Per-sample PKLs written to %s", pkl_dir)
+    if write_merged and out_dir:
+        merged_out = os.path.join(out_dir, "merged.pkl")
+        analyzer = DarkBottomLineAnalyzer(config, args.regions_config)
         analyzer.accumulator = merged_result
-        logging.info("Saved region results to %s", _out_dir2)
-        # save_results()/_save_pickle() logs its own "Saved region results to
-        # <file>" line — suppressed here so only the dir-level line above and
-        # the two explicit lines below appear, in that order.
         _root_logger = logging.getLogger()
         _prev_level = _root_logger.level
         _root_logger.setLevel(logging.WARNING)
         try:
-            analyzer.save_results(_merged_out, output_format=args.output_format)
+            analyzer.save_results(merged_out, output_format=args.output_format)
         finally:
             _root_logger.setLevel(_prev_level)
-        logging.info("Per-sample PKLs written to %s", _os2.path.join(_out_dir2, 'per_sample'))
-        logging.info("Per-sample PKLs merged into %s", _merged_out)
+        logging.info("Per-sample PKLs merged into %s", merged_out)
+    if failed:
+        logging.error("Region analysis failed for %d file(s): %s", len(failed), ", ".join(failed))
+        if strict:
+            sys.exit(1)
 
 
 def _merge_region_results(a: Dict, b: Dict) -> Dict:
@@ -785,7 +997,12 @@ def run_analyzer(args):
 
     # region-analysis mode: delegate to _run_analyzer_from_eventselection then plot
     if mode == "region-analysis":
-        if getattr(args, "region_results", None):
+        if getattr(args, "per_sample_only", False):
+            if not args.output:
+                logging.error("--per-sample-only requires --output <dir>")
+                sys.exit(1)
+            _run_analyzer_from_eventselection(args)
+        elif getattr(args, "region_results", None):
             _trigger_plots(args)
         else:
             _run_analyzer_from_eventselection(args)
@@ -804,7 +1021,7 @@ def run_analyzer(args):
                 # PKLs directly, one file per pattern match, correctly scaled.
                 import os as _os3
                 if args.output:
-                    _out_dir3 = args.output if _os3.path.isdir(args.output) else _os3.path.dirname(args.output) or '.'
+                    _out_dir3 = _region_output_dir(args.output)
                     _per_sample_dir = _os3.path.join(_out_dir3, 'per_sample')
                     if _os3.path.isdir(_per_sample_dir):
                         args.region_results = _per_sample_dir
@@ -2820,6 +3037,13 @@ Examples:
                                help="Output PKL file (full/region-analysis modes)")
     analyze_parser.add_argument("--event-selection-output",
                                help="Path to save EVENTSELECTION.root (full and event-selection modes)")
+    analyze_parser.add_argument("--per-sample-only", action="store_true", default=False,
+                               help="region-analysis: write <output>/per_sample/<stem>.pkl for each input file "
+                                    "(--output is a directory) and stop: no merged.pkl, no plots. Exits non-zero "
+                                    "if any file failed. This is what condorJobs/region-analysis runs per sample.")
+    analyze_parser.add_argument("--write-merged", action="store_true", default=False,
+                               help="region-analysis: also build <output>/merged.pkl (all samples, in memory; "
+                                    "not used by plotting)")
     analyze_parser.add_argument("--output-format", default="pkl",
                                choices=["pkl", "root", "parquet"],
                                help="Output file format (default: pkl)")

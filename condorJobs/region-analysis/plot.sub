@@ -1,0 +1,33 @@
+# ---------------------------------------------------------------------------
+# Condor submit: region plots from the per-sample PKLs (child of the "regions" DAG
+# node). Vars from the DAG's VARS line (see submit_regions.py):
+#   EXEC REPO_DIR CONFIG REGIONS_CONFIG XSEC_JSON XSEC_SIGNAL_JSON PLOT_CONFIG
+#   INPUT_DIR PKL_DIR OUTDIR VERSION SIGNAL_SCALE LOGDIR BATCH_NAME PLOT_CPUS
+#   PLOT_MEMORY PLOT_FLAVOUR
+# ---------------------------------------------------------------------------
+
+universe   = vanilla
+executable = $(EXEC)
+arguments  = $(VERSION)
+
+environment = "DBL_REPO_DIR=$(REPO_DIR) DBL_CONFIG=$(CONFIG) DBL_REGIONS_CONFIG=$(REGIONS_CONFIG) DBL_XSEC_JSON=$(XSEC_JSON) DBL_XSEC_SIGNAL_JSON=$(XSEC_SIGNAL_JSON) DBL_PLOT_CONFIG=$(PLOT_CONFIG) DBL_INPUT_DIR=$(INPUT_DIR) DBL_PKL_DIR=$(PKL_DIR) DBL_OUTDIR=$(OUTDIR) DBL_SIGNAL_SCALE=$(SIGNAL_SCALE)"
+
+should_transfer_files   = YES
+when_to_transfer_output = ON_EXIT
+transfer_output_files   = ""
+
+output = $(LOGDIR)/output/$(BATCH_NAME).$(ClusterId).out
+error  = $(LOGDIR)/error/$(BATCH_NAME).$(ClusterId).err
+log    = $(LOGDIR)/$(BATCH_NAME).$(ClusterId).log
+
+batch_name     = $(BATCH_NAME)
+MY.WantOS      = "el9"
+request_cpus   = $(PLOT_CPUS)
+request_memory = $(PLOT_MEMORY)
++JobFlavour    = "$(PLOT_FLAVOUR)"
+
+on_exit_hold     = (ExitBySignal == True) || (ExitCode != 0)
+periodic_release = (NumJobStarts < 2) && ((time() - EnteredCurrentStatus) > 600)
+periodic_remove  = (JobStatus == 5) && (NumJobStarts >= 2)
+
+queue
