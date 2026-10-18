@@ -39,6 +39,7 @@ from darkbottomline.corrections import jes_sources
 # ---------------------------------------------------------------------------
 
 from .objects import SENTINEL as _SENTINEL
+from .analyzer import _jagged_from_object_array  # vectorised replacement for ak.Array(list(v)) (ak.from_iter was ~75% of plot time)
 
 # Pseudo-variables: plotted like a normal variable but sourced from a different
 # branch and/or weighted by a different weight branch. Used for cross-check plots
@@ -2090,7 +2091,7 @@ class PlotManager:
                         continue
                     if _v.dtype == object:
                         try:
-                            _sak_dict[_k] = _ak.Array(list(_v))
+                            _sak_dict[_k] = _jagged_from_object_array(_v)
                         except Exception:
                             pass
                     else:
@@ -2370,7 +2371,7 @@ class PlotManager:
                                 continue
                             if _v.dtype == object:
                                 try:
-                                    _sak_dict[_k] = _ak.Array(list(_v))
+                                    _sak_dict[_k] = _jagged_from_object_array(_v)
                                 except Exception:
                                     pass
                             else:
@@ -2912,7 +2913,7 @@ class PlotManager:
                                     continue
                                 if v.dtype == object:
                                     try:
-                                        ak_dict[k] = _ak.Array(list(v))
+                                        ak_dict[k] = _jagged_from_object_array(v)
                                     except Exception:
                                         pass
                                 else:
@@ -3110,7 +3111,7 @@ class PlotManager:
                                         continue
                                     if _v.dtype == object:
                                         try:
-                                            _sak_dict[_k] = _ak.Array(list(_v))
+                                            _sak_dict[_k] = _jagged_from_object_array(_v)
                                         except Exception:
                                             pass
                                     else:
@@ -3512,7 +3513,7 @@ class PlotManager:
                                 continue
                             if _v.dtype == object:
                                 try:
-                                    _sak_dict[_k] = _ak.Array(list(_v))
+                                    _sak_dict[_k] = _jagged_from_object_array(_v)
                                 except Exception:
                                     pass
                             else:
@@ -3594,7 +3595,7 @@ class PlotManager:
                                     continue
                                 if v.dtype == object:
                                     try:
-                                        ak_dict[k] = _ak.Array(list(v))
+                                        ak_dict[k] = _jagged_from_object_array(v)
                                     except Exception:
                                         pass
                                 else:
@@ -3637,7 +3638,7 @@ class PlotManager:
                                         continue
                                     if v.dtype == object:
                                         try:
-                                            _ak_dict_d[k] = _ak.Array(list(v))
+                                            _ak_dict_d[k] = _jagged_from_object_array(v)
                                         except Exception:
                                             pass
                                     else:

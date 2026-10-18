@@ -139,6 +139,7 @@ def main():
     p.add_argument("--mem-max", type=int, default=12000, help="request_memory cap in MB (default: 12000)")
     p.add_argument("--flavour", default="workday",
                    choices=["espresso", "microcentury", "longlunch", "workday", "tomorrow", "testmatch", "nextweek"])
+    p.add_argument("--tag", default="", help="Suffix for the job list / DAG file names, so a second run can be submitted while the first DAG is still running")
     p.add_argument("--no-plot", action="store_true", help="Region jobs only: no plot node in the DAG")
     p.add_argument("--plot-only", action="store_true",
                    help="Submit only the plot job; refuses if any selected sample has no PKL on EOS yet")
@@ -229,7 +230,8 @@ def main():
     lumi_tag = f"{args.lumi:g}"
     config_copy = work / f"{args.year}_lumi{lumi_tag}.yaml"
     write_lumi_config(base_config, args.lumi, config_copy)
-    joblist = work / "regions.jobs"
+    sfx = f"_{args.tag}" if args.tag else ""
+    joblist = work / f"regions{sfx}.jobs"
     joblist.write_text("".join(
         f"{j['path']} {j['stem']} {'true' if j['kind'] == 'DATA' else 'false'} {j['mem']} {j['cpus']}\n"
         for j in plan))
@@ -257,7 +259,7 @@ def main():
         dag += [f"JOB plot {CONDOR_DIR / 'plot.sub'}", vars_line("plot", plot_vars)]
         if plan:
             dag += ["PARENT regions CHILD plot"]
-    dag_file = work / "regions.dag"
+    dag_file = work / f"regions{sfx}.dag"
     dag_file.write_text("\n".join(dag) + "\n")
 
     total_gb = sum(j["size"] for j in plan) / 1e9
@@ -276,7 +278,7 @@ def main():
         print("(no region jobs: every selected sample has a PKL; DAG is plot only)")
 
     stage = "plots" if args.plot_only else ("pkls" if args.no_plot else "pkls+plots")
-    dag_batch = f"region_{stage}_{args.year}_lumi{lumi_tag}_{git_version().replace('+', '-')}"
+    dag_batch = f"region_{stage}_{args.year}_lumi{lumi_tag}_{git_version().replace('+', '-')}{sfx}"
     cmd = ["condor_submit_dag", "-f", "-batch-name", dag_batch, str(dag_file)]
     if args.dry_run:
         print(f"\n[DRY RUN] wrote {joblist}, {dag_file}, {config_copy}; nothing submitted, nothing written to EOS")
