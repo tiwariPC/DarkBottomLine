@@ -382,7 +382,9 @@ class Region:
                 events["n_jets"] if "n_jets" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64)))
             _nb = events["n_bjets"] if "n_bjets" in events.fields else ak.Array(np.zeros(n_ev, dtype=np.int64))
             return _nj - _nb
-        if var == "MT":
+        if var in ("MT", "MTMin", "MTMax"):
+            # MTMin/MTMax: aliases so a region can cut mT on both sides (YAML
+            # cut keys are unique), same pattern as MllMin/MllMax.
             # Flat-branch fallback — event-selected files store precomputed mt
             if "tight_muons" not in objects and "tight_electrons" not in objects:
                 for _fname in ("mt", "MT", "w_mt"):

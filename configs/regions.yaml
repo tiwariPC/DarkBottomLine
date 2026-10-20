@@ -30,6 +30,7 @@ regions:
       NmuonsTight: "==1"      # signal lepton tight ID + pt>30 (Run 2 parity)
       Nelectrons: "==0"
       MET: ">100"
+      MTMin: ">0"            # removes non-prompt muons (data/MC 2.1 at mT<40, e channel flat)
       MT: "<160"
   "1b:CR_Wenu":
     description: "W+jets control region in 1b category (electron)"
@@ -42,6 +43,7 @@ regions:
       NelectronsTight: "==1"  # signal lepton tight ID + pt>32 (Run 2 parity)
       Nmuons: "==0"
       MET: ">100"
+      MTMin: ">0"            # same definition as 1b:CR_Wmunu
       MT: "<160"
   "2b:CR_Topmunu":
     description: "Top control region in 2b category (muon)"

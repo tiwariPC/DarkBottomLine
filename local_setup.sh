@@ -60,6 +60,23 @@ if [ "${INSTALL_COMBINE:-0}" = "1" ]; then
       conda install -y -n darkbottomline -c conda-forge cmake ninja \
         || { echo "Failed to install cmake/ninja!"; return 1; }
     fi
+    # CC/CXX exported by conda's compiler activation scripts (or left over from
+    # a previous activation) can point at x86_64-conda-linux-gnu-{cc,c++} that
+    # no longer exist in the env, which makes CMake abort. Install the conda
+    # compilers if they are missing, and drop stale CC/CXX so CMake re-detects.
+    if [ ! -x "${CONDA_PREFIX}/bin/x86_64-conda-linux-gnu-c++" ]; then
+      echo "Installing C/C++ compilers into ${CONDA_PREFIX}..."
+      conda install -y -n darkbottomline -c conda-forge c-compiler cxx-compiler \
+        || { echo "Failed to install compilers!"; return 1; }
+      # re-run activation so CC/CXX/CMAKE_* point at the new compilers
+      conda deactivate && conda activate darkbottomline
+    fi
+    for _v in CC CXX; do
+      eval "_val=\${$_v:-}"
+      if [ -n "$_val" ] && [ ! -x "$_val" ] && ! command -v "$_val" &>/dev/null; then
+        unset "$_v"
+      fi
+    done
     if ! find "${CONDA_PREFIX}/share" -iname "Eigen3Config.cmake" 2>/dev/null | grep -q .; then
       echo "Installing Eigen3 into ${CONDA_PREFIX}..."
       conda install -y -n darkbottomline -c conda-forge eigen \
@@ -79,6 +96,13 @@ if [ "${INSTALL_COMBINE:-0}" = "1" ]; then
     PY_SITE_PACKAGES="lib/python$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')/site-packages"
     NCPU="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 2)"
     BUILD_JOBS=$(( NCPU > 2 ? NCPU - 2 : 1 ))
+    # A previous failed configure caches the bad compiler path; discard it.
+    if [ -f "${COMBINE_SRC}/build/CMakeCache.txt" ]; then
+      _cached_cxx="$(sed -n 's/^CMAKE_CXX_COMPILER:[A-Z]*=//p' "${COMBINE_SRC}/build/CMakeCache.txt")"
+      if [ -z "$_cached_cxx" ] || [ ! -x "$_cached_cxx" ]; then
+        rm -rf "${COMBINE_SRC}/build"
+      fi
+    fi
     (
       cd "${COMBINE_SRC}" \
         && cmake -S . -B build -DCMAKE_INSTALL_PREFIX="${CONDA_PREFIX}" \
