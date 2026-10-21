@@ -1,7 +1,7 @@
 # sample_mode: binned | inclusive  (see data/samplelist/README.md)
 #   binned    - pT-binned V+jets samples (`patterns` of each group)
 #   inclusive - 'pT >= 100 GeV' samples + the 40-100 GeV bin (`patterns_inclusive`), where present
-sample_mode: binned
+sample_mode: inclusive
 
 no_log_scale_vars:
 - pu_npv

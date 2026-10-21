@@ -78,9 +78,16 @@ def _out_name(var: str) -> str:
     return _VAR_OUTPUT_NAME.get(var, var)
 
 
+# Variables that reuse another variable's bins. Kept separate from
+# _VAR_VALUE_ALIAS: Wpt reads Recoil's values but has its own (finer) bins.
+_VAR_BINS_ALIAS: Dict[str, str] = {
+    "PV_npvsGood_noPU": "PV_npvsGood",
+}
+
+
 def _bins_key(var: str) -> str:
-    """Config key for binning (pseudo-variables share their source var's bins)."""
-    return _VAR_VALUE_ALIAS.get(var, var)
+    """Config key for binning (PV_noPU shares PV_npvsGood's bins; others use their own)."""
+    return _VAR_BINS_ALIAS.get(var, var)
 
 
 def _weight_branch_for(var: str, default_weight: str) -> str:
