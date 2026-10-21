@@ -1,3 +1,8 @@
+# sample_mode: binned | inclusive  (see data/samplelist/README.md)
+#   binned    - pT-binned V+jets samples (`patterns` of each group)
+#   inclusive - 'pT >= 100 GeV' samples + the 40-100 GeV bin (`patterns_inclusive`), where present
+sample_mode: binned
+
 no_log_scale_vars:
 - pu_npv
 - prod_cat
@@ -599,6 +604,9 @@ process_groups:
     - WtoLNu-2Jets_PTLNu-200to400
     - WtoLNu-2Jets_PTLNu-400to600
     - WtoLNu-2Jets_PTLNu-600
+    patterns_inclusive:
+    - WtoLNu-2Jets_PTLNu-40to100
+    - WtoLNu-2Jets_Bin-PTLNu-100
   Zto2NuJets:
     type: background
     color: '#a96b59'
@@ -609,6 +617,9 @@ process_groups:
     - Zto2Nu-2Jets_PTNuNu-200to400
     - Zto2Nu-2Jets_PTNuNu-400to600
     - Zto2Nu-2Jets_PTNuNu-600
+    patterns_inclusive:
+    - Zto2Nu-2Jets_PTNuNu-40to100
+    - Zto2Nu-2Jets_Bin-PTNuNu-100
   DYto2LJets:
     type: background
     color: '#3f90da'
@@ -619,6 +630,9 @@ process_groups:
     - DYto2L-2Jets_MLL-50-PTLL-200to400
     - DYto2L-2Jets_MLL-50-PTLL-400to600
     - DYto2L-2Jets_MLL-50-PTLL-600
+    patterns_inclusive:
+    - DYto2L-2Jets_MLL-50-PTLL-40to100
+    - DYto2L-2Jets_Bin-MLL-50-PTLL-100
   ttbar:
     type: background
     color: '#e76300'

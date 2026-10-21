@@ -541,12 +541,24 @@ class PlotManager:
         self._group_colors: Dict[str, str] = {}
         self._group_labels: Dict[str, str] = {}
 
+        # sample_mode: "binned" (default) uses each group's ``patterns``; "inclusive"
+        # uses ``patterns_inclusive`` instead, but only when the folder actually holds
+        # a file matched by a pattern that is exclusive to the inclusive set (so years
+        # without the inclusive samples keep using the binned ones).
+        self.sample_mode: str = str(self.config.get("sample_mode", "binned")).strip().lower()
+        if self.sample_mode not in ("binned", "inclusive"):
+            raise ValueError(
+                f"sample_mode must be 'binned' or 'inclusive', got {self.sample_mode!r}")
+        self._inclusive_alt: Dict[Tuple[str, ...], List[str]] = {}
+
         for label, grp in raw_groups.items():
             if not isinstance(grp, dict):
                 grp = {"patterns": grp}
             grp_type = grp.get("type", "background")
             # support both "patterns" (new) and "files" (legacy) keys
             patterns: List[str] = grp.get("patterns") or grp.get("files") or []
+            if grp.get("patterns_inclusive"):
+                self._inclusive_alt[tuple(patterns)] = list(grp["patterns_inclusive"])
             if grp.get("color"):
                 self._group_colors[label] = grp["color"]
             if grp.get("label"):
@@ -1618,6 +1630,16 @@ class PlotManager:
         # rename). Data patterns (JetMET-Run, EGamma-Run) are untouched by
         # _clean_sample_name so they keep matching as before.
         canon_names = {p: _clean_sample_name(p.name) for p in all_files}
+        alt = self._inclusive_alt.get(tuple(patterns))
+        if self.sample_mode == "inclusive" and alt:
+            only = [_clean_sample_name(x) for x in alt if x not in patterns]
+            if any(o in c for o in only for c in canon_names.values()):
+                logging.info("sample_mode=inclusive: using patterns_inclusive %s", alt)
+                patterns = alt
+            else:
+                logging.warning(
+                    "sample_mode=inclusive but no file in %s matches %s; "
+                    "falling back to binned patterns", input_folder, only)
         for pattern in patterns:
             pat_canon = _clean_sample_name(pattern)
             pattern_hits = 0

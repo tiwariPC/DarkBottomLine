@@ -1,0 +1,48 @@
+# Which 2024 V+jets sample lists are active in each mode.
+# Used by scripts/switch_sample_mode.py: files matching `managed` that are not in the chosen mode's
+# `active` list are moved from data/samplelist/<year>/ to data/samplelist/backup/<year>/.
+# Entries are sample-list names without the _TuneCP5_... suffix and ".txt".
+# (The group patterns for plotting are in configs/plotting.yaml: `patterns` / `patterns_inclusive`.)
+year: "2024"
+managed:            # every sample list whose name starts with one of these is controlled by the modes
+  - WtoLNu-2Jets_Bin-
+  - Zto2Nu-2Jets_Bin-
+  - DYto2L-2Jets_Bin-
+modes:
+  binned:           # pT-binned samples (1J + 2J exclusive bins)
+    active:
+      - WtoLNu-2Jets_Bin-1J-PTLNu-40to100
+      - WtoLNu-2Jets_Bin-1J-PTLNu-100to200
+      - WtoLNu-2Jets_Bin-1J-PTLNu-200to400
+      - WtoLNu-2Jets_Bin-1J-PTLNu-400to600
+      - WtoLNu-2Jets_Bin-1J-PTLNu-600
+      - WtoLNu-2Jets_Bin-2J-PTLNu-40to100
+      - WtoLNu-2Jets_Bin-2J-PTLNu-100to200
+      - WtoLNu-2Jets_Bin-2J-PTLNu-200to400
+      - WtoLNu-2Jets_Bin-2J-PTLNu-400to600
+      - WtoLNu-2Jets_Bin-2J-PTLNu-600
+      - Zto2Nu-2Jets_Bin-1J-PTNuNu-40to100
+      - Zto2Nu-2Jets_Bin-1J-PTNuNu-100to200
+      - Zto2Nu-2Jets_Bin-1J-PTNuNu-200to400
+      - Zto2Nu-2Jets_Bin-1J-PTNuNu-400to600
+      - Zto2Nu-2Jets_Bin-1J-PTNuNu-600
+      - Zto2Nu-2Jets_Bin-2J-PTNuNu-40to100
+      - Zto2Nu-2Jets_Bin-2J-PTNuNu-100to200
+      - Zto2Nu-2Jets_Bin-2J-PTNuNu-200to400
+      - Zto2Nu-2Jets_Bin-2J-PTNuNu-400to600
+      - Zto2Nu-2Jets_Bin-2J-PTNuNu-600
+      - DYto2L-2Jets_Bin-2J-MLL-50-PTLL-40to100
+      - DYto2L-2Jets_Bin-2J-MLL-50-PTLL-100to200
+      - DYto2L-2Jets_Bin-2J-MLL-50-PTLL-200to400
+      - DYto2L-2Jets_Bin-2J-MLL-50-PTLL-400to600
+      - DYto2L-2Jets_Bin-2J-MLL-50-PTLL-600
+  inclusive:        # 'pT >= 100 GeV' samples (+ the 40-100 GeV bins)
+    active:
+      - WtoLNu-2Jets_Bin-1J-PTLNu-40to100
+      - WtoLNu-2Jets_Bin-2J-PTLNu-40to100
+      - WtoLNu-2Jets_Bin-PTLNu-100
+      - Zto2Nu-2Jets_Bin-1J-PTNuNu-40to100
+      - Zto2Nu-2Jets_Bin-2J-PTNuNu-40to100
+      - Zto2Nu-2Jets_Bin-PTNuNu-100
+      - DYto2L-2Jets_Bin-2J-MLL-50-PTLL-40to100
+      - DYto2L-2Jets_Bin-MLL-50-PTLL-100
