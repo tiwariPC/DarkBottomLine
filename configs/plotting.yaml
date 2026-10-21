@@ -66,11 +66,13 @@ region_variables:
   - b_flavor_count
   1b:CR_Wmunu:
   - mt
+  - Wpt
   - muon_lep1_pt
   - muon_lep1_eta
   - muon_lep1_phi
   1b:CR_Wenu:
   - mt
+  - Wpt
   - electron_lep1_pt
   - electron_lep1_eta
   - electron_lep1_phi
@@ -115,8 +117,8 @@ region_variables:
   - Jet2Eta
   - Jet2Phi
   - JetHT
-  - z_mass
-  - z_pt
+  - mll
+  - Zpt
   - muon_lep1_pt
   - muon_lep1_eta
   - muon_lep2_pt
@@ -128,8 +130,8 @@ region_variables:
   - Jet3Pt
   - Jet3Eta
   - JetHT
-  - z_mass
-  - z_pt
+  - mll
+  - Zpt
   - costheta_star
   - b_flavor_count
   - muon_lep1_pt
@@ -141,8 +143,8 @@ region_variables:
   - Jet2Eta
   - Jet2Phi
   - JetHT
-  - z_mass
-  - z_pt
+  - mll
+  - Zpt
   - electron_lep1_pt
   - electron_lep1_eta
   - electron_lep2_pt
@@ -154,8 +156,8 @@ region_variables:
   - Jet3Pt
   - Jet3Eta
   - JetHT
-  - z_mass
-  - z_pt
+  - mll
+  - Zpt
   - costheta_star
   - b_flavor_count
   - electron_lep1_pt
@@ -270,11 +272,12 @@ variable_labels:
   n_muons: Number of muons
   n_electrons: Number of electrons
   n_taus: Number of taus
-  PV_npvsGood: Number of good PVs
-  PV_npvsGood_noPU: Number of good PVs (no PU)
+  PV_npvsGood: Number of good PVs (after PU reweighting)
+  PV_npvsGood_noPU: Number of good PVs (before PU reweighting)
   mt: $M_{T}$ [GeV]
-  z_mass: $M_{\ell\ell}$ [GeV]
-  z_pt: $p_{T}^{\ell\ell}$ [GeV]
+  mll: $M_{\ell\ell}$ [GeV]
+  Zpt: $p_{T}^{\ell\ell}$ [GeV]
+  Wpt: $p_{T}^{W}$ [GeV]
   muon_lep1_pt: Muon1 $p_{T}$ [GeV]
   muon_lep1_eta: Muon1 $\eta$
   muon_lep1_phi: Muon1 $\phi$
@@ -566,14 +569,16 @@ variable_bins:
     low: 0.0
     high: 160.0
     n: 30
-  z_mass:
+  mll:
     low: 70.0
     high: 110.0
     n: 40
-  z_pt:
+  Zpt:
     low: 0.0
     high: 800.0
     n: 24
+  Wpt:
+    edges: [250, 275, 300, 325, 350, 375, 400, 425, 450, 475, 500, 525, 550, 575, 600, 650, 700, 750, 800, 1000]
   costheta_star:
     edges:
     - 0.0

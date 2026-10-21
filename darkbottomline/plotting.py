@@ -50,8 +50,11 @@ from .analyzer import _jagged_from_object_array  # vectorised replacement for ak
 # PV_npvsGood_noPU = PV_npvsGood weighted WITHOUT the pileup reweight (all other
 # SFs kept), via the weight_noPileup branch. Data/MC pileup validation: reweighted
 # MC (PV_npvsGood) and un-reweighted MC (PV_npvsGood_noPU) each compared to data.
+# Wpt = Recoil: Recoil is -(MET + sum selected leptons), so with exactly one
+# lepton (W CRs) it is pT(lepton + MET) by construction.
 _VAR_VALUE_ALIAS: Dict[str, str] = {
     "PV_npvsGood_noPU": "PV_npvsGood",
+    "Wpt": "Recoil",
 }
 _VAR_WEIGHT_OVERRIDE: Dict[str, str] = {
     "PV_npvsGood_noPU": "weight_noPileup",
@@ -61,6 +64,18 @@ _VAR_WEIGHT_OVERRIDE: Dict[str, str] = {
 def _value_branch(var: str) -> str:
     """Branch to read plot values from (identity unless var is a pseudo-variable)."""
     return _VAR_VALUE_ALIAS.get(var, var)
+
+
+# Short names used in output file names (png/pdf/root/text) for these variables.
+_VAR_OUTPUT_NAME: Dict[str, str] = {
+    "PV_npvsGood": "PV",
+    "PV_npvsGood_noPU": "PV_noPU",
+}
+
+
+def _out_name(var: str) -> str:
+    """Variable name as it appears in output file names."""
+    return _VAR_OUTPUT_NAME.get(var, var)
 
 
 def _bins_key(var: str) -> str:
@@ -986,9 +1001,9 @@ class PlotManager:
         # File stem: region_hist_{category}_{region_dir}_{variable}{_log}
         log_suffix = "_log" if is_log else ""
         if category == "event_selection":
-            file_stem = f"hist_event_selection_{hist_name}{log_suffix}"
+            file_stem = f"hist_event_selection_{_out_name(hist_name)}{log_suffix}"
         else:
-            file_stem = f"hist_{category}_{region_dir}_{hist_name}{log_suffix}"
+            file_stem = f"hist_{category}_{region_dir}_{_out_name(hist_name)}{log_suffix}"
 
         # Save PNG
         png_path = os.path.join(png_dir, f"{file_stem}.png")
@@ -1410,9 +1425,9 @@ class PlotManager:
             cat_r = region_info_r["category"]
             rdir_r = region_info_r["region_dir"]
             if cat_r == "event_selection":
-                _root_stem = f"hist_event_selection_{variable}{'_log' if use_log else ''}"
+                _root_stem = f"hist_event_selection_{_out_name(variable)}{'_log' if use_log else ''}"
             else:
-                _root_stem = f"hist_{cat_r}_{rdir_r}_{variable}{'_log' if use_log else ''}"
+                _root_stem = f"hist_{cat_r}_{rdir_r}_{_out_name(variable)}{'_log' if use_log else ''}"
             root_out = Path(output_dir) / version / "root" / f"{_root_stem}.root"
             root_out.parent.mkdir(parents=True, exist_ok=True)
             with _up.recreate(str(root_out)) as rf:
@@ -1446,7 +1461,7 @@ class PlotManager:
         else:
             region_label = f"{category}_{region_dir}"
             text_dir = Path(output_dir) / version / "text" / "region_analysis" / region_label
-            _yield_stem = text_dir / f"hist_{category}_{region_dir}_{variable}{_log_suf}"
+            _yield_stem = text_dir / f"hist_{category}_{region_dir}_{_out_name(variable)}{_log_suf}"
         text_dir.mkdir(parents=True, exist_ok=True)
         self._write_yield_table(_yield_stem, variable, bins, rows, data_ndarray)
 
@@ -2057,6 +2072,8 @@ class PlotManager:
                 for pkl in info["pkls"]:
                     rh = pkl.get("region_histograms", {}).get(region, {})
                     vals = rh.get("values", {}).get(var)
+                    if vals is None and var in _VAR_VALUE_ALIAS:
+                        vals = rh.get("values", {}).get(_VAR_VALUE_ALIAS[var])
                     if vals is None:
                         _alias = _aliases.get(var)
                         if _alias:
@@ -2133,6 +2150,15 @@ class PlotManager:
                 for e in entries:
                     _rh = e["data"].get("region_histograms", {}).get(region, {})
                     all_vars_set.update(_rh.get("values", {}).keys())
+            # Pseudo-variables whose source branch is present. Ones with a weight
+            # override (PV_npvsGood_noPU -> weight_noPileup) are only added when
+            # that weight branch is also stored per-event in the PKL; otherwise
+            # they'd silently plot with the nominal weight.
+            all_vars_set.update(
+                pv for pv, src in _VAR_VALUE_ALIAS.items()
+                if src in all_vars_set
+                and (pv not in _VAR_WEIGHT_OVERRIDE or _VAR_WEIGHT_OVERRIDE[pv] in all_vars_set)
+            )
             candidate_vars = variables or sorted(all_vars_set)
             all_vars_for_region = self._get_allowed_variables_for_region(region, candidate_vars)
             logging.info("Region '%s': candidate_vars=%d, after filtering=%d",
@@ -2154,6 +2180,8 @@ class PlotManager:
                 def _values_for(rh: Dict[str, Any]) -> Optional[np.ndarray]:
                     vals = rh.get("values", {})
                     arr = vals.get(var)
+                    if arr is None and var in _VAR_VALUE_ALIAS:
+                        arr = vals.get(_VAR_VALUE_ALIAS[var])
                     if arr is None:
                         _alias = _aliases.get(var)
                         if _alias:
@@ -2168,7 +2196,7 @@ class PlotManager:
                 # sample's fixed analyzer-time axis had to be rebinned onto
                 # this shared axis). Mirrors _create_region_from_events_plots'
                 # identical lazy-bins-then-histogram pattern.
-                bins_ref: Optional[np.ndarray] = self._build_bins_from_config(var)
+                bins_ref: Optional[np.ndarray] = self._build_bins_from_config(_bins_key(var))
 
                 bkg_rows: List[Tuple[str, np.ndarray, np.ndarray]] = []
                 procs_with_data = []
@@ -2183,6 +2211,11 @@ class PlotManager:
                         if vals_raw is None or not isinstance(vals_raw, np.ndarray):
                             continue
                         w_raw = rh.get("weight")
+                        if var in _VAR_WEIGHT_OVERRIDE:
+                            # Alternate full event weight stored per-event in the
+                            # PKL (e.g. weight_noPileup). Skip the sample rather
+                            # than fall back to the nominal weight if it's absent.
+                            w_raw = rh.get("values", {}).get(_VAR_WEIGHT_OVERRIDE[var])
                         if w_raw is None or len(w_raw) != len(vals_raw):
                             continue
                         wte = int(e["data"].get("metadata", {}).get("weighted_total_events", 0)
@@ -2206,7 +2239,7 @@ class PlotManager:
                                     if isinstance(v2, np.ndarray):
                                         all_vals_for_bins.append(_apply_variable_plot_filter(var, v2.astype(float)))
                             bins_ref = _make_bins(all_vals_for_bins, self._build_bins_from_config,
-                                                  var, self._n_bins_default)
+                                                  _bins_key(var), self._n_bins_default)
                             if bins_ref is None or len(bins_ref) < 2:
                                 break
 
@@ -2262,6 +2295,8 @@ class PlotManager:
                             continue
                         # Get variable values: use flat branch or alias
                         _svals_raw = _sbr.get(var)
+                        if _svals_raw is None and var in _VAR_VALUE_ALIAS:
+                            _svals_raw = _sbr.get(_VAR_VALUE_ALIAS[var])
                         if _svals_raw is None:
                             _alias = _aliases.get(var)
                             if _alias:
@@ -2957,7 +2992,7 @@ class PlotManager:
             )
 
             for var in var_list:
-                bins_ref: Optional[np.ndarray] = self._build_bins_from_config(var)
+                bins_ref: Optional[np.ndarray] = self._build_bins_from_config(_bins_key(var))
                 bkg_rows: List[Tuple[str, np.ndarray, np.ndarray]] = []
 
                 for proc_label, entries in bkg_entries.items():
