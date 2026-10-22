@@ -2257,6 +2257,9 @@ def make_event_plots(args):
             plot_config = load_config(str(default_cfg))
 
     plot_manager = PlotManager(config=plot_config)
+    # Recoil threshold (year config event_selection.recoil_min): re-applied to shifted
+    # recoil in the JES/JER systematic-variation histograms.
+    plot_manager.recoil_min = float(config.get("event_selection", {}).get("recoil_min", 0.0) or 0.0)
 
     # Process groups: CLI JSON overrides plotting.yaml process_groups entirely
     if args.process_groups:

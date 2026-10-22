@@ -552,9 +552,22 @@ class CombineDatacardWriter:
                     raise ValueError("mass_point is required to write signal shapes")
                 hist_key = self._process_hist_key(process, mass_point)
 
-                values = load_region_histogram(region_root_dir, category, region_dir,
-                                                variable, hist_key)
                 edges = load_region_bin_edges(region_root_dir, category, region_dir, variable)
+                try:
+                    values = load_region_histogram(region_root_dir, category, region_dir,
+                                                    variable, hist_key)
+                except KeyError:
+                    # The plotter writes a process histogram only if the process has
+                    # events in the region (e.g. no Z(nunu) in a Z(ll) CR). A missing
+                    # background is a genuinely empty one: use zeros, which the
+                    # ZERO_FLOOR below turns into a valid (tiny) rate. A missing
+                    # signal is still an error.
+                    if proc_config.get("is_signal", False):
+                        raise
+                    logging.warning(
+                        f"Background '{hist_key}' has no histogram in {category}:{region_dir} "
+                        f"({variable}) - treating as empty.")
+                    values = np.zeros(len(edges) - 1)
                 # Floor exactly-zero bins — a real, reproduced failure mode:
                 # binned mode splits each bin into its own single-bin Combine
                 # channel, and Combine's ShapeTools.getExtraNorm raises

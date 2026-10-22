@@ -66,8 +66,7 @@ regions:
 # (ml_score vs Recoil vs other) is the actual 2b discriminant.
 fit_variable:
   "1b": "Recoil"
-  "2b": "Recoil"     # PLACEHOLDER — confirm before running 2b datacard-generation;
-                      # candidate: ml_score, if DNN scoring is finalized for this era
+  "2b": "costheta_star"   # confirmed: costheta_star for 2b, Recoil for 1b
 
 combine_emu: true
 
@@ -227,9 +226,21 @@ datacard:
       processes: ["signal", "ttbar", "wjets", "zjets", "znunu", "singletop", "diboson", "smhiggs"]
       gated_by_cut: ["Bjet1bCond", "Bjet2bCond"]   # region-applicable iff its
                                                      # regions.yaml cuts block has either key
-    JES:         {type: "shape", syst_suffix: "JES", name_template: "CMS_scale_j_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    # JES: reduced 11-source JEC scheme written by the PKL/event plot paths
+    # (hist_<cat>_<region>_Recoil_JEC<source>{UP,DOWN}_log.root). Only Recoil has shifted
+    # variants, so the 2b category (costheta_star) has no JEC/JER shape systematics.
+    JECAbsolute: {type: "shape", syst_suffix: "JECAbsolute", name_template: "CMS_scale_j_Absolute", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JECAbsolute_2024: {type: "shape", syst_suffix: "JECAbsolute_2024", name_template: "CMS_scale_j_Absolute_2024", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JECBBEC1: {type: "shape", syst_suffix: "JECBBEC1", name_template: "CMS_scale_j_BBEC1", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JECBBEC1_2024: {type: "shape", syst_suffix: "JECBBEC1_2024", name_template: "CMS_scale_j_BBEC1_2024", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JECEC2: {type: "shape", syst_suffix: "JECEC2", name_template: "CMS_scale_j_EC2", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JECEC2_2024: {type: "shape", syst_suffix: "JECEC2_2024", name_template: "CMS_scale_j_EC2_2024", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JECHF: {type: "shape", syst_suffix: "JECHF", name_template: "CMS_scale_j_HF", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JECHF_2024: {type: "shape", syst_suffix: "JECHF_2024", name_template: "CMS_scale_j_HF_2024", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JECFlavorQCD: {type: "shape", syst_suffix: "JECFlavorQCD", name_template: "CMS_scale_j_FlavorQCD", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JECRelativeBal: {type: "shape", syst_suffix: "JECRelativeBal", name_template: "CMS_scale_j_RelativeBal", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JECRelativeSample_2024: {type: "shape", syst_suffix: "JECRelativeSample_2024", name_template: "CMS_scale_j_RelativeSample_2024", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
     JER:         {type: "shape", syst_suffix: "JER", name_template: "CMS_res_j_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JEC:         {type: "shape", syst_suffix: "weight_JEC", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
     pileup:      {type: "shape", syst_suffix: "weight_pileup", name_template: "CMS_pileup_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
     muonSF:      {type: "shape", syst_suffix: "weight_muon", name_template: "CMS_eff_m_id_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
     electronSF:  {type: "shape", syst_suffix: "weight_electron", name_template: "CMS_eff_e_id_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}

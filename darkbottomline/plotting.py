@@ -1559,6 +1559,7 @@ class PlotManager:
                 show_data=show_data,
                 root_input_folder=root_input_folder,
                 signal_scale=signal_scale,
+                make_syst_plots=make_syst_plots,
             ))
         else:  # region-from-events
             regions_config = getattr(self, "_regions_config_path", None)
@@ -1942,6 +1943,7 @@ class PlotManager:
         show_data: bool = False,
         root_input_folder: Optional[str] = None,
         signal_scale: float = 1.0,
+        make_syst_plots: bool = False,
     ) -> List[str]:
         logging.info("=== Creating region stacked plots ===")
         cross_sections = self._normalize_cross_sections(cross_sections)
@@ -2049,6 +2051,65 @@ class PlotManager:
                     except Exception as exc:
                         logging.warning('[Signal:%s] skipping %s: %s', sig_label, p.name, exc)
         logging.info('Signal files loaded: %d', len(sig_file_entries))
+
+        # Signal PKLs (region-selected event arrays: GenModel_* mass-point flags, derived
+        # fields such as the DNN score that don't exist in the EVENTSELECTION tree, the
+        # nominal weight and every weight/shifted-recoil variation). Used for variables
+        # absent from the signal ROOT branches.
+        sig_pkl_entries: List[Dict[str, Any]] = []
+        for _sl, _spat in (signal_groups or {}).items():
+            for _sp in self._resolve_group_files(input_folder, _spat):
+                if _sp.suffix != '.pkl':
+                    continue
+                try:
+                    _sd = _load_region_pkl(_sp)
+                    sig_pkl_entries.append({
+                        'data': _sd,
+                        'wte': float(_sd.get('metadata', {}).get('weighted_total_events', 0) or 0)})
+                except Exception as _sexc:
+                    logging.warning('[Signal PKL:%s] skipping %s: %s', _sl, _sp.name, _sexc)
+        logging.info('Signal PKL entries loaded: %d', len(sig_pkl_entries))
+
+        def _sig_rows_from_pkl(_region, _var, _bins, _weight_key=None, _kin_key=None, _recoil_min=0.0):
+            """[(mass_point_label, unscaled hist)] for the signal, from the signal PKL."""
+            _rows = []
+            for _se in sig_pkl_entries:
+                _rh = _se['data'].get('region_histograms', {}).get(_region)
+                if not _rh or len(_rh.get('weight', [])) == 0:
+                    continue
+                _v = _rh.get('values', {})
+                _va = _v.get(_kin_key or _var)
+                _wa = _v.get(_weight_key) if _weight_key else _rh.get('weight')
+                if _va is None or _wa is None or len(_wa) != len(_va):
+                    continue
+                _va = np.asarray(_va, dtype=float)
+                _wa = np.asarray(_wa, dtype=float)
+                for _gk in sorted(k for k in _v if k.startswith('GenModel_')):
+                    _m = np.asarray(_v[_gk]).astype(bool)
+                    if _kin_key is not None:
+                        _m = _m & (_va > _recoil_min)
+                    _vals = _va[_m]
+                    _ok = _apply_variable_plot_filter(_var, _vals, return_mask=True)
+                    if not _ok.any():
+                        continue
+                    _mp = _gk[len('GenModel_'):]
+                    _xs = _find_xsec(_mp, cross_sections)
+                    _sc = ((luminosity * _xs * 1000.0) / _se['wte']
+                           if _xs is not None and _se['wte'] > 0 else 1.0)
+                    _hv, _ = np.histogram(_clip_overflow(_vals[_ok], _bins), bins=_bins,
+                                          weights=_wa[_m][_ok] * _sc)
+                    _rows.append((_mp, _hv))
+            return _rows
+
+        def _pretty_mp(_mp_label):
+            _parts, _pairs, _i = _mp_label.split('_'), [], 0
+            while _i < len(_parts) - 1:
+                if _parts[_i] in ('MH3', 'MH4', 'Mchi'):
+                    _pairs.append('%s=%s' % ({'MH3': 'm_A', 'MH4': 'm_a', 'Mchi': 'm_chi'}[_parts[_i]], _parts[_i + 1]))
+                    _i += 2
+                else:
+                    _i += 1
+            return ', '.join(_pairs) if _pairs else _mp_label
 
         data_loaded: Dict[str, Dict[str, Any]] = {}
         for label, patterns in data_groups.items():
@@ -2293,6 +2354,7 @@ class PlotManager:
                     # Need to import region cuts helper
                     from darkbottomline.regions import RegionManager as _RM
                     _weight_branch = 'full_event_weight'
+                    _pkl_sig_done = False
                     for _sfe in sig_file_entries:
                         _sbr  = _sfe['branches']
                         _swte = _sfe['wte']
@@ -2309,6 +2371,11 @@ class PlotManager:
                             if _alias:
                                 _svals_raw = _sbr.get(_alias)
                         if _svals_raw is None or not isinstance(_svals_raw, np.ndarray) or _svals_raw.dtype == object:
+                            if not _pkl_sig_done and _svals_raw is None:
+                                for _mpl, _mhv in _sig_rows_from_pkl(region, var, bins_ref):
+                                    _sc_pref = f"×{signal_scale:g} " if signal_scale != 1.0 else ""
+                                    _sig_rows.append((f"{_sc_pref}{_pretty_mp(_mpl)}", _mhv * signal_scale, _mpl, _mhv))
+                                _pkl_sig_done = True
                             continue
                         _sregion_mask = _signal_region_mask(region, _sfe)
                         _sscale_base = ((luminosity * _sxsec * 1000.0) / _swte
@@ -2330,8 +2397,14 @@ class PlotManager:
                                 _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _swte
                                              if _mp_xsec is not None and _swte > 0
                                              else _sscale_base)
+                                # Event weights (gen sign/size + SFs), same as the
+                                # systematic-variation histograms below, so the nominal
+                                # and varied signal are consistent for Combine.
+                                _sw_nom = _sbr.get(_weight_branch)
+                                _sw_sel = (np.asarray(_sw_nom, dtype=float)[_mp_mask]
+                                           if _sw_nom is not None else np.ones(_svals.size))
                                 _shv, _ = np.histogram(np.clip(_svals, bins_ref[0], bins_ref[-1]),
-                                                       bins=bins_ref, weights=np.ones(_svals.size) * _mp_scale)
+                                                       bins=bins_ref, weights=_sw_sel * _mp_scale)
                                 _parts = _mp_label.split('_')
                                 _pairs = []
                                 _i = 0
@@ -2397,6 +2470,174 @@ class PlotManager:
                             len(skipped_region_var),
                             ', '.join(f"{r}/{v}({why})" for r, v, why in skipped_region_var[:10])
                             + ('...' if len(skipped_region_var) > 10 else ''))
+        # ---- systematic-variation ROOT files, built from the PKL per-event arrays ----
+        # Same files/naming/content as the region-from-events path (which reads the
+        # EVENTSELECTION trees), but backgrounds come from the region PKLs: every
+        # weight variation (weight_*UP/DOWN) and the shifted-Recoil variants are
+        # stored per event in rh["values"]. Signal still comes from the signal ROOT
+        # (sig_file_entries). Written for the variables in `systematic_variables`.
+        if self.systematic_variables and not getattr(self, "_weight_systematic", None):
+            try:
+                import uproot as _up_pk
+                _wsysts_pk = [
+                    "weight_pileupUP", "weight_pileupDOWN",
+                    "weight_btagUP", "weight_btagDOWN",
+                    "weight_btag_trueUP", "weight_btag_trueDOWN",
+                    "weight_btag_mistagUP", "weight_btag_mistagDOWN",
+                    "weight_muonUP", "weight_muonDOWN",
+                    "weight_electronUP", "weight_electronDOWN",
+                    "weight_electronHLTUP", "weight_electronHLTDOWN",
+                    "weight_metHLTUP", "weight_metHLTDOWN",
+                    "weight_pdfUP", "weight_pdfDOWN",
+                    "weight_scaleUP", "weight_scaleDOWN",
+                ]
+                _kin_pk = {"JERUP": "Recoil_JERUp", "JERDOWN": "Recoil_JERDown"}
+                for _src in jes_sources(year or self.config.get("year", "")):
+                    _kin_pk[f"JEC{_src}UP"] = f"Recoil_JEC{_src}Up"
+                    _kin_pk[f"JEC{_src}DOWN"] = f"Recoil_JEC{_src}Down"
+                # Recoil threshold re-applied to shifted recoil (events migrating below
+                # it drop out), taken from the year config's event_selection.recoil_min.
+                _recoil_min_pk = float(getattr(self, "recoil_min", 0.0) or 0.0)
+                _root_dir_pk = Path(output_dir) / version / "root"
+                _root_dir_pk.mkdir(parents=True, exist_ok=True)
+
+                def _bkg_scale_pk(_e):
+                    _wte = int(_e["data"].get("metadata", {}).get("weighted_total_events", 0)
+                              or _e["data"].get("weighted_total_events", 0) or 0)
+                    return ((luminosity * _e["xsec"] * 1000.0) / _wte
+                            if _e["xsec"] is not None and _wte > 0
+                            else (luminosity / _wte if _wte > 0 else 1.0))
+
+                def _sig_rows_pk(_region, _svar, _bins, _weight_branch=None, _kin_branch=None):
+                    _rows = []
+                    if not _region.endswith(":SR"):
+                        return _rows
+                    _need = _kin_branch or _svar
+                    if not any(isinstance(_s["branches"], dict) and _need in _s["branches"]
+                               for _s in sig_file_entries):
+                        return [(f"sig_{_m}", _h) for _m, _h in _sig_rows_from_pkl(
+                            _region, _svar, _bins, _weight_branch, _kin_branch, _recoil_min_pk)]
+                    for _sfe in sig_file_entries:
+                        _sbr = _sfe["branches"]
+                        _swte = _sfe["wte"]
+                        _gm_cols = _sfe["genmodel_cols"]
+                        if not _gm_cols or not isinstance(_sbr, dict) or not _sbr:
+                            continue
+                        _smask = _signal_region_mask(_region, _sfe)
+                        if _smask is None:
+                            continue
+                        _vraw = _sbr.get(_kin_branch or _svar)
+                        if _vraw is None or not isinstance(_vraw, np.ndarray) or _vraw.dtype == object:
+                            continue
+                        _warr = _sbr.get(_weight_branch or "full_event_weight")
+                        if _warr is None:
+                            continue
+                        for _gmc in _gm_cols:
+                            _gm = _sbr.get(_gmc)
+                            if _gm is None:
+                                continue
+                            _m = _smask & _gm.astype(bool)
+                            if _kin_branch is not None:
+                                _kv = np.asarray(_vraw, dtype=float)[_m]
+                                _sel = _kv > _recoil_min_pk
+                                _vals = _apply_variable_plot_filter(_svar, _kv[_sel])
+                            else:
+                                _vm = np.asarray(_vraw, dtype=float)[_m]
+                                _sel = _apply_variable_plot_filter(_svar, _vm, return_mask=True)
+                                _vals = _vm[_sel]
+                            if _vals.size == 0:
+                                continue
+                            _w = np.asarray(_warr, dtype=float)[_m][_sel]
+                            _mp = _gmc[len("GenModel_"):]
+                            _mpx = _find_xsec(_mp, cross_sections)
+                            _sc = ((luminosity * _mpx * 1000.0) / _swte
+                                   if _mpx is not None and _swte > 0 else 1.0)
+                            _hv, _ = np.histogram(_clip_overflow(_vals, _bins), bins=_bins, weights=_w * _sc)
+                            _rows.append((f"sig_{_mp}", _hv))
+                    return _rows
+
+                def _write_syst_file(_stem, _rows, _sig_rows, _bins):
+                    _rpath = _root_dir_pk / f"{_stem}.root"
+                    _tot = sum(h for _, h in _rows)
+                    with _up_pk.recreate(str(_rpath)) as _rf:
+                        for _lab, _hv in _rows:
+                            _rf[_lab] = (_hv.astype(float), _bins.astype(float))
+                        _rf["TotalBkg"] = (_tot.astype(float), _bins.astype(float))
+                        for _slab, _shv in _sig_rows:
+                            _rf[_slab] = (_shv.astype(float), _bins.astype(float))
+                    created.append(str(_rpath))
+
+                _n_syst_files = 0
+                for _region in all_regions:
+                    _rinfo = self._parse_region_name(_region)
+                    _cat, _rdir = _rinfo["category"], _rinfo["region_dir"]
+                    for _svar in self.systematic_variables:
+                        _bins = self._build_bins_from_config(_bins_key(_svar))
+                        if _bins is None or len(_bins) < 2:
+                            continue
+                        # weight variations: same events, varied per-event weight
+                        for _wsyst in _wsysts_pk:
+                            _rows = []
+                            for _proc, _entries in bkg_groups.items():
+                                _ghv = None
+                                for _e in _entries:
+                                    _rh = _e["data"].get("region_histograms", {}).get(_region, {})
+                                    _vd = _rh.get("values", {})
+                                    _vr, _wr = _vd.get(_svar), _vd.get(_wsyst)
+                                    if _vr is None or _wr is None or len(_wr) != len(_vr):
+                                        continue
+                                    _vr = np.asarray(_vr, dtype=float)
+                                    _sent = _apply_variable_plot_filter(_svar, _vr, return_mask=True)
+                                    _hv, _ = np.histogram(
+                                        _clip_overflow(_vr[_sent], _bins), bins=_bins,
+                                        weights=np.asarray(_wr, dtype=float)[_sent] * _bkg_scale_pk(_e))
+                                    _ghv = _hv if _ghv is None else _ghv + _hv
+                                if _ghv is not None:
+                                    _rows.append((_proc, _ghv))
+                            if not _rows:
+                                continue
+                            _write_syst_file(f"hist_{_cat}_{_rdir}_{_svar}_{_wsyst}_log", _rows,
+                                             _sig_rows_pk(_region, _svar, _bins, _weight_branch=_wsyst), _bins)
+                            _n_syst_files += 1
+                        # kinematic variations (shifted Recoil only)
+                        if _svar == "Recoil":
+                            for _sname, _kbr in _kin_pk.items():
+                                _rows = []
+                                for _proc, _entries in bkg_groups.items():
+                                    _ghv = None
+                                    for _e in _entries:
+                                        _rh = _e["data"].get("region_histograms", {}).get(_region, {})
+                                        _vd = _rh.get("values", {})
+                                        _kv, _wr = _vd.get(_kbr), _rh.get("weight")
+                                        if _kv is None or _wr is None or len(_wr) != len(_kv):
+                                            continue
+                                        _kv = np.asarray(_kv, dtype=float)
+                                        _sel = _kv > _recoil_min_pk
+                                        _vals = _apply_variable_plot_filter(_svar, _kv[_sel])
+                                        _hv, _ = np.histogram(
+                                            _clip_overflow(_vals, _bins), bins=_bins,
+                                            weights=np.asarray(_wr, dtype=float)[_sel] * _bkg_scale_pk(_e))
+                                        _ghv = _hv if _ghv is None else _ghv + _hv
+                                    if _ghv is not None:
+                                        _rows.append((_proc, _ghv))
+                                if not _rows:
+                                    continue
+                                _write_syst_file(f"hist_{_cat}_{_rdir}_{_svar}_{_sname}_log", _rows,
+                                                 _sig_rows_pk(_region, _svar, _bins, _kin_branch=_kbr), _bins)
+                                _n_syst_files += 1
+                logging.info("Systematic ROOT files written from PKLs: %d (recoil_min=%.1f)",
+                             _n_syst_files, _recoil_min_pk)
+            except Exception as _syst_pk_exc:
+                logging.error("PKL systematic ROOT generation failed: %s", _syst_pk_exc, exc_info=True)
+            if make_syst_plots:
+                try:
+                    created.extend(self._plot_systematics(
+                        output_dir=output_dir, version=version, luminosity=luminosity,
+                        target_regions=all_regions,
+                    ))
+                except Exception as _sp_pk_exc:
+                    logging.error("Systematic plots failed: %s", _sp_pk_exc, exc_info=True)
+
         # Per-region cutflow waterfall plots
         try:
             # Signal per-masspoint sequential cutflow (SR only) — same masspoints
