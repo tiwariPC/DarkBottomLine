@@ -1,119 +1,151 @@
-# Analysis Structure Documentation
+# Analysis Structure
 
-## Region Naming Convention
+How regions are defined, how events flow from NanoAOD to Combine inputs, and what the
+per-sample region files contain.
 
-All regions in the analysis follow a strict naming convention:
+## Pipeline
 
-**Format**: `{category}:{region_type}_{channel}`
-
-### Examples:
-- `1b:SR` - Signal region, 1 b-tag category
-- `2b:SR` - Signal region, 2 b-tag category
-- `1b:CR_Wlnu_mu` - W+jets control region, 1b category, muon channel
-- `1b:CR_Wlnu_el` - W+jets control region, 1b category, electron channel
-- `2b:CR_Top_mu` - Top control region, 2b category, muon channel
-- `2b:CR_Top_el` - Top control region, 2b category, electron channel
-- `1b:CR_Zll_mu` - Z+jets control region, 1b category, muon channel
-- `1b:CR_Zll_el` - Z+jets control region, 1b category, electron channel
-- `2b:CR_Zll_mu` - Z+jets control region, 2b category, muon channel
-- `2b:CR_Zll_el` - Z+jets control region, 2b category, electron channel
-
-## Region Definition Flow
-
-### 1. Configuration (`configs/regions.yaml`)
-Regions are defined with full category and channel specification:
-```yaml
-regions:
-  "1b:CR_Zll_mu":
-    description: "Z+jets CR (1b definition) muon channel"
-    cuts:
-      Nmuons: "==2"
-      Nelectrons: "==0"
-      # ... more cuts
+```text
+NanoAOD ──event selection──▶ <sample>_EVENTSELECTION.root   (flat branches, one tree "Events")
+   condorJobs/event-selection        merged per sample with scripts/merge_rootfiles.py
+                                          │
+                  darkbottomline analyze --mode region-analysis
+                  (region cuts + DNN score, chunked over the tree)
+                                          │
+                                          ▼
+                     per_sample/<sample>_EVENTSELECTION.pkl      (one PKL per sample)
+                                          │
+                  analyze --make-region-plots   (PKL replay, ROOT → PKL → plot)
+                                          │
+                                          ▼
+          png/ pdf/ text/ root/   (stacked plots, yield tables, cutflows, Combine histograms)
+                                          │
+                       darkbottomline make-datacard / run-all   (see README, Combine section)
 ```
 
-### 2. RegionManager (`darkbottomline/regions.py`)
-- Loads all regions from `regions.yaml`
-- Preserves full region names (e.g., `1b:CR_Zll_mu`)
-- `apply_regions()` returns masks with full region names as keys
+`condorJobs/region-analysis` runs the region and plot stages on HTCondor (one job per
+merged sample file). Memory is set by the chunk size (300,000 events), not by file size.
 
-### 3. DarkBottomLineAnalyzer (`darkbottomline/analyzer.py`)
-- Initializes with `RegionManager(regions_config_path)`
-- Creates histograms for each region using `self.region_manager.regions.keys()`
-- Processes regions using `region_masks` from `apply_regions()`
-- Saves results with full region names preserved
+## Region naming
 
-### 4. Results Storage
-Results are saved with full region names:
+Format: `{category}:{region}` where the category is `1b` or `2b` (the b-tag category the
+signal region belongs to) and the region name encodes the process and lepton channel.
+
+| Region | Process | Channel |
+|---|---|---|
+| `1b:SR`, `2b:SR` | signal | – |
+| `1b:CR_Wmunu`, `1b:CR_Wenu` | W+jets | μ / e |
+| `2b:CR_Topmunu`, `2b:CR_Topenu` | top | μ / e |
+| `1b:CR_Zmumu`, `1b:CR_Zee`, `2b:CR_Zmumu`, `2b:CR_Zee` | Z+jets | μμ / ee |
+
+Region names are used exactly as written in `configs/regions.yaml` everywhere: in the
+PKLs, in plot directory names (`:` becomes `_`, e.g. `png/region_analysis/1b_Wmunu/`),
+in ROOT file names (`hist_1b_Wmunu_Recoil_log.root`) and in the Combine configuration.
+The data stream is chosen from the region name: regions containing `SR`, `munu` or `mumu`
+use the JetMET (MET-trigger) data, regions containing `enu` or `Zee` use EGamma.
+
+## Region definitions (`configs/regions.yaml`)
+
+Each region has a `description`, a `trigger` (`met` or `ele`, applied as the first
+cutflow step) and an ordered `cuts` block. Cuts are ANDed, so their order changes only the
+cutflow table, not the selection.
+
+| Region | Jets / b-tag | Leptons | Other |
+|---|---|---|---|
+| `1b:SR` | `Bjet1bCond == 1`, `Njets <= 2` | none | |
+| `2b:SR` | `Bjet2bCond == 1`, `2 <= Njets <= 3` | none | |
+| `1b:CR_W*` | `Bjet1bCond == 1`, `NAdditionalJets == 0` | 1 tight (μ or e), other flavour vetoed | `MET > 100`, `MTMin > 0`, `MT < 160` |
+| `2b:CR_Top*` | `Bjet2bCond == 1`, `NAdditionalJets >= 1` | 1 tight (μ or e), other flavour vetoed | `MT < 160` |
+| `1b:CR_Z*` | `Njets <= 2` (no b-tag) | 2 opposite-sign, Z-candidate pair | `70 < mll < 110` |
+| `2b:CR_Z*` | `2 <= Njets <= 3` (no b-tag) | same | same |
+
+All regions inherit the event selection (`event_selection` in the year config):
+recoil ≥ 250 GeV, leading-jet pT ≥ 100 GeV, min Δφ(jet, MET) > 0.5, tau and photon vetoes.
+
+Cut keys used in `regions.yaml`:
+
+| Key | Meaning |
+|---|---|
+| `Bjet1bCond` | exactly one b-tagged jet and the leading jet is the b-tagged one |
+| `Bjet2bCond` | exactly two b-tagged jets, which are the leading and sub-leading jets |
+| `LeadingBjet`, `SubleadingBjet` | the leading / sub-leading jet is b-tagged |
+| `Njets`, `NjetsMin` | upper and lower bound on the jet multiplicity (YAML keys are unique, so two keys) |
+| `NAdditionalJets` | `n_jets − n_bjets`, i.e. the number of non-b-tagged jets (so `== 0` means every jet is b-tagged) |
+| `Nmuons`, `Nelectrons`, `NmuonsTight`, `NelectronsTight` | loose / tight lepton counts |
+| `NmuonsZ`, `NelectronsZ`, `MllMin`, `MllMax` | Z-candidate pair and mass window |
+| `MET`, `MT`, `MTMin`, `MTMax` | MET threshold and transverse-mass window (`MTMin`/`MTMax` exist to allow both bounds) |
+
+### Overlap between the 1b and 2b Z regions
+
+The Z regions carry no b-tag requirement, so the 1b-type (`Njets <= 2`) and 2b-type
+(`2 <= Njets <= 3`) selections share every event with exactly two jets: about 48% of the 1b-type
+and 67% of the 2b-type Z regions. In a combined 1b+2b fit with separate per-bin rate
+parameters, those events enter two channels and the statistical errors of the two Z
+normalisations are correlated (about 0.58 per Recoil bin) while the fit treats them as
+independent. Options: make the Z regions orthogonal by b-tag count (copy the SR's
+`Bjet1bCond` / `Bjet2bCond`), assign `Njets == 2` to one category only, or use one shared Z region.
+
+### Region variants
+
+To study another definition, copy `configs/regions.yaml`, edit the cuts and pass the copy
+with `--regions-config`. Keep the region names the same if the plotting and Combine
+configurations should be reused unchanged, and write to a new `--version` so the nominal
+output stays intact.
+
+## Region PKL structure
+
+One PKL per sample, written by `darkbottomline analyze --mode region-analysis`:
+
 ```python
 {
-    "region_histograms": {
-        "1b:SR": {...},
-        "1b:CR_Zll_mu": {...},
-        "1b:CR_Zll_el": {...},
-        # ... etc
-    }
+  "region_histograms": {
+      "1b:SR": {
+          "weight": ndarray,                  # nominal event weight (full_event_weight) of selected events
+          "values": {                         # one 1-D array per scalar field, same length as weight
+              "Recoil": ..., "Jet1Pt": ..., "ml_score": ..., "mll": ..., "Zpt": ..., "njets": ...,
+              "weight_btagUP": ..., "weight_scaleDOWN": ...,   # every weight variation
+              "Recoil_JERUp": ..., "Recoil_JECAbsoluteUp": ..., # shifted recoil for JER and the 11 JEC sources
+              "GenModel_MH3_600_MH4_150_Mchi_1": ...,           # signal only: 0/1 flag per mass point
+          },
+      },
+      "1b:CR_Wmunu": {...},   # ... every region in regions.yaml
+  },
+  "region_cutflow_steps": {region: {step: weighted yield}},    # cumulative, in cut order
+  "metadata": {"weighted_total_events": ..., "xsec": ..., "luminosity": ..., "sample": ...},
 }
 ```
 
-## Important Notes
-
-1. **Region names must include category prefix**: All regions must start with `1b:` or `2b:`
-2. **Control regions must specify channel**: CRs must have `_mu` or `_el` suffix
-3. **No region name transformation**: Region names are preserved exactly as defined in `regions.yaml`
-4. **Old data files**: Data files created before the category/channel format update will have old region names and need to be regenerated
+Cross sections are applied at plot time (`lumi × xsec / weighted_total_events`), not when the
+PKL is written, so changing `data/cross-section/*.json` needs no region re-run. Data PKLs
+have unit weights. Because the per-event weight variations and shifted recoils are stored, the
+Combine shape-systematic histograms can be produced from the PKLs alone (see
+[plotting_configuration.md](plotting_configuration.md)).
 
 ## Verification
 
-To verify the region structure is correct:
-
 ```python
-from darkbottomline.analyzer import DarkBottomLineAnalyzer
-import yaml
-
-# Load config
-with open('configs/2024.yaml', 'r') as f:
-    config = yaml.safe_load(f)
-
-# Initialize analyzer
-analyzer = DarkBottomLineAnalyzer(config, 'configs/regions.yaml')
-
-# Check regions
-print("Regions:", list(analyzer.region_manager.regions.keys()))
-# Should output:
-# ['1b:SR', '2b:SR', '1b:CR_Wlnu_mu', '1b:CR_Wlnu_el',
-#  '2b:CR_Top_mu', '2b:CR_Top_el', '1b:CR_Zll_mu',
-#  '1b:CR_Zll_el', '2b:CR_Zll_mu', '2b:CR_Zll_el']
+from darkbottomline.regions import RegionManager
+print(list(RegionManager("configs/regions.yaml").regions.keys()))
+# ['1b:SR', '2b:SR', '1b:CR_Wmunu', '1b:CR_Wenu', '2b:CR_Topmunu', '2b:CR_Topenu',
+#  '1b:CR_Zmumu', '1b:CR_Zee', '2b:CR_Zmumu', '2b:CR_Zee']
 ```
+
+Checks worth running on a finished set of outputs:
+- Every histogram of a region (except the cutflow) carries the same total, apart from
+  variables that are undefined for some events (`Jet2*`, `Jet3*`: sentinel −9999), variables whose
+  plot range starts above the physical minimum (`MET_pt`), and `PV_noPU`, which uses a different weight.
+- The last cutflow step equals that total, and data totals equal the event count in the data PKLs.
 
 ## Troubleshooting
 
-### Issue: Regions in saved file don't have category prefix
+**A region is missing from plots or Combine inputs.** The region name in `plotting.yaml`
+(`region_variables`), `combine.yaml` (`regions`) and the file names must match
+`regions.yaml` exactly. A region with no events passing is skipped by the plotter.
 
-**Cause**: Old data file created before regions.yaml update
+**A process is missing from a region's ROOT file.** The plotter writes a process histogram only
+if the process has events there (for example Z(νν) in the Z regions). The datacard writer treats
+a missing background as empty.
 
-**Solution**: Re-run the analysis with the updated `regions.yaml`:
-```bash
-darkbottomline analyze \
-  --config configs/2024.yaml \
-  --regions-config configs/regions.yaml \
-  --input /path/to/input.root \
-  --output outputs/hists/regions_data_new.pkl
-```
-
-### Issue: Missing channel-separated CRs
-
-**Cause**: Old regions.yaml didn't have channel separation
-
-**Solution**: Ensure `regions.yaml` has all channel-separated CRs (e.g., `1b:CR_Zll_mu` and `1b:CR_Zll_el` instead of just `1b:CR_Zll`)
-
-### Issue: Region names getting simplified
-
-**Check**:
-1. Verify `regions.yaml` has full format
-2. Check `RegionManager` loads regions correctly
-3. Verify `analyzer.region_manager.regions.keys()` has full names
-4. Ensure no code is transforming region names before saving
-
-
-
+**Old PKLs.** PKLs written before a change to `regions.yaml` keep the old selection; re-run the
+region step after changing a cut. Changing only cross sections, labels, bins or process groups
+needs only the plot step.

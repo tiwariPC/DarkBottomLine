@@ -1,227 +1,151 @@
 # Plotting Configuration Guide
 
-This guide explains how to configure plot exclusions and settings for the DarkBottomLine framework.
+How `configs/plotting.yaml` controls the region plots and the histograms that feed Combine.
+Pass another file with `--plot-config`.
 
-## Overview
+## What the plotter does
 
-The plotting system allows you to customize which plots are generated for different regions and categories. This is useful for:
-
-- Excluding irrelevant variables (e.g., `z_mass` and `z_pt` from Top and W CRs)
-- Removing plots that don't make sense for certain regions (e.g., jet3 plots from 1b regions)
-- Fine-tuning which plots are generated for each analysis category
-
-## Configuration File
-
-The plotting configuration is stored in `configs/plotting.yaml`. You can also specify a custom config file using the `--plot-config` argument.
-
-### Basic Structure
-
-```yaml
-# Variables that should NOT use log scale
-no_log_scale_vars:
-  - n_jets
-  - n_bjets
-  - n_muons
-  # ...
-
-# Region-specific variable exclusions
-region_exclusions:
-  "Top": ["z_mass", "z_pt"]
-  "Wlnu": ["z_mass", "z_pt"]
-  # ...
-```
-
-## Region Exclusion Patterns
-
-The exclusion system supports three types of pattern matching:
-
-### 1. Exact Region Match
-
-Match the exact region name:
-
-```yaml
-region_exclusions:
-  "1b:SR": ["jet3_pt", "jet3_eta"]
-  "2b:CR_Top_mu": ["some_variable"]
-```
-
-### 2. Pattern Match
-
-Match any region containing the pattern:
-
-```yaml
-region_exclusions:
-  "Top": ["z_mass", "z_pt"]      # Matches all Top CRs
-  "Wlnu": ["z_mass", "z_pt"]     # Matches all W CRs
-  "Zll": ["w_mass", "w_pt"]      # Matches all Z CRs
-```
-
-### 3. Category Pattern
-
-Match all regions in a category:
-
-```yaml
-region_exclusions:
-  "1b:": ["jet3_pt", "m_jet1jet3"]  # Matches all 1b regions
-  "2b:": ["some_variable"]          # Matches all 2b regions
-```
-
-## Default Exclusions
-
-The framework automatically applies these default exclusions:
-
-### Signal Regions (SRs)
-- **1b SR**: Excludes jet3 variables and all lepton variables
-- **2b SR**: Excludes lepton variables (but includes jet3)
-
-### Control Regions (CRs)
-- **1b CRs**: Exclude jet3 variables (≤2 jets)
-- **2b CRs**: Include jet3 variables (Top CR may have >3 jets)
-- **Top CRs**: Exclude `z_mass` and `z_pt`
-- **W CRs**: Exclude `z_mass` and `z_pt`
-- **Z CRs**: Include `z_mass` and `z_pt` (not excluded)
-
-## Examples
-
-### Example 1: Exclude Additional Variables from 1b SR
-
-```yaml
-region_exclusions:
-  "1b:SR":
-    - jet3_pt
-    - jet3_eta
-    - m_jet1jet3
-    - custom_variable
-```
-
-### Example 2: Exclude Variables from All Top CRs
-
-```yaml
-region_exclusions:
-  "Top":
-    - z_mass
-    - z_pt
-    - w_mass
-    - w_pt
-```
-
-### Example 3: Exclude Variables from All 1b Regions
-
-```yaml
-region_exclusions:
-  "1b:":
-    - jet3_pt
-    - jet3_eta
-    - m_jet1jet3
-```
-
-### Example 4: Custom Configuration for Specific Analysis
-
-```yaml
-no_log_scale_vars:
-  - n_jets
-  - n_bjets
-  - n_muons
-  - n_electrons
-
-region_exclusions:
-  # Top CRs: exclude Z-related variables
-  "Top":
-    - z_mass
-    - z_pt
-    - mll
-
-  # W CRs: exclude Z-related variables
-  "Wlnu":
-    - z_mass
-    - z_pt
-    - mll
-
-  # Z CRs: exclude W-related variables
-  "Zll":
-    - w_mass
-    - w_pt
-    - mt
-
-  # 1b SR: exclude jet3 and lepton variables (already default)
-  "1b:SR":
-    - jet3_pt
-    - lep1_pt
-```
-
-## Usage
-
-### Using Default Configuration
-
-If `configs/plotting.yaml` exists, it will be automatically loaded:
+`darkbottomline analyze --mode region-analysis --make-region-plots` replays the per-sample
+region PKLs (see [analysis_structure.md](analysis_structure.md)): it bins the stored
+per-event values, applies `lumi × xsec / weighted_total_events` to Monte Carlo, adds data and
+signal, and writes plots plus the ROOT files Combine reads.
 
 ```bash
-darkbottomline make-plots --input results.pkl --save-dir outputs
+darkbottomline analyze --mode region-analysis \
+    --config <year>.yaml --regions-config configs/regions.yaml \
+    --input <eventsel_merged dir> --region-results <per_sample dir> \
+    --output-dir <out> --version <name> \
+    --xsection-json data/cross-section/xsection_background_run3.json \
+    --xsection-signal-json data/cross-section/xsection_signal.json \
+    --plot-config configs/plotting.yaml --make-region-plots --signal-scale 10 \
+    [--plot-variables Recoil mll ...] [--plot-regions 1b:SR 2b:CR_Zee ...] [--make-syst-plots]
 ```
 
-### Using Custom Configuration
+`--input` is only used to find signal branches and for the cutflow lookups; the background
+and data values come from `--region-results`. The SR is blinded: its "data" is the total MC unless
+`--show-data` is given.
 
-```bash
-darkbottomline make-plots \
-  --input results.pkl \
-  --save-dir outputs \
-  --plot-config my_custom_plotting.yaml
+## Layout of `plotting.yaml`
+
+| Key | Purpose |
+|---|---|
+| `sample_mode` | `binned` or `inclusive`, selects the V+jets sample patterns (see below) |
+| `common_variables` | plotted in every region |
+| `region_variables` | extra variables per region (key = region name) |
+| `systematic_variables` | variables for which shape-systematic histograms are written |
+| `variable_labels`, `variable_bins` | axis labels and binning per variable |
+| `no_log_scale_vars` | variables drawn with a linear y axis |
+| `process_groups` | background, signal and data groups with their file patterns |
+| style keys (`dpi`, `figsize_*`, `fontsize_*`, `ratio_ylim`, `cms_label`, ...) | appearance |
+| `event_selection_variables` | variables for the event-selection (pre-region) plots |
+
+## Choosing the variables of a region
+
+The variables plotted in a region are a whitelist: `common_variables` followed by
+`region_variables[region]` (exact key first, then any key contained in the region name),
+without duplicates. A variable is plotted only if it exists in that region's PKL values.
+There is no separate exclusion step: to keep a variable out of a region, leave it out of that
+region's list (for example the SRs list no lepton variables, and the 1b regions list no
+jet-3 variables).
+
+Current per-region additions in the shipped file: W CRs `mt`, `Wpt` and the lepton kinematics;
+Top CRs jet variables, `mt` and the lepton kinematics; Z CRs `mll`, `Zpt` and both leptons'
+kinematics; SRs the dijet variables.
+
+`PlotManager` still reads a `region_exclusions` key and contains a helper that would use it
+(`_get_excluded_variables_for_region`, with built-in rules written for the legacy histogram names),
+but nothing calls that helper, so the key has no effect on the plots.
+
+## Variable names, aliases and file names
+
+Names are the field names in the PKL (`Recoil`, `Jet1Pt`, `mll`, `Zpt`, `ml_score`,
+`costheta_star`, ...). A few names are handled specially in `plotting.py`:
+
+| Variable | Behaviour |
+|---|---|
+| `Wpt` | same values as `Recoil` (with one lepton, recoil = −pT of lepton + MET, so |recoil| = pT(W)); own bins; the direction differs by π |
+| `PV_npvsGood_noPU` | values of `PV_npvsGood` weighted with `weight_noPileup` (data unchanged); shares the bins of `PV_npvsGood` |
+| `PV_npvsGood`, `PV_npvsGood_noPU` | written as `PV` and `PV_noPU` in file names; labelled "after / before PU reweighting" |
+
+File names always carry the output name: `hist_<cat>_<region>_<var>_log.{png,pdf,root,tex}`,
+e.g. `hist_1b_Zmumu_PV_noPU_log.png`.
+
+## Binning
+
+```yaml
+variable_bins:
+  Recoil:  {edges: [250, 300, 400, 550, 1000]}
+  Wpt:     {edges: [250, 275, ..., 1000]}
+  ml_score: {low: 0.0, high: 1.0, n: 25}
 ```
 
-### Programmatic Usage
+With `low/high/n`, `n` is the number of **edges** (`np.linspace(low, high, n)`), so you get
+`n − 1` bins; use `edges` for exact control. Values above the last edge are folded into the
+last bin; values below the first edge are dropped. Variables with no entry use `n_bins_default`.
+If the same variable is plotted in regions with different physical ranges (for example `MET_pt`
+in W and Z regions), the first edge decides which events appear.
 
-```python
-from darkbottomline.plotting import PlotManager
-import yaml
+## Process groups, data and `sample_mode`
 
-# Load configuration
-with open("configs/plotting.yaml", "r") as f:
-    plot_config = yaml.safe_load(f)
+Each background, signal or data group lists `patterns` that are matched against the PKL file
+stems after the dataset name is normalised (jet-bin tokens, DY dashes and so on).
 
-# Initialize plot manager
-plot_manager = PlotManager(config=plot_config)
+- **`sample_mode: binned`** uses `patterns` (the pT-binned W, Z(νν) and DY samples).
+- **`sample_mode: inclusive`** uses `patterns_inclusive` (the pT-inclusive samples plus the 40–100 GeV
+  bin) for the groups that define it, but only when the input folder holds a file that only the
+  inclusive set matches; otherwise it falls back to `patterns`.
+- **Data groups** have a `regions` list of substrings: `MET_Data` for regions containing `SR`,
+  `munu`, `mumu`; `EGamma_Data` for `enu`, `Zee`.
+- **Signal** (`Signal_2HDMa`) is drawn in the SRs only, one histogram per mass point named
+  `sig_MH3_<a>_MH4_<b>_Mchi_1`, with the weighted event yield and the per-mass-point cross section
+  (`--signal-scale` multiplies it for display only). Variables that are not branches of the signal
+  event-selection file (for example `ml_score`) are read from the signal PKL.
 
-# Create plots
-plot_manager.create_all_plots(results, output_dir, ...)
+## Systematic variations
+
+For each variable in `systematic_variables` (`Recoil`, `costheta_star`, `ml_score` by default),
+the PKL path writes variation files next to the nominal one:
+
+| Files | Variables | Content |
+|---|---|---|
+| `hist_<cat>_<region>_<var>_weight_<name>{UP,DOWN}_log.root` | all | 20 weight variations: `pileup`, `btag`, `btag_true`, `btag_mistag`, `muon`, `electron`, `electronHLT`, `metHLT`, `pdf`, `scale` |
+| `hist_<cat>_<region>_Recoil_JER{UP,DOWN}_log.root` | `Recoil` only | JER (no effect: smearing is not implemented) |
+| `hist_<cat>_<region>_Recoil_JEC<source>{UP,DOWN}_log.root` | `Recoil` only | the 11 reduced JEC sources (`Absolute`, `Absolute_2024`, `BBEC1`, `BBEC1_2024`, `EC2`, `EC2_2024`, `HF`, `HF_2024`, `FlavorQCD`, `RelativeBal`, `RelativeSample_2024`) |
+
+Each file has the same keys as the nominal one (process groups, `TotalBkg`, `sig_*` in the SRs).
+Shifted-jet versions exist only for `Recoil`, so a `costheta_star` or `ml_score` fit has no JEC or
+JER shape uncertainties. `--make-syst-plots` also draws central/up/down comparison plots.
+
+## Output layout
+
+```text
+<output-dir>/<version>/
+  png/region_analysis/<cat>_<region>/hist_<cat>_<region>_<var>_log.png
+  pdf/region_analysis/...                       same, PDF
+  text/region_analysis/<cat>_<region>/*.tex     yield tables and cutflows (booktabs)
+  root/hist_<cat>_<region>_<var>[_<syst>]_log.root   process groups, TotalBkg, data_obs, sig_*
+  root/cutflow_<cat>_<region>.root
 ```
 
-## Variable Naming
+The plot annotation for a region comes from `_REGION_LABELS` in `plotting.py`; if you change what a
+region selects but keep its name, edit the label too.
 
-When specifying exclusions, use the variable names as they appear in the histogram dictionary. Common variable names include:
+## Common tasks
 
-- Jet variables: `jet1_pt`, `jet2_pt`, `jet3_pt`, `jet1_eta`, `m_jet1jet2`, `m_jet1jet3`
-- Lepton variables: `lep1_pt`, `lep2_pt`, `lep1_eta`, `lep2_eta`, `n_muons`, `n_electrons`
-- MET variables: `met`, `met_phi`, `recoil`, `delta_phi`
-- Mass variables: `z_mass`, `z_pt`, `w_mass`, `w_pt`, `mll`, `mt`
-- Multiplicity: `n_jets`, `n_bjets`, `n_muons`, `n_electrons`, `n_leptons`
+**Add a variable to a region:** make sure it is a field in the PKL values, add it to
+`common_variables` or `region_variables`, and add a `variable_labels` and `variable_bins` entry.
 
-## Testing
+**Add a systematic variable:** add it to `systematic_variables` and to `fit_variable` or the
+Combine configuration if it is used in a fit. Only weight variations are available unless shifted
+variants of the variable are stored.
 
-Run the test suite to verify exclusions work correctly:
-
-```bash
-pytest tests/test_plot_exclusions.py -v
-```
-
-This will verify that:
-- 1b SR excludes jet3 and lepton variables
-- 2b SR excludes lepton variables but includes jet3
-- Top CRs exclude `z_mass` and `z_pt`
-- W CRs exclude `z_mass` and `z_pt`
-- Z CRs include `z_mass` and `z_pt`
-- Custom exclusions work correctly
+**Compare two selections:** run each with its own `--regions-config` and `--version`; the outputs do not
+overwrite each other.
 
 ## Tips
 
-1. **Start with defaults**: The default exclusions are based on StackPlotter logic and should work for most cases.
-
-2. **Use pattern matching**: Instead of listing every region, use patterns like `"Top"` or `"1b:"` to match multiple regions.
-
-3. **Test your configuration**: Use the test suite to verify your exclusions work as expected.
-
-4. **Check variable names**: Make sure variable names in your config match exactly with the histogram keys.
-
-5. **Merge with defaults**: Your custom exclusions are merged with defaults, so you only need to specify what's different.
-
-
-
+- Check variable names against the PKL fields, not against the plot labels.
+- Change binning in `plotting.yaml` and re-run only the plot step; the region PKLs do not change.
+- Use `edges` for variables whose values are integers (for example PV counts) to avoid empty or
+  double-filled bins.
+- `tests/test_plot_exclusions.py` tests the `region_variables` whitelist logic.
