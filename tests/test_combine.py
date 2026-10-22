@@ -1656,3 +1656,28 @@ class TestSrRateParamProcess:
                          category="1b", is_sr=True)
         assert sorted(l.split()[0] for l in sr) == ["zjets_1b_Zee_bin1", "zjets_1b_Zmumu_bin1"]
         assert all(l.split()[3] == "znunu" for l in sr)
+
+
+class TestBtagNuisances:
+    """True-b and fake-b (mistag) are separate nuisances; regions without a b-tag cut get only fake-b."""
+
+    @pytest.fixture(scope="class")
+    def systs(self):
+        return yaml.safe_load((REPO_ROOT / "configs" / "combine.yaml").read_text())["datacard"]["systematics"]
+
+    def test_split_entries(self, systs):
+        assert "btagSF" not in systs
+        assert systs["btag_true"]["syst_suffix"] == "weight_btag_true"
+        assert systs["btag_true"]["name_template"] == "CMS_eff_b_{year}"
+        assert systs["btag_mistag"]["syst_suffix"] == "weight_btag_mistag"
+        assert systs["btag_mistag"]["name_template"] == "CMS_fake_b_{year}"
+
+    def test_gating_on_default_regions(self, systs):
+        regions = str(REPO_ROOT / "configs" / "regions.yaml")
+        for key in ("1b:SR", "2b:SR", "1b:CR_Wmunu", "2b:CR_Topenu"):   # b-tag required: both
+            assert systematic_applies_to_region(regions, key, systs["btag_true"].get("gated_by_cut"))
+            assert systematic_applies_to_region(regions, key, systs["btag_mistag"].get("gated_by_cut"))
+        for key in ("1b:CR_Zmumu", "2b:CR_Zee"):                          # no b-tag cut: fake-b only
+            assert not systematic_applies_to_region(regions, key, systs["btag_true"].get("gated_by_cut"))
+            assert systematic_applies_to_region(regions, key, systs["btag_mistag"].get("gated_by_cut"))
+

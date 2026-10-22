@@ -174,18 +174,17 @@ datacard:
     norm_smhiggs: {type: "lnN", value: 1.2,  processes: ["smhiggs"]}
     norm_singletop: {type: "lnN", value: 1.1, processes: ["singletop"]}
 
-    # btagSF must NOT apply in Z CRs — verified two ways: (1) Run2's actual template
-    # (datacard_template_1b_perBin_asChanel_addProcs.yaml, ZLL_bin1 block) sets
-    # NuisForProc: CMSYEAR_eff_b: [] / CMSYEAR_fake_b: [] there, vs. all-process lists
-    # in SR_bin1/WL_bin1; (2) Run3's own configs/regions.yaml confirms why: CR_Zmumu/
-    # CR_Zee have no Bjet1bCond/Bjet2bCond cut at all (explicit comment "no b-tag in Z
-    # CR"), while SR/CR_Wmunu/CR_Wenu/CR_Topmunu/CR_Topenu all do — so the b-tag SF
-    # weight is never part of a Z CR event's nominal weight to begin with. Rather than
-    # hardcoding a second "which regions have b-tag" list here (which could drift out
-    # of sync with regions.yaml's cuts), `gated_by_cut` names the regions.yaml cut key
-    # whose PRESENCE in a region's `cuts:` block determines applicability — computed at
-    # datacard-generation time by reading configs/regions.yaml directly, not
-    # re-specified as a literal region list.
+    # The b-tag weight is applied to every selected jet in every region (SF on tagged jets,
+    # (1-SF*eff)/(1-eff) on untagged ones), split into two independent components with their
+    # own up/down variations (Run2's weightB / weightFakeB):
+    #   btag_true   (CMS_eff_b_{year}):  true b-jets;  weight_btag_true{UP,DOWN}
+    #   btag_mistag (CMS_fake_b_{year}): c and light jets, the "fake b"; weight_btag_mistag{UP,DOWN}
+    # The mistag component is a property of every region, so it applies everywhere (Z CRs
+    # without a b-tag requirement included). The true-b component is gated: `gated_by_cut` names
+    # the regions.yaml cut keys whose PRESENCE in a region's `cuts:` block makes it applicable, so
+    # regions without a b-tag requirement (the Z CRs, and the W/Top CRs of the nobtagWT variant)
+    # carry only the fake-b nuisance. The gate is read from the regions file at datacard time, not
+    # re-listed here, so it cannot drift from the region definitions.
     # Every shape systematic's variant histograms live in a SEPARATE ROOT file
     # (verified against real plotting.py output — grep for _weight_systs/_kin_systs
     # in plotting.py:2764-2781), named hist_{cat}_{rdir}_{variable}_{syst_suffix}_log.root,
@@ -219,13 +218,18 @@ datacard:
     # weight-level correction (not double-counted with JES: verified the two
     # vary different things — JES/JER recompute Recoil from shifted jet
     # 4-vectors, JEC only reweights the nominal-kinematics event).
-    btagSF:
+    btag_true:
       type: "shape"
-      syst_suffix: "weight_btag"
+      syst_suffix: "weight_btag_true"
       name_template: "CMS_eff_b_{year}"
       processes: ["signal", "ttbar", "wjets", "zjets", "dyjets", "singletop", "diboson", "smhiggs"]
       gated_by_cut: ["Bjet1bCond", "Bjet2bCond"]   # region-applicable iff its
                                                      # regions.yaml cuts block has either key
+    btag_mistag:
+      type: "shape"
+      syst_suffix: "weight_btag_mistag"
+      name_template: "CMS_fake_b_{year}"
+      processes: ["signal", "ttbar", "wjets", "zjets", "dyjets", "singletop", "diboson", "smhiggs"]
     # JES: reduced 11-source JEC scheme written by the PKL/event plot paths
     # (hist_<cat>_<region>_Recoil_JEC<source>{UP,DOWN}_log.root). Only Recoil has shifted
     # variants, so the 2b category (costheta_star) has no JEC/JER shape systematics.
@@ -313,7 +317,7 @@ datacard:
     zjets_2b_Zll:     {type: "rateParam", regions: ["2b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
     # No qcd_CR rateParam — no QCD CR exists in regions.yaml today.
     # zjets_*_Z{mumu,ee} rateParams (dyjets in the CR, zjets = Z->nunu in the SR) float a plain normalization (CR->SR transfer
-    # factor), not a shape — they're unaffected by btagSF's gated_by_cut exclusion
+    # factor), not a shape — they're unaffected by btag_true's gated_by_cut exclusion
     # above (that gate only governs whether a SHAPE systematic's Up/Down histograms
     # get written/listed for a region, not whether a rateParam applies). No double
     # counting between the two mechanisms.
