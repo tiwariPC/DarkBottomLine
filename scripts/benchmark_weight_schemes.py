@@ -202,7 +202,7 @@ def load_dataset(
                         mask = gm_arr[gmc][:n].astype(bool)
                         mp_xsec = _find_xsec(gmc[len("GenModel_"):], sig_xsec_map)
                         if mp_xsec is not None:
-                            mp_scale[mask] = (lumi * mp_xsec * 1000.0) / wte_gm[gmc] if wte_gm[gmc] > 0 else 1.0
+                            mp_scale[mask] = (lumi * mp_xsec * 1000.0) / wte_gm[gmc] if wte_gm.get(gmc, 0) > 0 else 1.0
                     w = w * mp_scale
                     scale_note = "per-masspoint lumi*xsec*1000/wte"
                 else:

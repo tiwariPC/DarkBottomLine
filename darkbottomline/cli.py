@@ -1677,6 +1677,8 @@ def _load_one_eventsel_file(task: tuple):
                             if mp_xsec is not None:
                                 # each mass point to its own generated events (a multi-point file's
                                 # weighted_total_events covers all points, so there is no fallback)
+                                if not mask.any():
+                                    continue   # flag present for the grid, no events in this file
                                 if gmc not in wte_gm:
                                     raise ValueError(
                                         f"{Path(fpath).name}: no weighted_total_events_{gmc}; add the "

@@ -1434,8 +1434,7 @@ class CorrectionManager:
 
         Returns {"GenModel_<point>": sum of sign(genWeight) over the events whose GenModel_<point>
         flag is set}, counted over all input events before any selection. Empty for data and for
-        samples without GenModel_* branches (every grid point of xsection_signal.json otherwise,
-        0.0 for points absent from the file). The keys are the full GenModel branch names; they
+        samples without GenModel_* branches. The keys are the full GenModel branch names; they
         are stored as "weighted_total_events_<key>" in the event-selection output so each mass
         point can be normalised to its own generated events (a multi-point file's
         weighted_total_events covers all points).
@@ -1454,13 +1453,6 @@ class CorrectionManager:
             for f in fields:
                 flag = np.asarray(ak.to_numpy(events[f])).astype(bool)
                 out[str(f)] = float(np.sum(sign[flag]))
-            # A NanoAOD file only has GenModel_ branches for the points it contains, but every
-            # output carries a flag for every grid point (variables._genmodel_variables), so every
-            # output also carries a counter for every grid point: 0 for points absent from this
-            # file. A missing counter then means "not counted", never "no events".
-            from darkbottomline.variables import _signal_grid_branches
-            for branch in _signal_grid_branches():
-                out.setdefault(branch, 0.0)
             return out
         except Exception as exc:
             logging.warning("Per-GenModel weighted_total_events not computed: %s", exc)

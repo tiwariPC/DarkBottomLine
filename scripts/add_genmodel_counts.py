@@ -65,9 +65,6 @@ def main() -> int:
     ap.add_argument("--target", help="merged EVENTSELECTION.root to add the counters to")
     ap.add_argument("--json-out", help="also write the counts to this JSON file")
     ap.add_argument("--tree", default="Events")
-    ap.add_argument("--xsection-json", default=str(Path(__file__).resolve().parent.parent / "data" / "cross-section" /
-                                                   "xsection_signal.json"),
-                    help="signal grid; every grid point gets a counter, 0 for points with no events in the input")
     ap.add_argument("--workers", type=int, default=4, help="files read in parallel (default 4)")
     ap.add_argument("--dry-run", action="store_true", help="count and report, do not modify --target")
     ap.add_argument("--force", action="store_true", help="overwrite counters already present in --target")
@@ -96,16 +93,6 @@ def main() -> int:
         print("ERROR: the input files have no GenModel_* branches (not a multi-point sample)", file=sys.stderr)
         return 2
 
-    try:
-        grid = json.loads(Path(a.xsection_json).read_text())
-        for points in grid.values():
-            if isinstance(points, dict):
-                for k in points:
-                    if not k.startswith("_"):
-                        per_tot.setdefault("GenModel_" + k, 0.0)
-    except (OSError, ValueError) as exc:
-        print(f"WARNING: grid {a.xsection_json} not read, counters only for points seen in the input: {exc}",
-              file=sys.stderr)
     s = sum(per_tot.values())
     print(f"events: {n_tot}   sum sign(genWeight): {w_tot:.1f}   sum over {len(per_tot)} mass points: {s:.1f}")
     cnt = np.array(list(per_tot.values()))

@@ -367,6 +367,8 @@ def main() -> int:
             if xsec is None:
                 continue
             # per mass point: a multi-point file's wte covers every point
+            if not flag[:n].any():
+                continue   # flag present for the grid, no events in this file
             if "GenModel_" + label not in p["wte_gm"]:
                 raise ValueError(f"{p['path']}: no weighted_total_events_GenModel_{label}; "
                                  "add it with scripts/add_genmodel_counts.py")

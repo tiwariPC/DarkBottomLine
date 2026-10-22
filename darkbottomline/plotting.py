@@ -436,7 +436,7 @@ def _warn_missing_genmodel_wte(name: str, gm_cols: List[str], wte_gm: Optional[D
     if missing:
         logging.warning(
             "%s: weighted_total_events_GenModel_* counter missing for %d of %d mass points (e.g. %s); "
-            "plotting this signal will fail. Add the counters with scripts/add_genmodel_counts.py or "
+            "plotting any of these points that has selected events will fail. Add the counters with scripts/add_genmodel_counts.py or "
             "re-run signal event selection.", name, len(missing), len(gm_cols), missing[0])
 
 
@@ -2762,8 +2762,8 @@ class PlotManager:
                     if _gm_cols:
                         for _gmc in _gm_cols:
                             _gm_arr = _sbr.get(_gmc)
-                            if _gm_arr is None:
-                                continue
+                            if _gm_arr is None or not np.asarray(_gm_arr, dtype=bool).any():
+                                continue   # flag present for the grid, but no events in this sample
                             _mp_label = _gmc[len("GenModel_"):]
                             _mp_xsec = _find_xsec(_mp_label, cross_sections)
                             _mpw = _mp_total_events(_swte, _sfe.get('wte_gm'), _mp_label)
@@ -3911,8 +3911,8 @@ class PlotManager:
                     if _gm_cols:
                         for _gmc in _gm_cols:
                             _gm_arr = _sbr.get(_gmc)
-                            if _gm_arr is None:
-                                continue
+                            if _gm_arr is None or not np.asarray(_gm_arr, dtype=bool).any():
+                                continue   # flag present for the grid, but no events in this sample
                             _mp_label = _gmc[len("GenModel_"):]
                             _mp_xsec = _find_xsec(_mp_label, cross_sections)
                             _mpw = _mp_total_events(_swte, _sfe.get('wte_gm'), _mp_label)
