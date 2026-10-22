@@ -1677,12 +1677,13 @@ def _load_one_eventsel_file(task: tuple):
                             if mp_xsec is not None:
                                 # each mass point to its own generated events (a multi-point file's
                                 # weighted_total_events covers all points, so there is no fallback)
-                                mp_wte = wte_gm.get(gmc, 0.0)
-                                if mp_wte <= 0:
+                                if gmc not in wte_gm:
                                     raise ValueError(
                                         f"{Path(fpath).name}: no weighted_total_events_{gmc}; add the "
                                         "per-point counters with scripts/add_genmodel_counts.py")
-                                mp_scale[mask] = (lumi * mp_xsec * 1000.0) / mp_wte
+                                mp_wte = wte_gm[gmc]
+                                if mp_wte > 0:   # 0 = no generated events, the flag selects nothing
+                                    mp_scale[mask] = (lumi * mp_xsec * 1000.0) / mp_wte
                         w_arr = w_arr[:n] * mp_scale
                     else:
                         logging.warning(
@@ -2649,7 +2650,9 @@ def normalize_pdf(args):
         if syst.get("type") == "shape" and "syst_suffix" in syst
     }
     syst_suffixes = [syst["syst_suffix"] for syst in shape_systs.values()]
-    pdf_syst_suffix = shape_systs.get("pdf", {}).get("syst_suffix")
+    # Matched by suffix, not by the yaml key (the key is "pdf_envelope"; looking up "pdf" found
+    # nothing, so the pdf variants were never rescaled to preserve the central integral).
+    pdf_syst_suffix = "weight_pdf" if "weight_pdf" in syst_suffixes else None
 
     for category in categories:
         variable = fit_variable_map[category]

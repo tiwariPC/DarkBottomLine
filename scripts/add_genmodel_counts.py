@@ -58,29 +58,54 @@ def read_filelist(path: str) -> List[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--filelist", required=True, help="text file with one NanoAOD file (path or URL) per line")
+    ap.add_argument("--filelist", help="text file with one NanoAOD file (path or URL) per line")
+    ap.add_argument("--counts-json", help="use already computed counts instead of reading NanoAOD: a JSON "
+                    "with 'sumw_per_masspoint' ({MH3_..: n}, optionally 'sumw_total') or this script's "
+                    "--json-out ('per_genmodel'); the sum is still checked against the target")
     ap.add_argument("--target", help="merged EVENTSELECTION.root to add the counters to")
     ap.add_argument("--json-out", help="also write the counts to this JSON file")
     ap.add_argument("--tree", default="Events")
+    ap.add_argument("--xsection-json", default=str(Path(__file__).resolve().parent.parent / "data" / "cross-section" /
+                                                   "xsection_signal.json"),
+                    help="signal grid; every grid point gets a counter, 0 for points with no events in the input")
     ap.add_argument("--workers", type=int, default=4, help="files read in parallel (default 4)")
     ap.add_argument("--dry-run", action="store_true", help="count and report, do not modify --target")
     ap.add_argument("--force", action="store_true", help="overwrite counters already present in --target")
     a = ap.parse_args()
 
-    files = read_filelist(a.filelist)
-    print(f"{len(files)} NanoAOD files", file=sys.stderr)
+    if bool(a.filelist) == bool(a.counts_json):
+        ap.error("give exactly one of --filelist and --counts-json")
     n_tot, w_tot, per_tot = 0, 0.0, {}
-    with ThreadPoolExecutor(max_workers=max(1, a.workers)) as ex:
-        for i, (n, w, per) in enumerate(ex.map(lambda u: count_file(u, a.tree), files), 1):
-            n_tot += n
-            w_tot += w
-            for k, v in per.items():
-                per_tot[k] = per_tot.get(k, 0.0) + v
-            print(f"  [{i}/{len(files)}] {n} events", file=sys.stderr)
+    if a.counts_json:
+        c = json.loads(Path(a.counts_json).read_text())
+        raw = c.get("sumw_per_masspoint") or c.get("per_genmodel") or {}
+        per_tot = {(k if k.startswith("GenModel_") else "GenModel_" + k): float(v) for k, v in raw.items()}
+        w_tot = float(c.get("sumw_total", c.get("weighted_total_events", sum(per_tot.values()))))
+        n_tot = int(c.get("n_events", w_tot))
+    else:
+        files = read_filelist(a.filelist)
+        print(f"{len(files)} NanoAOD files", file=sys.stderr)
+        with ThreadPoolExecutor(max_workers=max(1, a.workers)) as ex:
+            for i, (n, w, per) in enumerate(ex.map(lambda u: count_file(u, a.tree), files), 1):
+                n_tot += n
+                w_tot += w
+                for k, v in per.items():
+                    per_tot[k] = per_tot.get(k, 0.0) + v
+                print(f"  [{i}/{len(files)}] {n} events", file=sys.stderr)
     if not per_tot:
         print("ERROR: the input files have no GenModel_* branches (not a multi-point sample)", file=sys.stderr)
         return 2
 
+    try:
+        grid = json.loads(Path(a.xsection_json).read_text())
+        for points in grid.values():
+            if isinstance(points, dict):
+                for k in points:
+                    if not k.startswith("_"):
+                        per_tot.setdefault("GenModel_" + k, 0.0)
+    except (OSError, ValueError) as exc:
+        print(f"WARNING: grid {a.xsection_json} not read, counters only for points seen in the input: {exc}",
+              file=sys.stderr)
     s = sum(per_tot.values())
     print(f"events: {n_tot}   sum sign(genWeight): {w_tot:.1f}   sum over {len(per_tot)} mass points: {s:.1f}")
     cnt = np.array(list(per_tot.values()))

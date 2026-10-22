@@ -26,7 +26,19 @@ def _events():
 def test_counts_use_sign_of_genweight():
     stub = SimpleNamespace(config={"data": {"is_data": False}})
     out = CorrectionManager.get_weighted_total_events_per_genmodel(stub, _events())
-    assert out == {PTS[0]: 0.0, PTS[1]: 1.0}
+    assert out[PTS[0]] == 0.0 and out[PTS[1]] == 1.0
+
+
+def test_every_grid_point_has_a_counter():
+    """A file only has GenModel_ branches for the points it contains; the counters still cover the
+    whole grid (0 for absent points), like the flags in the output tree."""
+    from darkbottomline.variables import _signal_grid_branches
+    stub = SimpleNamespace(config={"data": {"is_data": False}})
+    out = CorrectionManager.get_weighted_total_events_per_genmodel(stub, _events())
+    grid = set(_signal_grid_branches())
+    assert len(grid) == 29 and set(out) == grid | set(PTS)
+    absent = [k for k in out if k not in PTS]
+    assert absent and all(out[k] == 0.0 for k in absent)
 
 
 def test_empty_for_data_and_single_point():
@@ -55,6 +67,8 @@ def test_mp_total_events_no_fallback():
         _mp_total_events(600.0, wte_gm, "MH3_600_MH4_150_Mchi_1")
     with pytest.raises(ValueError):
         _mp_total_events(600.0, None, "MH3_600_MH4_10_Mchi_1")
+    # counted but no generated events: present, the point's flag selects nothing
+    assert _mp_total_events(600.0, {PTS[1]: 0.0}, "MH3_600_MH4_150_Mchi_1") == 0.0
 
 
 def _load_script():

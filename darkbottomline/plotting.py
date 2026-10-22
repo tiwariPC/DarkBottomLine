@@ -419,7 +419,9 @@ def _mp_total_events(file_wte: float, wte_gm: Optional[Dict[str, float]], mp_lab
     weighted_total_events_GenModel_<point> counter. There is no fallback to the file-level total
     (it covers every point of a multi-point file), so a missing counter is an error."""
     v = (wte_gm or {}).get(f"GenModel_{mp_label}")
-    if v is None or v <= 0:
+    if v is not None and v == 0:
+        return 0.0   # counted, no generated events: the point's flag selects nothing
+    if v is None or v < 0:
         raise MissingGenModelCounters(
             f"No weighted_total_events_GenModel_{mp_label} for signal mass point {mp_label}; add the "
             "per-point counters with scripts/add_genmodel_counts.py or re-run signal event selection.")

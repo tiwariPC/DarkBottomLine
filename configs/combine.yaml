@@ -118,8 +118,8 @@ datacard:
     signal:      {name: "signal", is_signal: true, plot_group_label: "Signal_2HDMa"}
     ttbar:       {name: "ttbar",     plot_group_label: "ttbar"}
     wjets:       {name: "wjets",     plot_group_label: "WtoLNuJets"}
-    zjets:       {name: "zjets",     plot_group_label: "DYto2LJets"}
-    znunu:       {name: "znunu",     plot_group_label: "Zto2NuJets"}
+    dyjets:      {name: "dyjets",    plot_group_label: "DYto2LJets"}   # Z(ll)+jets (the Z CR process)
+    zjets:       {name: "zjets",     plot_group_label: "Zto2NuJets"}    # Z(nunu)+jets (the SR Z background)
     singletop:   {name: "singletop", plot_group_label: "singletop"}
     diboson:     {name: "diboson",   plot_group_label: "Diboson"}
     smhiggs:     {name: "smhiggs",   plot_group_label: "SMHiggs"}
@@ -152,7 +152,7 @@ datacard:
       value_source: "eras[].year_config:lumi_uncertainty"
       value: 1.014            # PLACEHOLDER fallback — replace once each era's Lumi POG
                                 # number is published (2024's is still "to be updated")
-      processes: ["signal", "ttbar", "wjets", "zjets", "znunu", "singletop", "diboson", "smhiggs"]
+      processes: ["signal", "ttbar", "wjets", "zjets", "dyjets", "singletop", "diboson", "smhiggs"]
 
     # Tau-veto cut efficiency uncertainty — cut exists in objects.py but had
     # no associated systematic until now (matches Run2's CMS_veto_tau, which
@@ -162,7 +162,7 @@ datacard:
       type: "lnN"
       name_template: "CMS{year}_veto_tau"
       value: 1.02
-      processes: ["signal", "ttbar", "wjets", "zjets", "znunu", "singletop", "diboson", "smhiggs"]
+      processes: ["signal", "ttbar", "wjets", "zjets", "dyjets", "singletop", "diboson", "smhiggs"]
 
     # Flat background normalization uncertainties, matching Run2's real
     # values (datacard_template_1b_perBin_asChanel_addProcs.yaml: norm_stop
@@ -170,7 +170,7 @@ datacard:
     # omitted — no QCD CR/process active in Run3 today (see qcd: enabled:
     # false above).
     norm_diboson: {type: "lnN", value: 1.2,  processes: ["diboson"]}
-    norm_zjets:   {type: "lnN", value: 1.05, processes: ["zjets"]}
+    norm_dyjets:   {type: "lnN", value: 1.05, processes: ["dyjets"]}
     norm_smhiggs: {type: "lnN", value: 1.2,  processes: ["smhiggs"]}
     norm_singletop: {type: "lnN", value: 1.1, processes: ["singletop"]}
 
@@ -223,34 +223,34 @@ datacard:
       type: "shape"
       syst_suffix: "weight_btag"
       name_template: "CMS_eff_b_{year}"
-      processes: ["signal", "ttbar", "wjets", "zjets", "znunu", "singletop", "diboson", "smhiggs"]
+      processes: ["signal", "ttbar", "wjets", "zjets", "dyjets", "singletop", "diboson", "smhiggs"]
       gated_by_cut: ["Bjet1bCond", "Bjet2bCond"]   # region-applicable iff its
                                                      # regions.yaml cuts block has either key
     # JES: reduced 11-source JEC scheme written by the PKL/event plot paths
     # (hist_<cat>_<region>_Recoil_JEC<source>{UP,DOWN}_log.root). Only Recoil has shifted
     # variants, so the 2b category (costheta_star) has no JEC/JER shape systematics.
-    JECAbsolute: {type: "shape", syst_suffix: "JECAbsolute", name_template: "CMS_scale_j_Absolute", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JECAbsolute_2024: {type: "shape", syst_suffix: "JECAbsolute_2024", name_template: "CMS_scale_j_Absolute_2024", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JECBBEC1: {type: "shape", syst_suffix: "JECBBEC1", name_template: "CMS_scale_j_BBEC1", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JECBBEC1_2024: {type: "shape", syst_suffix: "JECBBEC1_2024", name_template: "CMS_scale_j_BBEC1_2024", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JECEC2: {type: "shape", syst_suffix: "JECEC2", name_template: "CMS_scale_j_EC2", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JECEC2_2024: {type: "shape", syst_suffix: "JECEC2_2024", name_template: "CMS_scale_j_EC2_2024", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JECHF: {type: "shape", syst_suffix: "JECHF", name_template: "CMS_scale_j_HF", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JECHF_2024: {type: "shape", syst_suffix: "JECHF_2024", name_template: "CMS_scale_j_HF_2024", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JECFlavorQCD: {type: "shape", syst_suffix: "JECFlavorQCD", name_template: "CMS_scale_j_FlavorQCD", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JECRelativeBal: {type: "shape", syst_suffix: "JECRelativeBal", name_template: "CMS_scale_j_RelativeBal", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JECRelativeSample_2024: {type: "shape", syst_suffix: "JECRelativeSample_2024", name_template: "CMS_scale_j_RelativeSample_2024", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    JER:         {type: "shape", syst_suffix: "JER", name_template: "CMS_res_j_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    pileup:      {type: "shape", syst_suffix: "weight_pileup", name_template: "CMS_pileup_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    muonSF:      {type: "shape", syst_suffix: "weight_muon", name_template: "CMS_eff_m_id_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    electronSF:  {type: "shape", syst_suffix: "weight_electron", name_template: "CMS_eff_e_id_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    JECAbsolute: {type: "shape", syst_suffix: "JECAbsolute", name_template: "CMS_scale_j_Absolute", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECAbsolute_2024: {type: "shape", syst_suffix: "JECAbsolute_2024", name_template: "CMS_scale_j_Absolute_2024", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECBBEC1: {type: "shape", syst_suffix: "JECBBEC1", name_template: "CMS_scale_j_BBEC1", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECBBEC1_2024: {type: "shape", syst_suffix: "JECBBEC1_2024", name_template: "CMS_scale_j_BBEC1_2024", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECEC2: {type: "shape", syst_suffix: "JECEC2", name_template: "CMS_scale_j_EC2", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECEC2_2024: {type: "shape", syst_suffix: "JECEC2_2024", name_template: "CMS_scale_j_EC2_2024", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECHF: {type: "shape", syst_suffix: "JECHF", name_template: "CMS_scale_j_HF", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECHF_2024: {type: "shape", syst_suffix: "JECHF_2024", name_template: "CMS_scale_j_HF_2024", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECFlavorQCD: {type: "shape", syst_suffix: "JECFlavorQCD", name_template: "CMS_scale_j_FlavorQCD", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECRelativeBal: {type: "shape", syst_suffix: "JECRelativeBal", name_template: "CMS_scale_j_RelativeBal", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECRelativeSample_2024: {type: "shape", syst_suffix: "JECRelativeSample_2024", name_template: "CMS_scale_j_RelativeSample_2024", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JER:         {type: "shape", syst_suffix: "JER", name_template: "CMS_res_j_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    pileup:      {type: "shape", syst_suffix: "weight_pileup", name_template: "CMS_pileup_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    muonSF:      {type: "shape", syst_suffix: "weight_muon", name_template: "CMS_eff_m_id_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    electronSF:  {type: "shape", syst_suffix: "weight_electron", name_template: "CMS_eff_e_id_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     # electronHLT -> CMS_eff_e_trigger_{year}, direct match in
     # systematics_master.yml's electron_efficiency section. metHLT has no
     # official counterpart in the master file (no MET-trigger entry exists
     # there) — named CMS_eff_met_trigger_{year} to match the same
     # CMS_eff_{obj}_trigger_{year} pattern used for electrons/muons.
-    electronHLT: {type: "shape", syst_suffix: "weight_electronHLT", name_template: "CMS_eff_e_trigger_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
-    metHLT:      {type: "shape", syst_suffix: "weight_metHLT", name_template: "CMS_eff_met_trigger_{year}", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    electronHLT: {type: "shape", syst_suffix: "weight_electronHLT", name_template: "CMS_eff_e_trigger_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    metHLT:      {type: "shape", syst_suffix: "weight_metHLT", name_template: "CMS_eff_met_trigger_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     # Named "pdf_envelope" (not any of systematics_master.yml's pdf_* names)
     # because none of them match our actual methodology: this is a max/min
     # envelope over 100 NNPDF replicas (corrections.py:get_pdf_scale_weights,
@@ -259,7 +259,7 @@ datacard:
     # pdf_gg/gq/qqbar assume Hessian eigenvector-by-parton-type splitting we
     # don't do. "pdf_envelope" names the method honestly instead of claiming
     # an official name that would misrepresent how this was derived.
-    pdf_envelope: {type: "shape", syst_suffix: "weight_pdf", processes: ["signal","ttbar","wjets","zjets","znunu","singletop","diboson","smhiggs"]}
+    pdf_envelope: {type: "shape", syst_suffix: "weight_pdf", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     # Split per-process, matching Run2's CMS{year}_mu_scale_{process} naming
     # convention (datacard_template_1b_perBin_asChanel_addProcs.yaml) but
     # named "qcdscale" (not "scale"/"mu_scale") — this is QCD renormalization/
@@ -268,14 +268,14 @@ datacard:
     # the clearer name avoids confusion with the generic "scale" the repo used
     # before. One named nuisance per process (not one shared nuisance), so
     # each process's shape uncertainty is uncorrelated from the others in the
-    # fit (matches Run2's convention). znunu (Zto2Nu invisible-Z background)
+    # fit (matches Run2's convention). zjets (Zto2Nu invisible-Z background)
     # has no Run2 counterpart process to name a convention after, but Run3
     # can just give it its own entry directly — no leftover/special-cased name.
     qcdscale_signal:    {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_signal",   processes: ["signal"]}
     qcdscale_ttbar:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_tt",       processes: ["ttbar"]}
     qcdscale_wjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_wjets",    processes: ["wjets"]}
-    qcdscale_zjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_dyjets",   processes: ["zjets"]}
-    qcdscale_znunu:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_znunu",    processes: ["znunu"]}
+    qcdscale_dyjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_dyjets",   processes: ["dyjets"]}
+    qcdscale_zjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_zjets",    processes: ["zjets"]}
     qcdscale_singletop: {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_singlet",  processes: ["singletop"]}
     qcdscale_diboson:   {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_diboson",  processes: ["diboson"]}
     qcdscale_smhiggs:   {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_smh",      processes: ["smhiggs"]}
@@ -291,14 +291,14 @@ datacard:
   # simultaneously even when combine_emu: true had already merged them into
   # one Wlnu CR — double-applying the correction).
   rate_parameters:
-    wjets_1b_Wmunu:   {type: "rateParam", regions: ["1b:CR_Wmunu"],   processes: ["wjets"], value: 1.0, range: [0.05, 1.95]}
-    wjets_1b_Wenu:    {type: "rateParam", regions: ["1b:CR_Wenu"],    processes: ["wjets"], value: 1.0, range: [0.05, 1.95]}
-    zjets_1b_Zmumu:   {type: "rateParam", regions: ["1b:CR_Zmumu"],   processes: ["zjets"], value: 1.0, range: [0.05, 1.95]}
-    zjets_1b_Zee:     {type: "rateParam", regions: ["1b:CR_Zee"],     processes: ["zjets"], value: 1.0, range: [0.05, 1.95]}
-    ttbar_2b_Topmunu: {type: "rateParam", regions: ["2b:CR_Topmunu"], processes: ["ttbar"], value: 1.0, range: [0.05, 1.95]}
-    ttbar_2b_Topenu:  {type: "rateParam", regions: ["2b:CR_Topenu"],  processes: ["ttbar"], value: 1.0, range: [0.05, 1.95]}
-    zjets_2b_Zmumu:   {type: "rateParam", regions: ["2b:CR_Zmumu"],   processes: ["zjets"], value: 1.0, range: [0.05, 1.95]}
-    zjets_2b_Zee:     {type: "rateParam", regions: ["2b:CR_Zee"],     processes: ["zjets"], value: 1.0, range: [0.05, 1.95]}
+    wjets_1b_Wmunu:   {type: "rateParam", regions: ["1b:CR_Wmunu"],   processes: ["wjets"], value: 1.0, range: [0.05, 5.0]}
+    wjets_1b_Wenu:    {type: "rateParam", regions: ["1b:CR_Wenu"],    processes: ["wjets"], value: 1.0, range: [0.05, 5.0]}
+    zjets_1b_Zmumu:   {type: "rateParam", regions: ["1b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
+    zjets_1b_Zee:     {type: "rateParam", regions: ["1b:CR_Zee"],     processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
+    ttbar_2b_Topmunu: {type: "rateParam", regions: ["2b:CR_Topmunu"], processes: ["ttbar"], value: 1.0, range: [0.05, 5.0]}
+    ttbar_2b_Topenu:  {type: "rateParam", regions: ["2b:CR_Topenu"],  processes: ["ttbar"], value: 1.0, range: [0.05, 5.0]}
+    zjets_2b_Zmumu:   {type: "rateParam", regions: ["2b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
+    zjets_2b_Zee:     {type: "rateParam", regions: ["2b:CR_Zee"],     processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
     # Merged-channel entries — used for SR's tie-in (and become the CR file's
     # own applicable entry too) ONLY when combine_emu: true, since that's
     # when merge_emu collapses the CR_Wmunu/CR_Wenu histograms into one Wlnu
@@ -307,17 +307,21 @@ datacard:
     # make_datacard's emu_written_dirs dedup — NOT a literal "Wlnu" role,
     # since region_key is always derived from region_role, never
     # region_dir_override (confirmed in combine_tools.py).
-    wjets_1b_Wlnu:    {type: "rateParam", regions: ["1b:CR_Wmunu"],   processes: ["wjets"], value: 1.0, range: [0.05, 1.95]}
-    zjets_1b_Zll:     {type: "rateParam", regions: ["1b:CR_Zmumu"],   processes: ["zjets"], value: 1.0, range: [0.05, 1.95]}
-    ttbar_2b_Topl:    {type: "rateParam", regions: ["2b:CR_Topmunu"], processes: ["ttbar"], value: 1.0, range: [0.05, 1.95]}
-    zjets_2b_Zll:     {type: "rateParam", regions: ["2b:CR_Zmumu"],   processes: ["zjets"], value: 1.0, range: [0.05, 1.95]}
+    wjets_1b_Wlnu:    {type: "rateParam", regions: ["1b:CR_Wmunu"],   processes: ["wjets"], value: 1.0, range: [0.05, 5.0]}
+    zjets_1b_Zll:     {type: "rateParam", regions: ["1b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
+    ttbar_2b_Topl:    {type: "rateParam", regions: ["2b:CR_Topmunu"], processes: ["ttbar"], value: 1.0, range: [0.05, 5.0]}
+    zjets_2b_Zll:     {type: "rateParam", regions: ["2b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
     # No qcd_CR rateParam — no QCD CR exists in regions.yaml today.
-    # zjets_*_Z{mumu,ee} rateParams float a plain normalization (CR->SR transfer
+    # zjets_*_Z{mumu,ee} rateParams (dyjets in the CR, zjets = Z->nunu in the SR) float a plain normalization (CR->SR transfer
     # factor), not a shape — they're unaffected by btagSF's gated_by_cut exclusion
     # above (that gate only governs whether a SHAPE systematic's Up/Down histograms
     # get written/listed for a region, not whether a rateParam applies). No double
     # counting between the two mechanisms.
 
+  # `process` below is the SR process the parameter scales. For Z it is zjets (Z->nunu+jets): the
+  # Z(ll) CR parameter is floated on dyjets (Z->ll+jets) in the CR and scales Z->nunu in the SR
+  # (the Z(ll) -> Z(nunu) transfer). The CR side's process comes from rate_parameters above.
+  #
   # SR's rateParam tie-in — separate from the CR-only block above precisely
   # because the correct set differs by combine_emu (user-confirmed: "when we
   # have electron channel WCR ... and muon channel Wmunu then both rateparameter
@@ -343,7 +347,7 @@ signal_grid:
 fit:
   strategy: "robustHesse"
   options:
-    asymptotic_limits: {r_min: 0.0, r_max: 10.0}
+    asymptotic_limits: {r_min: 0.0, r_max: 10.0, r_max_ladder: [5, 50, 500, 5000]}
     fit_diagnostics:   {save_shapes: true, save_norm: true, save_with_unc: true}
     goodness_of_fit:   {algorithm: "saturated", toys: 500, seed: 12345}
 
@@ -407,16 +411,13 @@ advanced:
                   "--run={run_mode}",   # run_mode resolves to "expected" always,
                                         # plus a second step with "observed" appended
                                         # when the region's blind flag is false
-                  # rMax=10 was too tight: low-sensitivity mass points need
-                  # r up to ~14+ to resolve the +2sigma expected quantile,
-                  # and combine silently drops that row (rather than erroring)
-                  # when the POI search range is exceeded, breaking
-                  # collect_limits' aggregation. The near-degenerate
-                  # MH3~=MH4 corner of the 29-point signal grid (e.g.
-                  # MH3_1500_MH4_1450) has such low sensitivity it needs
-                  # r~O(1000-2000) to resolve +1/2sigma — 5000 covers the
-                  # full grid with headroom.
-                  "--rMin=0", "--rMax=5000"]
+                  # {rmax} comes from fit.options.asymptotic_limits.r_max_ladder
+                  # (CombineRunner._run_asymptotic_validated): Combine silently returns no
+                  # quantiles when --rMax is far above the limit and cuts the upper bands off
+                  # when it is too small, so the smallest ladder value whose five quantiles are
+                  # finite, ordered and below 80% of rMax is used. Limits span r ~ 0.1 to ~500
+                  # over the 29-point grid, so no single fixed value works.
+                  "--rMin=0", "--rMax={rmax}"]
 
     FitDiagnostics:
       steps:

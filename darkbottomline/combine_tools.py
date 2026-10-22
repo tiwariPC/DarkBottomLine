@@ -145,14 +145,21 @@ class CombineDatacardWriter:
 
     def _write_bin_block(self, lines: List[str], bin_names: List[str], process_keys: List[str],
                           shapes_filename: str, obs_by_bin: Dict[str, List[float]],
-                          rate_by_bin: Dict[str, List[float]]) -> None:
+                          rate_by_bin: Dict[str, List[float]],
+                          shape_dir_by_bin: Optional[Dict[str, str]] = None) -> None:
         """Write the shapes/bin/observation/process/rate block shared by both
         binning modes — differs only in how many bin_names are passed (1 for
-        unbinned, N for binned) and what obs/rate values are supplied per bin."""
+        unbinned, N for binned) and what obs/rate values are supplied per bin.
+
+        shape_dir_by_bin (binned mode): ROOT directory holding that bin's own one-bin
+        histograms. Without it every channel would point at the whole N-bin histogram
+        and Combine would give each "single-bin" channel all N bins, counting the
+        region N times."""
         processes = self.datacard_config["processes"]
 
         for bin_name in bin_names:
-            lines.append(f"shapes * {bin_name} {shapes_filename} $PROCESS $PROCESS_$SYSTEMATIC")
+            _d = f"{shape_dir_by_bin[bin_name]}/" if shape_dir_by_bin else ""
+            lines.append(f"shapes * {bin_name} {shapes_filename} {_d}$PROCESS {_d}$PROCESS_$SYSTEMATIC")
         lines.append("")
 
         lines.append("# Bin names")
@@ -299,13 +306,19 @@ class CombineDatacardWriter:
         sr_config = self.datacard_config.get("sr_rate_parameters", {}).get(category, [])
         combine_emu = self.config.get("combine_emu", True)
 
+        sr_process_override: Dict[str, List[str]] = {}
         if is_sr:
             rate_names = []
             for entry in sr_config:
-                if combine_emu:
-                    rate_names.append(entry["merged"])
-                else:
-                    rate_names.extend(entry["unmerged"])
+                names = [entry["merged"]] if combine_emu else list(entry["unmerged"])
+                rate_names.extend(names)
+                # The SR process the parameter scales is named by the entry's "process" (e.g. the
+                # Z(ll) CR parameter, floated on zjets/DY in the CR, scales znunu in the SR); it
+                # can differ from the process the CR side floats.
+                proc = entry.get("process")
+                if proc:
+                    for n in names:
+                        sr_process_override[n] = [proc] if isinstance(proc, str) else list(proc)
             applicable = {name: rate_parameters[name] for name in rate_names if name in rate_parameters}
         else:
             raw_applicable = {name: cfg for name, cfg in rate_parameters.items()
@@ -333,7 +346,8 @@ class CombineDatacardWriter:
             return
         lines.append("# Rate parameters")
         for rate_name, rate_config in applicable.items():
-            rate_processes = rate_config.get("processes", [])
+            rate_processes = sr_process_override.get(rate_name, rate_config.get("processes", [])) \
+                if is_sr else rate_config.get("processes", [])
             rate_value = rate_config.get("value", 1.0)
             rate_range = rate_config.get("range", [0.05, 1.95])
             full_rate_name = f"{rate_name}_bin{bin_index}" if bin_index is not None else rate_name
@@ -429,7 +443,8 @@ class CombineDatacardWriter:
         rate_by_bin = {bin_name: [-1.0] * len(process_keys) for bin_name in bin_names}
 
         self._write_bin_block(lines, bin_names, process_keys, shapes_filename,
-                               obs_by_bin=obs_by_bin, rate_by_bin=rate_by_bin)
+                               obs_by_bin=obs_by_bin, rate_by_bin=rate_by_bin,
+                               shape_dir_by_bin={b: f"bin{i + 1}" for i, b in enumerate(bin_names)})
         region_key_by_bin = {bin_name: region_key for bin_name in bin_names}
         self._write_systematics_block(lines, bin_names, process_keys, region_key_by_bin, year,
                                        region_root_dir, category, region_dir, variable, mass_point)
@@ -543,7 +558,25 @@ class CombineDatacardWriter:
         if is_sr:
             process_keys = ["signal"] + process_keys
 
-        with uproot.recreate(str(shapes_file)) as f:
+        binned = self.datacard_config.get("binning_mode", "unbinned") == "binned"
+
+        class _ShapeWriter:
+            """Writes name -> (values, edges); in binned mode as one one-bin histogram per
+            bin under bin<i>/ (matching the datacard's per-channel shapes lines)."""
+            def __init__(self, f):
+                self.f = f
+
+            def __setitem__(self, name, hv):
+                values, edges = hv
+                if not binned:
+                    self.f[name] = (values, edges)
+                    return
+                for i in range(len(values)):
+                    self.f[f"bin{i + 1}/{name}"] = (np.asarray(values[i:i + 1], dtype=float),
+                                                    np.asarray(edges[i:i + 2], dtype=float))
+
+        with uproot.recreate(str(shapes_file)) as _rootfile:
+            f = _ShapeWriter(_rootfile)
             for process in process_keys:
                 proc_config = processes[process]
                 datacard_name = proc_config["name"]
@@ -994,6 +1027,7 @@ class CombineRunner:
             "gof_algo": self.fit_config.get("options", {}).get("goodness_of_fit", {}).get("algorithm", "saturated"),
             "toys": self.fit_config.get("options", {}).get("goodness_of_fit", {}).get("toys", 500),
             "run_mode": "expected",
+            "rmax": 5000,
             "impacts_filename": self.output_config["fit_results"].get("impacts", "impacts.json"),
         }
         if extra_format_args:
@@ -1035,6 +1069,35 @@ class CombineRunner:
                 logging.error(f"Error output: {e.stderr}")
                 raise
 
+    def _run_asymptotic_validated(self, workspace: str, output_dir: str, blind: bool,
+                                   run_mode: str, ladder: List[float]) -> None:
+        """AsymptoticLimits needs --rMax of the order of the limit: with a much larger range Combine
+        silently returns no quantiles, with a smaller one the upper bands are cut off. Try the
+        ladder from small to large and keep the first run whose five expected quantiles are
+        finite, positive, ordered and below 80% of rMax (observed: one finite positive value)."""
+        out = Path(output_dir)
+        for rmax in ladder:
+            for old in out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"):
+                old.unlink()
+            self._run_steps("AsymptoticLimits", workspace, output_dir, blind,
+                            extra_format_args={"run_mode": run_mode, "rmax": rmax})
+            files = sorted(out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"))
+            if not files:
+                continue
+            try:
+                with uproot.open(str(files[0])) as f:
+                    vals = f["limit"]["limit"].array(library="np")
+            except Exception:
+                continue
+            ok = len(vals) >= 1 and np.isfinite(vals).all() and (vals > 0).all()
+            if run_mode == "expected":
+                ok = ok and len(vals) == 5 and (np.diff(vals) >= 0).all() and vals.max() < 0.8 * rmax
+            if ok:
+                logging.info(f"AsymptoticLimits {run_mode}: valid with rMax={rmax}")
+                return
+        raise RuntimeError(f"No valid AsymptoticLimits {run_mode} result for {workspace} with "
+                           f"rMax in {ladder}")
+
     def run_asymptotic_limits(self, datacard_or_workspace: str, output_dir: str,
                                blind: bool = True) -> str:
         """Returns the actual combine output file — same fix as
@@ -1042,10 +1105,11 @@ class CombineRunner:
         higgsCombineTest.AsymptoticLimits.mH120*.root (its default -n Test
         label, no --seed passed here), not the output_config's
         "asymptotic_limits.root" name, which is never actually created."""
-        self._run_steps("AsymptoticLimits", datacard_or_workspace, output_dir, blind)
+        ladder = self.fit_config.get("options", {}).get("asymptotic_limits", {}).get(
+            "r_max_ladder", [5, 50, 500, 5000])
+        self._run_asymptotic_validated(datacard_or_workspace, output_dir, blind, "expected", ladder)
         if not blind:
-            self._run_steps("AsymptoticLimits", datacard_or_workspace, output_dir, blind,
-                             extra_format_args={"run_mode": "observed"})
+            self._run_asymptotic_validated(datacard_or_workspace, output_dir, blind, "observed", ladder)
         matches = sorted(Path(output_dir).glob("higgsCombineTest.AsymptoticLimits.mH120*.root"))
         if not matches:
             raise FileNotFoundError(

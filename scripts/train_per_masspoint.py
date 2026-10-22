@@ -367,10 +367,12 @@ def main() -> int:
             if xsec is None:
                 continue
             # per mass point: a multi-point file's wte covers every point
-            mp_wte = p["wte_gm"].get("GenModel_" + label, 0.0)
-            if mp_wte <= 0:
+            if "GenModel_" + label not in p["wte_gm"]:
                 raise ValueError(f"{p['path']}: no weighted_total_events_GenModel_{label}; "
                                  "add it with scripts/add_genmodel_counts.py")
+            mp_wte = p["wte_gm"]["GenModel_" + label]
+            if mp_wte <= 0:
+                continue   # no generated events for this point: its flag selects nothing
             s = (lumi * xsec * 1000.0) / mp_wte
             m = flag[:n]
             sig_scale[idx[m]] = s

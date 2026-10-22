@@ -197,6 +197,15 @@ def minimal_combine_config():
     }
 
 
+
+def _write_fake_limits(directory, observed=False):
+    """A minimal higgsCombineTest.AsymptoticLimits.mH120.root with valid quantiles."""
+    import numpy as np
+    import uproot
+    vals = np.array([0.5]) if observed else np.array([0.1, 0.2, 0.3, 0.4, 0.5])
+    with uproot.recreate(str(Path(directory) / "higgsCombineTest.AsymptoticLimits.mH120.root")) as f:
+        f["limit"] = {"limit": vals}
+
 class TestCombineInputs:
     """Test the combine_inputs.py helper functions."""
 
@@ -1016,7 +1025,7 @@ class TestCombineRunner:
         workspace.write_text("")
 
         def fake_run(cmd, **kwargs):
-            (tmp_path / "higgsCombineTest.AsymptoticLimits.mH120.root").write_text("")
+            _write_fake_limits(tmp_path, observed="--run=observed" in cmd)
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=fake_run) as mock_run:
@@ -1036,7 +1045,7 @@ class TestCombineRunner:
         workspace.write_text("")
 
         def fake_run(cmd, **kwargs):
-            (tmp_path / "higgsCombineTest.AsymptoticLimits.mH120.root").write_text("")
+            _write_fake_limits(tmp_path, observed="--run=observed" in cmd)
             return MagicMock(returncode=0, stdout="", stderr="")
 
         with patch("subprocess.run", side_effect=fake_run) as mock_run:
@@ -1463,18 +1472,15 @@ class TestCombineRunner:
                 assert "/" not in o_value, f"-o value should be a basename, got {o_value}"
 
     def test_real_combine_yaml_asymptotic_limits_rmax_wide_enough(self):
-        """Regression test: rMax=10 was too tight for AsymptoticLimits — combine
-        silently drops any quantile row whose fitted r exceeds rMax (raises an
-        internal exception it catches rather than erroring out), so low-
-        sensitivity mass points in the real 29-point signal grid lost their
-        +2sigma expected row entirely, breaking collect_limits' "incomplete
-        limit quantiles" check for every single mass point (reproduced against
-        real combine 10.6.1: MH3_600_MH4_50 needs r~11.8 for +2sigma)."""
+        """The limit command takes --rMax from fit.options.asymptotic_limits.r_max_ladder: no single
+        fixed value works (combine returns no quantiles when rMax is far above the limit and cuts
+        the upper bands off when it is too small), so the ladder must reach the least sensitive
+        mass points (r up to ~500 on the 29-point grid) and start small enough for r ~ 0.1."""
         real_config = yaml.safe_load((REPO_ROOT / "configs" / "combine.yaml").read_text())
         args = real_config["advanced"]["commands"]["AsymptoticLimits"]["steps"][0]["args"]
-        rmax_token = next(a for a in args if a.startswith("--rMax="))
-        rmax = float(rmax_token.split("=")[1])
-        assert rmax >= 1000, f"AsymptoticLimits --rMax={rmax} too tight for low-sensitivity mass points"
+        assert "--rMax={rmax}" in args
+        ladder = real_config["fit"]["options"]["asymptotic_limits"]["r_max_ladder"]
+        assert ladder == sorted(ladder) and ladder[0] <= 10 and ladder[-1] >= 1000
 
     def test_run_missing_binary_raises_clear_error(self, minimal_combine_config, tmp_path):
         runner = CombineRunner(minimal_combine_config)
@@ -1620,3 +1626,33 @@ class TestCombineRunner:
         assert len(plot_files) == 1
         assert Path(plot_files[0]).name == "limits_test_MH3_600.pdf"
         assert Path(plot_files[0]).exists()
+
+
+class TestSrRateParamProcess:
+    """The Z(ll) CR parameter floats zjets (Drell-Yan) in the CR and scales znunu in the SR."""
+
+    def _lines(self, cfg, **kw):
+        writer = CombineDatacardWriter(cfg)
+        lines = []
+        writer._write_rate_params_block(lines, kw.pop("bin_name"), kw.pop("region_key"), **kw)
+        return [l for l in lines if "rateParam" in l]
+
+    def test_sr_scales_the_named_process_and_cr_floats_its_own(self, minimal_combine_config):
+        cfg = minimal_combine_config
+        cfg["datacard"]["sr_rate_parameters"]["1b"][0]["process"] = "znunu"
+        sr = self._lines(cfg, bin_name="cat_1b_SR_bin2", region_key="1b:SR", bin_index=2,
+                         category="1b", is_sr=True)
+        cr = self._lines(cfg, bin_name="cat_1b_Zll_bin2", region_key="1b:CR_Zmumu", bin_index=2,
+                         category="1b", is_sr=False)
+        # merged e/mu: one parameter per bin, shared by SR bin 2 and Z CR bin 2
+        assert len(sr) == 1 and sr[0].startswith("zjets_1b_Zll_bin2 rateParam cat_1b_SR_bin2 znunu ")
+        assert len(cr) == 1 and cr[0].startswith("zjets_1b_Zll_bin2 rateParam cat_1b_Zll_bin2 zjets ")
+
+    def test_unmerged_sr_gets_both_channel_parameters_on_the_named_process(self, minimal_combine_config):
+        cfg = minimal_combine_config
+        cfg["combine_emu"] = False
+        cfg["datacard"]["sr_rate_parameters"]["1b"][0]["process"] = "znunu"
+        sr = self._lines(cfg, bin_name="cat_1b_SR_bin1", region_key="1b:SR", bin_index=1,
+                         category="1b", is_sr=True)
+        assert sorted(l.split()[0] for l in sr) == ["zjets_1b_Zee_bin1", "zjets_1b_Zmumu_bin1"]
+        assert all(l.split()[3] == "znunu" for l in sr)
