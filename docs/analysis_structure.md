@@ -13,7 +13,7 @@ NanoAOD ──event selection──▶ <sample>_EVENTSELECTION.root   (flat bran
                   (region cuts + DNN score, chunked over the tree)
                                           │
                                           ▼
-                     per_sample/<sample>_EVENTSELECTION.pkl      (one PKL per sample)
+                     per_sample/<sample>_EVENTSELECTION_DNNAPPLIED.pkl   (one PKL per sample)
                                           │
                   analyze --make-region-plots   (PKL replay, ROOT → PKL → plot)
                                           │
@@ -94,7 +94,12 @@ output stays intact.
 
 ## Region PKL structure
 
-One PKL per sample, written by `darkbottomline analyze --mode region-analysis`:
+One PKL per sample, written by `darkbottomline analyze --mode region-analysis --per-sample-only`
+(or by the HTCondor stage). The file is named `<stem>_DNNAPPLIED.pkl`, with `<stem>` the merged
+file name without `.root` (`<sample>_EVENTSELECTION`); the suffix marks PKLs in which the DNN
+score `ml_score` was added to every event, so they cannot be mistaken for unscored ones. Without
+`--apply-dnn`/a DNN model the name is `<stem>.pkl` and there is no `ml_score` field. The plotting
+step matches samples by name patterns, so either form works as `--region-results` input.
 
 ```python
 {
