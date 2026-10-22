@@ -120,6 +120,12 @@ step matches samples by name patterns, so either form works as `--region-results
 }
 ```
 
+Multi-point signal samples are normalised per mass point: the signal `_EVENTSELECTION.root` carries one
+one-bin histogram `weighted_total_events_GenModel_<point>` per point (generated Σ sign(genWeight) of that
+point, written by event selection or added to a merged file with `scripts/add_genmodel_counts.py`), copied
+into `metadata["weighted_total_events_per_genmodel"]`. A point without a counter is an error: there is no
+fallback to the file-level `weighted_total_events`, which covers every point.
+
 Cross sections are applied at plot time (`lumi × xsec / weighted_total_events`), not when the
 PKL is written, so changing `data/cross-section/*.json` needs no region re-run. Data PKLs
 have unit weights. Because the per-event weight variations and shifted recoils are stored, the

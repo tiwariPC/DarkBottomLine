@@ -193,11 +193,16 @@ def load_dataset(
                 if gm_cols and wte > 0:
                     gm_arr = read_tree_branches_as_arrays(tree, gm_cols, max_events=n)
                     mp_scale = np.ones(n, dtype="f8")
+                    wte_gm = {}
+                    for k in f.keys():
+                        kn = str(k).split(";")[0]
+                        if kn.startswith("weighted_total_events_GenModel_"):
+                            wte_gm[kn[len("weighted_total_events_"):]] = float(f[k].values()[0])
                     for gmc in gm_cols:
                         mask = gm_arr[gmc][:n].astype(bool)
                         mp_xsec = _find_xsec(gmc[len("GenModel_"):], sig_xsec_map)
                         if mp_xsec is not None:
-                            mp_scale[mask] = (lumi * mp_xsec * 1000.0) / wte
+                            mp_scale[mask] = (lumi * mp_xsec * 1000.0) / wte_gm[gmc]
                     w = w * mp_scale
                     scale_note = "per-masspoint lumi*xsec*1000/wte"
                 else:

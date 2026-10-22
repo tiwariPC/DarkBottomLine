@@ -389,6 +389,55 @@ def _clip_overflow(values: np.ndarray, bins: np.ndarray) -> np.ndarray:
     return np.where(values >= hi, np.nextafter(hi, -np.inf), values)
 
 
+_GENMODEL_WTE_PREFIX = "weighted_total_events_"
+
+
+def read_weighted_total_events_per_genmodel(f) -> Dict[str, float]:
+    """{"GenModel_<point>": generated weighted events} from the weighted_total_events_GenModel_*
+    one-bin TH1s of a multi-point signal EVENTSELECTION.root (uproot file); {} if there are none."""
+    out: Dict[str, float] = {}
+    try:
+        keys = list(f.keys())
+    except Exception:
+        return out
+    for key in keys:
+        name = str(key).split(";")[0]
+        if name.startswith(_GENMODEL_WTE_PREFIX + "GenModel_"):
+            try:
+                out[name[len(_GENMODEL_WTE_PREFIX):]] = float(f[key].values()[0])
+            except Exception:
+                pass
+    return out
+
+
+class MissingGenModelCounters(ValueError):
+    """A multi-point signal lacks weighted_total_events_GenModel_* counters (never silently skipped)."""
+
+
+def _mp_total_events(file_wte: float, wte_gm: Optional[Dict[str, float]], mp_label: str) -> float:
+    """Generated weighted events of one signal mass point, from the file's
+    weighted_total_events_GenModel_<point> counter. There is no fallback to the file-level total
+    (it covers every point of a multi-point file), so a missing counter is an error."""
+    v = (wte_gm or {}).get(f"GenModel_{mp_label}")
+    if v is None or v <= 0:
+        raise MissingGenModelCounters(
+            f"No weighted_total_events_GenModel_{mp_label} for signal mass point {mp_label}; add the "
+            "per-point counters with scripts/add_genmodel_counts.py or re-run signal event selection.")
+    return float(v)
+
+
+def _warn_missing_genmodel_wte(name: str, gm_cols: List[str], wte_gm: Optional[Dict[str, float]]) -> None:
+    """Warn at load time when a multi-point signal lacks per-point counters. Loading is not an
+    error (background-only plots do not need the signal); _mp_total_events raises as soon as a
+    mass point's yield is actually computed, so a plotted signal is never mis-normalised."""
+    missing = [g for g in gm_cols if g not in (wte_gm or {})]
+    if missing:
+        logging.warning(
+            "%s: weighted_total_events_GenModel_* counter missing for %d of %d mass points (e.g. %s); "
+            "plotting this signal will fail. Add the counters with scripts/add_genmodel_counts.py or "
+            "re-run signal event selection.", name, len(missing), len(gm_cols), missing[0])
+
+
 def _histogram_and_sumw2(
     values: np.ndarray,
     bins: np.ndarray,
@@ -2013,6 +2062,7 @@ class PlotManager:
                             loaded = _load_region_pkl(p)
                             branches = loaded.get('region_histograms', {})
                             wte = float(loaded.get('metadata', {}).get('weighted_total_events', 0) or 0)
+                            wte_gm = dict(loaded.get('metadata', {}).get('weighted_total_events_per_genmodel') or {})
                         else:
                             import uproot as _uproot_sig
                             with _uproot_sig.open(str(p)) as f:
@@ -2032,12 +2082,15 @@ class PlotManager:
                                             break
                                         except Exception:
                                             pass
+                                wte_gm = read_weighted_total_events_per_genmodel(f)
                         gm_cols = sorted(k for k in branches if k.startswith('GenModel_')) if isinstance(branches, dict) else []
+                        _warn_missing_genmodel_wte(p.name, gm_cols, wte_gm)
                         _stem = p.stem.replace('_EVENTSELECTION', '')
                         xsec = _find_xsec(p.stem, cross_sections) or _find_xsec(_stem, cross_sections) or _find_xsec(p.name, cross_sections)
                         sig_file_entries.append({
                             'branches': branches,
                             'wte': wte,
+                            'wte_gm': wte_gm,
                             'xsec': xsec,
                             'genmodel_cols': gm_cols,
                             'file_label': sig_label,
@@ -2048,6 +2101,8 @@ class PlotManager:
                         else:
                             logging.info('[Signal:%s] loaded %s: wte=%.1f (single masspoint)',
                                        sig_label, p.name, wte)
+                    except MissingGenModelCounters:
+                        raise
                     except Exception as exc:
                         logging.warning('[Signal:%s] skipping %s: %s', sig_label, p.name, exc)
         logging.info('Signal files loaded: %d', len(sig_file_entries))
@@ -2063,9 +2118,17 @@ class PlotManager:
                     continue
                 try:
                     _sd = _load_region_pkl(_sp)
+                    _gm_pkl = sorted({k for _r in _sd.get('region_histograms', {}).values()
+                                      for k in _r.get('values', {}) if k.startswith('GenModel_')})
+                    _warn_missing_genmodel_wte(
+                        _sp.name, _gm_pkl,
+                        _sd.get('metadata', {}).get('weighted_total_events_per_genmodel'))
                     sig_pkl_entries.append({
                         'data': _sd,
-                        'wte': float(_sd.get('metadata', {}).get('weighted_total_events', 0) or 0)})
+                        'wte': float(_sd.get('metadata', {}).get('weighted_total_events', 0) or 0),
+                        'wte_gm': dict(_sd.get('metadata', {}).get('weighted_total_events_per_genmodel') or {})})
+                except MissingGenModelCounters:
+                    raise
                 except Exception as _sexc:
                     logging.warning('[Signal PKL:%s] skipping %s: %s', _sl, _sp.name, _sexc)
         logging.info('Signal PKL entries loaded: %d', len(sig_pkl_entries))
@@ -2094,8 +2157,9 @@ class PlotManager:
                         continue
                     _mp = _gk[len('GenModel_'):]
                     _xs = _find_xsec(_mp, cross_sections)
-                    _sc = ((luminosity * _xs * 1000.0) / _se['wte']
-                           if _xs is not None and _se['wte'] > 0 else 1.0)
+                    _mpw = _mp_total_events(_se['wte'], _se.get('wte_gm'), _mp)
+                    _sc = ((luminosity * _xs * 1000.0) / _mpw
+                           if _xs is not None and _mpw > 0 else 1.0)
                     _hv, _ = np.histogram(_clip_overflow(_vals[_ok], _bins), bins=_bins,
                                           weights=_wa[_m][_ok] * _sc)
                     _rows.append((_mp, _hv))
@@ -2394,8 +2458,9 @@ class PlotManager:
                                     continue
                                 _mp_label = _gmc[len('GenModel_'):]
                                 _mp_xsec = _find_xsec(_mp_label, cross_sections)
-                                _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _swte
-                                             if _mp_xsec is not None and _swte > 0
+                                _mpw = _mp_total_events(_swte, _sfe.get('wte_gm'), _mp_label)
+                                _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _mpw
+                                             if _mp_xsec is not None and _mpw > 0
                                              else _sscale_base)
                                 # Event weights (gen sign/size + SFs), same as the
                                 # systematic-variation histograms below, so the nominal
@@ -2550,8 +2615,9 @@ class PlotManager:
                             _w = np.asarray(_warr, dtype=float)[_m][_sel]
                             _mp = _gmc[len("GenModel_"):]
                             _mpx = _find_xsec(_mp, cross_sections)
-                            _sc = ((luminosity * _mpx * 1000.0) / _swte
-                                   if _mpx is not None and _swte > 0 else 1.0)
+                            _mpw = _mp_total_events(_swte, _sfe.get("wte_gm"), _mp)
+                            _sc = ((luminosity * _mpx * 1000.0) / _mpw
+                                   if _mpx is not None and _mpw > 0 else 1.0)
                             _hv, _ = np.histogram(_clip_overflow(_vals, _bins), bins=_bins, weights=_w * _sc)
                             _rows.append((f"sig_{_mp}", _hv))
                     return _rows
@@ -2698,8 +2764,9 @@ class PlotManager:
                                 continue
                             _mp_label = _gmc[len("GenModel_"):]
                             _mp_xsec = _find_xsec(_mp_label, cross_sections)
-                            _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _swte
-                                         if _mp_xsec is not None and _swte > 0
+                            _mpw = _mp_total_events(_swte, _sfe.get('wte_gm'), _mp_label)
+                            _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _mpw
+                                         if _mp_xsec is not None and _mpw > 0
                                          else _sscale_base)
                             _mp_weight = _sw_base * np.asarray(_gm_arr, dtype=bool) * _mp_scale
                             try:
@@ -3011,7 +3078,7 @@ class PlotManager:
                             branches.update(_score_tree_with_dnn(tree))
                         except Exception as _dnn_err:
                             logging.warning("DNN scoring failed for %s: %s", path.name, _dnn_err)
-                    return {"branches": branches, "wte": wte}
+                    return {"branches": branches, "wte": wte, "wte_gm": read_weighted_total_events_per_genmodel(f)}
             except Exception as exc:
                 logging.warning("Could not load %s: %s", path.name, exc)
                 return None
@@ -3027,12 +3094,14 @@ class PlotManager:
                     if isinstance(v, (np.ndarray, list)):
                         branches[k] = np.asarray(v)
                 wte = float(d.get("weighted_total_events", 0.0))
+                wte_gm = dict(d.get("weighted_total_events_per_genmodel")
+                              or d.get("metadata", {}).get("weighted_total_events_per_genmodel") or {})
                 if _dnn_inference is not None and branches:
                     logging.warning(
                         "DNN scoring requested but %s is a PKL file (no Events tree available "
                         "for alias/derived-feature resolution) — ml_score not added", path.name
                     )
-                return {"branches": branches, "wte": wte}
+                return {"branches": branches, "wte": wte, "wte_gm": wte_gm}
             except Exception as exc:
                 logging.warning("Could not load %s: %s", path.name, exc)
                 return None
@@ -3137,9 +3206,11 @@ class PlotManager:
                         gm_cols = []
                     _stem = p.stem.replace("_EVENTSELECTION", "")
                     xsec = _find_xsec(p.stem, cross_sections) or _find_xsec(_stem, cross_sections) or _find_xsec(p.name, cross_sections)
+                    _warn_missing_genmodel_wte(p.name, gm_cols, loaded.get("wte_gm"))
                     sig_file_entries.append({
                         "branches": loaded["branches"],
                         "wte": loaded["wte"],
+                        "wte_gm": loaded.get("wte_gm") or {},
                         "xsec": xsec,
                         "genmodel_cols": gm_cols,
                         "file_label": sig_label,
@@ -3457,8 +3528,9 @@ class PlotManager:
                                 # xsec lookup by masspoint label (strip GenModel_ prefix)
                                 _mp_label = _gmc[len("GenModel_"):]
                                 _mp_xsec = _find_xsec(_mp_label, cross_sections)
-                                _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _swte
-                                             if _mp_xsec is not None and _swte > 0
+                                _mpw = _mp_total_events(_swte, _sfe.get('wte_gm'), _mp_label)
+                                _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _mpw
+                                             if _mp_xsec is not None and _mpw > 0
                                              else _sscale_base)
                                 _sw = np.ones(_svals.size, dtype=float)
                                 _sw_arr = _sbr.get(weight_branch)
@@ -3649,8 +3721,9 @@ class PlotManager:
 
                                 _mp_label = _gmc[len("GenModel_"):]
                                 _mp_xsec = _find_xsec(_mp_label, cross_sections)
-                                _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _swte
-                                             if _mp_xsec is not None and _swte > 0 else 1.0)
+                                _mpw = _mp_total_events(_swte, _sfe.get('wte_gm'), _mp_label)
+                                _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _mpw
+                                             if _mp_xsec is not None and _mpw > 0 else 1.0)
 
                                 _w_branch = weight_override_branch or "full_event_weight"
                                 _sw_arr = _sbr.get(_w_branch)
@@ -3840,8 +3913,9 @@ class PlotManager:
                                 continue
                             _mp_label = _gmc[len("GenModel_"):]
                             _mp_xsec = _find_xsec(_mp_label, cross_sections)
-                            _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _swte
-                                         if _mp_xsec is not None and _swte > 0
+                            _mpw = _mp_total_events(_swte, _sfe.get('wte_gm'), _mp_label)
+                            _mp_scale = ((luminosity * _mp_xsec * 1000.0) / _mpw
+                                         if _mp_xsec is not None and _mpw > 0
                                          else _sscale_base)
                             _mp_weight = _sw_base * np.asarray(_gm_arr, dtype=bool) * _mp_scale
                             try:

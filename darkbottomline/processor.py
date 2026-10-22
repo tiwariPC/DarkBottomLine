@@ -235,6 +235,10 @@ class DarkBottomLineProcessor:
         # weighted_total_events: sum of sign(genWeight) over ALL events before any selection
         weighted_total_events = self.correction_manager.get_weighted_total_events(events)
         print(f"  weighted_total_events (normalization): {weighted_total_events}")
+        # Multi-point signal samples: the same sum per GenModel_<point> flag (empty otherwise)
+        weighted_total_events_per_genmodel = self.correction_manager.get_weighted_total_events_per_genmodel(events)
+        if weighted_total_events_per_genmodel:
+            print(f"  weighted_total_events per GenModel: {len(weighted_total_events_per_genmodel)} mass points")
 
         # Build physics objects
         print("Step 1: Building physics objects...")
@@ -265,6 +269,7 @@ class DarkBottomLineProcessor:
                                             max_events=self.config.get("max_events"),
                                             total_events=len(events),
                                             weighted_total_events=weighted_total_events,
+                                            weighted_total_events_per_genmodel=weighted_total_events_per_genmodel,
                                             cutflow=cutflow)
                 # Verify file was created
                 import os
@@ -328,6 +333,7 @@ class DarkBottomLineProcessor:
             "n_events_processed": len(events),
             "n_events_selected": len(selected_events),
             "weighted_total_events": weighted_total_events,
+            "weighted_total_events_per_genmodel": weighted_total_events_per_genmodel,
             "processing_time": processing_time,
             "weight_statistics": _compute_weight_statistics(event_weights),
         }
@@ -386,6 +392,7 @@ class DarkBottomLineProcessor:
     def _save_event_selection(self, output_file: str, events: ak.Array, objects: Dict[str, Any],
                               max_events: Optional[int] = None, total_events: Optional[int] = None,
                               weighted_total_events: Optional[float] = None,
+                              weighted_total_events_per_genmodel: Optional[Dict[str, float]] = None,
                               event_weights: Optional[Dict[str, Any]] = None,
                               cutflow: Optional[Dict[str, int]] = None,
                               output_format: str = "pkl"):
@@ -453,6 +460,8 @@ class DarkBottomLineProcessor:
             serializable["selected_events"] = 0 if no_events else len(events)
             if weighted_total_events is not None:
                 serializable["weighted_total_events"] = weighted_total_events
+            if weighted_total_events_per_genmodel:
+                serializable["weighted_total_events_per_genmodel"] = dict(weighted_total_events_per_genmodel)
 
             if not no_events:
                 try:
@@ -581,6 +590,9 @@ class DarkBottomLineProcessor:
                     f['total_events']             = (np.array([float(total_events) if total_events is not None else 0.0]), edges_1bin)
                     f['selected_events'] = (np.array([selected_events]),                                     edges_1bin)
                     f['weighted_total_events']    = (np.array([float(weighted_total_events) if weighted_total_events is not None else 0.0]), edges_1bin)
+                    # Per-mass-point generated weighted events (multi-point signal): hadd-summable TH1s
+                    for _gm, _gv in (weighted_total_events_per_genmodel or {}).items():
+                        f[f'weighted_total_events_{_gm}'] = (np.array([float(_gv)]), edges_1bin)
                     logging.info(f"Saved Metadata histograms: total_events={total_events}, selected_events={selected_events:.2f}, weighted_total_events={weighted_total_events}")
 
                     # Labeled TH1 cutflow — bin labels = cut names, hadd sums correctly

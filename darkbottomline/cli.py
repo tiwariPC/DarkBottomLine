@@ -478,6 +478,27 @@ def _read_weighted_total_events(f) -> float:
     return 0.0
 
 
+GENMODEL_WTE_PREFIX = "weighted_total_events_"
+
+
+def _read_weighted_total_events_per_genmodel(f) -> Dict[str, float]:
+    """{"GenModel_<point>": generated weighted events} from the weighted_total_events_GenModel_*
+    TH1s of a multi-point signal EVENTSELECTION.root; empty if the file has none."""
+    out: Dict[str, float] = {}
+    try:
+        keys = list(f.keys())
+    except Exception:
+        return out
+    for key in keys:
+        name = str(key).split(";")[0]
+        if name.startswith(GENMODEL_WTE_PREFIX + "GenModel_"):
+            try:
+                out[name[len(GENMODEL_WTE_PREFIX):]] = float(f[key].values()[0])
+            except Exception:
+                pass
+    return out
+
+
 def _concat_optional(parts: list):
     """Concatenate numpy/awkward parts; None if there are none or any part is None."""
     import awkward as ak
@@ -562,6 +583,7 @@ def process_eventselection_file(
             return None
         wte = _read_weighted_total_events(f)
         wte = wte if wte > 0 else 1.0
+        wte_gm = _read_weighted_total_events_per_genmodel(f)
         tree = f["Events"]
         if tree.num_entries == 0:
             chunks = iter([tree.arrays(library="np")])
@@ -671,6 +693,9 @@ def process_eventselection_file(
 
     meta = total["metadata"]
     meta["weighted_total_events"] = float(wte)  # file-level, NOT summed over chunks
+    if wte_gm:
+        # per mass point: a multi-point signal file's weighted_total_events covers all points
+        meta["weighted_total_events_per_genmodel"] = wte_gm
     meta["xsec"] = xsec
     meta["sample"] = stem
     logging.info("%s: %d events in %d chunk(s)", stem, n_total, n_chunks)
@@ -879,6 +904,11 @@ def _merge_region_results(a: Dict, b: Dict) -> Dict:
     wte_a = merged.get("metadata", {}).get("weighted_total_events", 0.0)
     wte_b = b.get("metadata", {}).get("weighted_total_events", 0.0)
     merged.setdefault("metadata", {})["weighted_total_events"] = wte_a + wte_b
+    gm_a = merged["metadata"].get("weighted_total_events_per_genmodel") or {}
+    gm_b = b.get("metadata", {}).get("weighted_total_events_per_genmodel") or {}
+    if gm_a or gm_b:
+        merged["metadata"]["weighted_total_events_per_genmodel"] = {
+            k: gm_a.get(k, 0.0) + gm_b.get(k, 0.0) for k in set(gm_a) | set(gm_b)}
     return merged
 
 
@@ -1630,6 +1660,7 @@ def _load_one_eventsel_file(task: tuple):
                             break
                         except Exception:
                             pass
+            wte_gm = _read_weighted_total_events_per_genmodel(in_f)
 
             if sig_flag and signal_cross_sections:
                 gm_cols = sorted(k for k in avail if str(k).startswith("GenModel_"))
@@ -1644,7 +1675,14 @@ def _load_one_eventsel_file(task: tuple):
                             mp_label = gmc[len("GenModel_"):]
                             mp_xsec = _find_xsec(mp_label, signal_cross_sections)
                             if mp_xsec is not None:
-                                mp_scale[mask] = (lumi * mp_xsec * 1000.0) / wte
+                                # each mass point to its own generated events (a multi-point file's
+                                # weighted_total_events covers all points, so there is no fallback)
+                                mp_wte = wte_gm.get(gmc, 0.0)
+                                if mp_wte <= 0:
+                                    raise ValueError(
+                                        f"{Path(fpath).name}: no weighted_total_events_{gmc}; add the "
+                                        "per-point counters with scripts/add_genmodel_counts.py")
+                                mp_scale[mask] = (lumi * mp_xsec * 1000.0) / mp_wte
                         w_arr = w_arr[:n] * mp_scale
                     else:
                         logging.warning(

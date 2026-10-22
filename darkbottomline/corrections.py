@@ -1428,6 +1428,36 @@ class CorrectionManager:
         except Exception:
             return float(len(events))
 
+    def get_weighted_total_events_per_genmodel(self, events: ak.Array) -> Dict[str, float]:
+        """
+        Per-mass-point version of get_weighted_total_events for multi-point signal samples.
+
+        Returns {"GenModel_<point>": sum of sign(genWeight) over the events whose GenModel_<point>
+        flag is set}, counted over all input events before any selection. Empty for data and for
+        samples without GenModel_* branches. The keys are the full GenModel branch names; they
+        are stored as "weighted_total_events_<key>" in the event-selection output so each mass
+        point can be normalised to its own generated events (a multi-point file's
+        weighted_total_events covers all points).
+        """
+        if self.config.get("data", {}).get("is_data", False):
+            return {}
+        try:
+            fields = [f for f in events.fields if str(f).startswith("GenModel_")]
+            if not fields:
+                return {}
+            try:
+                sign = np.sign(np.asarray(ak.to_numpy(events.genWeight), dtype=float))
+            except Exception:
+                sign = np.ones(len(events), dtype=float)
+            out: Dict[str, float] = {}
+            for f in fields:
+                flag = np.asarray(ak.to_numpy(events[f])).astype(bool)
+                out[str(f)] = float(np.sum(sign[flag]))
+            return out
+        except Exception as exc:
+            logging.warning("Per-GenModel weighted_total_events not computed: %s", exc)
+            return {}
+
     def get_pdf_scale_weights(self, events: ak.Array) -> Dict[str, np.ndarray]:
         """
         PDF (envelope) and QCD scale (7-point) weights from LHEPdfWeight / LHEScaleWeight.

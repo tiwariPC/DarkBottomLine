@@ -76,6 +76,20 @@ def _read_wte(f: uproot.ReadOnlyFile) -> float:
     return 0.0
 
 
+def _read_wte_per_genmodel(f: uproot.ReadOnlyFile) -> dict[str, float]:
+    """{"GenModel_<point>": generated weighted events} from weighted_total_events_GenModel_* TH1s."""
+    out: dict[str, float] = {}
+    prefix = "weighted_total_events_GenModel_"
+    for key in f.keys():
+        name = str(key).split(";")[0]
+        if name.startswith(prefix):
+            try:
+                out["GenModel_" + name[len(prefix):]] = float(f[key].values()[0])
+            except Exception:
+                pass
+    return out
+
+
 def _load_signal_cross_sections(path: str | None) -> dict[str, float]:
     if not path:
         return {}
@@ -182,6 +196,7 @@ def _load_file(
                     flags = {k: v[:common] for k, v in flags.items()}
 
         wte = _read_wte(f)
+        wte_gm = _read_wte_per_genmodel(f)
 
     return {
         "path": path,
@@ -191,6 +206,7 @@ def _load_file(
         "w": w,
         "flags": flags,
         "wte": wte,
+        "wte_gm": wte_gm,
     }
 
 
@@ -350,7 +366,12 @@ def main() -> int:
             xsec = signal_xsec.get(label)
             if xsec is None:
                 continue
-            s = (lumi * xsec * 1000.0) / wte if wte > 0 else 1.0
+            # per mass point: a multi-point file's wte covers every point
+            mp_wte = p["wte_gm"].get("GenModel_" + label, 0.0)
+            if mp_wte <= 0:
+                raise ValueError(f"{p['path']}: no weighted_total_events_GenModel_{label}; "
+                                 "add it with scripts/add_genmodel_counts.py")
+            s = (lumi * xsec * 1000.0) / mp_wte
             m = flag[:n]
             sig_scale[idx[m]] = s
         offset += n

@@ -348,6 +348,8 @@ class DarkBottomLineAnalyzer:
 
         # Compute weighted_total_events from raw events before any selection
         weighted_total_events = self.base_processor.correction_manager.get_weighted_total_events(events)
+        weighted_total_events_per_genmodel = (
+            self.base_processor.correction_manager.get_weighted_total_events_per_genmodel(events))
 
         # Build physics objects
         logging.info("Building physics objects...")
@@ -409,6 +411,7 @@ class DarkBottomLineAnalyzer:
                     max_events=self.base_processor.config.get("max_events"),
                     total_events=total_events,
                     weighted_total_events=weighted_total_events,
+                    weighted_total_events_per_genmodel=weighted_total_events_per_genmodel,
                     event_weights=event_weights_save,
                     cutflow=cutflow,
                     output_format=output_format
@@ -1133,6 +1136,7 @@ if COFFEA_AVAILABLE:
             self.total_events = total_events
             self.input_total_events = input_total_events
             self.weighted_total_events = None
+            self.weighted_total_events_per_genmodel = {}
             self.event_selection_only = event_selection_only
             self.max_events = max_events
             self.processed_events = 0
@@ -1224,13 +1228,19 @@ if COFFEA_AVAILABLE:
             # not share self.weighted_total_events with the main process).
             chunk_h = self.analyzer.base_processor.correction_manager.get_weighted_total_events(events_to_process)
             self.weighted_total_events = (self.weighted_total_events or 0.0) + chunk_h
+            chunk_gm = self.analyzer.base_processor.correction_manager.get_weighted_total_events_per_genmodel(
+                events_to_process)
+            for _gm, _gv in chunk_gm.items():
+                self.weighted_total_events_per_genmodel[_gm] = self.weighted_total_events_per_genmodel.get(_gm, 0.0) + _gv
             if self._temp_dir:
                 import os, pickle, time, uuid
                 _wte_id = f"{int(time.time() * 1000000)}_{uuid.uuid4().hex[:8]}"
                 _wte_file = os.path.join(self._temp_dir, f"wte_chunk_{_wte_id}.pkl")
                 try:
                     with open(_wte_file, "wb") as _f:
-                        pickle.dump({"weighted_total_events": float(chunk_h)}, _f, protocol=pickle.HIGHEST_PROTOCOL)
+                        pickle.dump({"weighted_total_events": float(chunk_h),
+                                     "weighted_total_events_per_genmodel": {k: float(v) for k, v in chunk_gm.items()}},
+                                    _f, protocol=pickle.HIGHEST_PROTOCOL)
                 except Exception as _e:
                     logging.warning(f"Failed to persist wte chunk: {_e}")
 
@@ -1638,14 +1648,19 @@ if COFFEA_AVAILABLE:
                 ]
                 if wte_files:
                     _wte_total = 0.0
+                    _gm_total: Dict[str, float] = {}
                     for _wf in wte_files:
                         try:
                             with open(_wf, "rb") as _f:
-                                _wte_total += float(pickle.load(_f).get("weighted_total_events", 0.0))
+                                _wd = pickle.load(_f)
+                                _wte_total += float(_wd.get("weighted_total_events", 0.0))
+                                for _gm, _gv in (_wd.get("weighted_total_events_per_genmodel") or {}).items():
+                                    _gm_total[_gm] = _gm_total.get(_gm, 0.0) + float(_gv)
                             os.remove(_wf)
                         except Exception as _e:
                             logging.warning(f"Failed to load wte chunk {_wf}: {_e}")
                     self.weighted_total_events = _wte_total
+                    self.weighted_total_events_per_genmodel = _gm_total
                     logging.info(f"Summed weighted_total_events from {len(wte_files)} worker files: {_wte_total}")
 
             # ── Merge region analysis results from per-chunk temp files ───────
@@ -1812,6 +1827,7 @@ if COFFEA_AVAILABLE:
                         flat_branches,
                         total_events=self.total_events,
                         weighted_total_events=self.weighted_total_events,
+                        weighted_total_events_per_genmodel=self.weighted_total_events_per_genmodel,
                         n_selected=total_selected,
                         cutflow=merged_cutflow if merged_cutflow else None,
                     )
@@ -1868,6 +1884,7 @@ if COFFEA_AVAILABLE:
             weighted_total_events: Optional[float],
             n_selected: int,
             cutflow: Optional[Dict[str, int]],
+            weighted_total_events_per_genmodel: Optional[Dict[str, float]] = None,
         ) -> None:
             """Write flat numpy branch arrays directly to a ROOT file.
 
@@ -1894,6 +1911,10 @@ if COFFEA_AVAILABLE:
                     np.array([float(weighted_total_events if weighted_total_events is not None else 0.0)]),
                     edges_1bin,
                 )
+                # Per-mass-point generated weighted events (multi-point signal): hadd-summable TH1s,
+                # named weighted_total_events_<full GenModel_... branch name>
+                for _gm, _gv in (weighted_total_events_per_genmodel or {}).items():
+                    f[f"weighted_total_events_{_gm}"] = (np.array([float(_gv)]), edges_1bin)
                 # selected_events = sum of full_event_weight (matches iterative path)
                 _ew = branches.get("full_event_weight")
                 if _ew is not None and len(_ew) > 0:
