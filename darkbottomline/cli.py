@@ -2654,7 +2654,11 @@ def normalize_pdf(args):
     syst_suffixes = [syst["syst_suffix"] for syst in shape_systs.values()]
     # Matched by suffix, not by the yaml key (the key is "pdf_envelope"; looking up "pdf" found
     # nothing, so the pdf variants were never rescaled to preserve the central integral).
-    pdf_syst_suffix = "weight_pdf" if "weight_pdf" in syst_suffixes else None
+    # Shape-only systematics (Up/Down rescaled to the nominal integral): the PDF envelope and the QCD
+    # scale variation are meant as pure shape effects; every other weight systematic keeps its
+    # rate effect as well. Configurable: combine.yaml `shape_only_suffixes`.
+    pdf_syst_suffix = [s for s in combine_config.get("shape_only_suffixes", ["weight_pdf", "weight_scale"])
+                       if s in syst_suffixes]
 
     for category in categories:
         variable = fit_variable_map[category]
@@ -2884,6 +2888,7 @@ def run_all(args):
 
     if any(s in stages for s in ("gof", "impacts", "pulls", "limit")):
         writer = CombineDatacardWriter(combine_config)
+        failed_limit_points: List[str] = []
         for mass_point in mass_points:
             card_dir = Path(current_card_dir) / mass_point
             if not card_dir.is_dir():
@@ -2928,8 +2933,18 @@ def run_all(args):
                                       mode=pulls_mode, year=era_label, mass_point=mass_point,
                                       category=merged_category_label)
             if "limit" in stages:
-                runner.run_asymptotic_limits(workspace_file, str(card_dir), blind=blind)
+                # One mass point without a valid limit must not abort the other points: record it and carry
+                # on; collect_limits skips points without a result.
+                try:
+                    runner.run_asymptotic_limits(workspace_file, str(card_dir), blind=blind)
+                except RuntimeError as exc:
+                    logging.error(f"No limit for {mass_point}: {exc}")
+                    failed_limit_points.append(mass_point)
 
+        if failed_limit_points:
+            logging.error(
+                f"{len(failed_limit_points)} mass point(s) without a valid limit (left out of the summary): "
+                + ", ".join(failed_limit_points))
         if "limit" in stages:
             # Aggregate every mass point's AsymptoticLimits result into one
             # combined summary table (Run2's limits_bbDM_C_2018.txt/.root

@@ -539,9 +539,9 @@ class TestCombineDatacardWriter:
             mass_point="MH3_600_MH4_150_Mchi_1", blind=True, year="2024",
         )
         content = Path(datacard_file).read_text()
-        assert "zjets_1b_Zmumu rateParam" in content
-        assert "zjets_1b_Zee rateParam" in content
-        assert "zjets_1b_Zll rateParam" not in content
+        assert "zjets_1b_Zmumu_2024 rateParam" in content
+        assert "zjets_1b_Zee_2024 rateParam" in content
+        assert "zjets_1b_Zll_2024 rateParam" not in content
 
     def test_sr_rateparam_merged_gets_one_merged_entry(
             self, minimal_combine_config, region_root_dir, tmp_path):
@@ -556,9 +556,9 @@ class TestCombineDatacardWriter:
             mass_point="MH3_600_MH4_150_Mchi_1", blind=True, year="2024",
         )
         content = Path(datacard_file).read_text()
-        assert "zjets_1b_Zll rateParam" in content
-        assert "zjets_1b_Zmumu rateParam" not in content
-        assert "zjets_1b_Zee rateParam" not in content
+        assert "zjets_1b_Zll_2024 rateParam" in content
+        assert "zjets_1b_Zmumu_2024 rateParam" not in content
+        assert "zjets_1b_Zee_2024 rateParam" not in content
 
     def test_cr_rateparam_merged_substitutes_merged_name(
             self, minimal_combine_config, region_root_dir, tmp_path):
@@ -576,8 +576,8 @@ class TestCombineDatacardWriter:
             blind=False, year="2024",
         )
         content = Path(datacard_file).read_text()
-        assert "zjets_1b_Zll rateParam" in content
-        assert "zjets_1b_Zmumu rateParam" not in content
+        assert "zjets_1b_Zll_2024 rateParam" in content
+        assert "zjets_1b_Zmumu_2024 rateParam" not in content
 
     def test_write_datacard_shape_systematic_present_when_files_exist(
             self, minimal_combine_config, region_root_dir, tmp_path):
@@ -695,9 +695,9 @@ class TestCombineDatacardWriter:
         )
         content = Path(datacard_file).read_text()
         # region_root_dir fixture's Zmumu histogram has 3 bins.
-        assert "zjets_1b_Zll_bin1 rateParam Zmumu_bin1" in content
-        assert "zjets_1b_Zll_bin2 rateParam Zmumu_bin2" in content
-        assert "zjets_1b_Zll_bin3 rateParam Zmumu_bin3" in content
+        assert "zjets_1b_Zll_2024_bin1 rateParam Zmumu_bin1" in content
+        assert "zjets_1b_Zll_2024_bin2 rateParam Zmumu_bin2" in content
+        assert "zjets_1b_Zll_2024_bin3 rateParam Zmumu_bin3" in content
 
     def test_write_datacard_zcr_excludes_btagsf(self, minimal_combine_config, region_root_dir, tmp_path):
         """Z CR has no b-tag cut — btagSF row must show '-' for every process
@@ -1472,15 +1472,16 @@ class TestCombineRunner:
                 assert "/" not in o_value, f"-o value should be a basename, got {o_value}"
 
     def test_real_combine_yaml_asymptotic_limits_rmax_wide_enough(self):
-        """The limit command takes --rMax from fit.options.asymptotic_limits.r_max_ladder: no single
-        fixed value works (combine returns no quantiles when rMax is far above the limit and cuts
-        the upper bands off when it is too small), so the ladder must reach the least sensitive
-        mass points (r up to ~500 on the 29-point grid) and start small enough for r ~ 0.1."""
+        """The limit is the plain Run 2 command (Combine's default r range); only if that result is not valid is
+        --rMax taken from fit.options.asymptotic_limits.r_max_ladder, which must reach the least sensitive mass
+        points (r up to a few hundred on the 29-point grid)."""
         real_config = yaml.safe_load((REPO_ROOT / "configs" / "combine.yaml").read_text())
         args = real_config["advanced"]["commands"]["AsymptoticLimits"]["steps"][0]["args"]
-        assert "--rMax={rmax}" in args
+        assert "{rmax_arg}" in args and not any(a.startswith(("--rMin", "--rMax", "--cmin")) for a in args)
+        # the single deviation from the plain Run 2 command (analytic BB profiling leaves its nuisance range)
+        assert args[args.index("--X-rtd") + 1] == "MINIMIZER_no_analytic"
         ladder = real_config["fit"]["options"]["asymptotic_limits"]["r_max_ladder"]
-        assert ladder == sorted(ladder) and ladder[0] <= 10 and ladder[-1] >= 1000
+        assert ladder[0] is None and ladder[1:] == sorted(ladder[1:]) and ladder[-1] >= 1000
 
     def test_run_missing_binary_raises_clear_error(self, minimal_combine_config, tmp_path):
         runner = CombineRunner(minimal_combine_config)
@@ -1634,6 +1635,7 @@ class TestSrRateParamProcess:
     def _lines(self, cfg, **kw):
         writer = CombineDatacardWriter(cfg)
         lines = []
+        kw.setdefault("year", "2024")
         writer._write_rate_params_block(lines, kw.pop("bin_name"), kw.pop("region_key"), **kw)
         return [l for l in lines if "rateParam" in l]
 
@@ -1645,8 +1647,8 @@ class TestSrRateParamProcess:
         cr = self._lines(cfg, bin_name="cat_1b_Zll_bin2", region_key="1b:CR_Zmumu", bin_index=2,
                          category="1b", is_sr=False)
         # merged e/mu: one parameter per bin, shared by SR bin 2 and Z CR bin 2
-        assert len(sr) == 1 and sr[0].startswith("zjets_1b_Zll_bin2 rateParam cat_1b_SR_bin2 znunu ")
-        assert len(cr) == 1 and cr[0].startswith("zjets_1b_Zll_bin2 rateParam cat_1b_Zll_bin2 zjets ")
+        assert len(sr) == 1 and sr[0].startswith("zjets_1b_Zll_2024_bin2 rateParam cat_1b_SR_bin2 znunu ")
+        assert len(cr) == 1 and cr[0].startswith("zjets_1b_Zll_2024_bin2 rateParam cat_1b_Zll_bin2 zjets ")
 
     def test_unmerged_sr_gets_both_channel_parameters_on_the_named_process(self, minimal_combine_config):
         cfg = minimal_combine_config
@@ -1654,7 +1656,7 @@ class TestSrRateParamProcess:
         cfg["datacard"]["sr_rate_parameters"]["1b"][0]["process"] = "znunu"
         sr = self._lines(cfg, bin_name="cat_1b_SR_bin1", region_key="1b:SR", bin_index=1,
                          category="1b", is_sr=True)
-        assert sorted(l.split()[0] for l in sr) == ["zjets_1b_Zee_bin1", "zjets_1b_Zmumu_bin1"]
+        assert sorted(l.split()[0] for l in sr) == ["zjets_1b_Zee_2024_bin1", "zjets_1b_Zmumu_2024_bin1"]
         assert all(l.split()[3] == "znunu" for l in sr)
 
 
@@ -1680,4 +1682,119 @@ class TestBtagNuisances:
         for key in ("1b:CR_Zmumu", "2b:CR_Zee"):                          # no b-tag cut: fake-b only
             assert not systematic_applies_to_region(regions, key, systs["btag_true"].get("gated_by_cut"))
             assert systematic_applies_to_region(regions, key, systs["btag_mistag"].get("gated_by_cut"))
+
+
+class TestMcStat:
+    """Per-bin sum of squared weights (MC statistics) is carried to the shapes; autoMCStats is optional."""
+
+    EDGES = np.array([0.0, 1.0, 2.0, 4.0])
+
+    def test_hist_round_trip_and_sumw2_detection(self, tmp_path):
+        from darkbottomline.combine_inputs import read_hist, write_hist
+        p = tmp_path / "h.root"
+        with uproot.recreate(str(p)) as f:
+            write_hist(f, "w", [10.0, 20.0, 5.0], self.EDGES, [4.0, 9.0, 2.0])
+            write_hist(f, "plain", [10.0, 20.0, 5.0], self.EDGES)
+        with uproot.open(str(p)) as f:
+            v, e, var = read_hist(f, "w")
+            assert list(v) == [10.0, 20.0, 5.0] and list(var) == [4.0, 9.0, 2.0] and list(e) == list(self.EDGES)
+            # a histogram without Sumw2 must not pass its content off as variances
+            assert read_hist(f, "plain")[2] is None
+
+    def test_emu_merge_adds_variances_and_drops_them_if_one_side_has_none(self, tmp_path):
+        from darkbottomline.combine_inputs import _merge_two_histogram_files, read_hist, write_hist
+        mu, el, out = tmp_path / "mu.root", tmp_path / "e.root", tmp_path / "m.root"
+        with uproot.recreate(str(mu)) as f:
+            write_hist(f, "a", [1.0, 2.0, 3.0], self.EDGES, [1.0, 4.0, 9.0])
+            write_hist(f, "b", [1.0, 2.0, 3.0], self.EDGES, [1.0, 4.0, 9.0])
+        with uproot.recreate(str(el)) as f:
+            write_hist(f, "a", [10.0, 20.0, 30.0], self.EDGES, [10.0, 40.0, 90.0])
+            write_hist(f, "b", [10.0, 20.0, 30.0], self.EDGES)       # no Sumw2
+        _merge_two_histogram_files(mu, el, out)
+        with uproot.open(str(out)) as f:
+            va, _, vara = read_hist(f, "a")
+            assert list(va) == [11.0, 22.0, 33.0] and list(vara) == [11.0, 44.0, 99.0]
+            assert read_hist(f, "b")[2] is None
+
+    def test_card_line(self, minimal_combine_config):
+        cfg = minimal_combine_config
+        writer = CombineDatacardWriter(cfg)
+        assert writer._mc_stat_line() is None and not writer._mc_stat_enabled()
+        cfg["datacard"]["mc_stat"] = {"enabled": True, "threshold": 0, "include_signal": False}
+        assert writer._mc_stat_line() == "* autoMCStats 0 0 1"
+        cfg["datacard"]["mc_stat"]["include_signal"] = True
+        assert writer._mc_stat_line() == "* autoMCStats 0 1 1"
+
+
+class TestShapeOnlyNormalisation:
+    """weight_pdf and weight_scale Up/Down are rescaled to the nominal integral; other systematics are not."""
+
+    def test_pdf_and_scale_rescaled_pileup_untouched(self, tmp_path):
+        from darkbottomline.combine_inputs import (normalize_pdf_histograms, read_hist, region_hist_path,
+                                                   region_syst_hist_path, write_hist)
+        edges = np.array([250.0, 300.0, 400.0, 550.0, 1000.0])
+        nom = np.array([100.0, 50.0, 20.0, 10.0])
+        src, dst = tmp_path / "in", tmp_path / "out"
+        src.mkdir(); dst.mkdir()
+        with uproot.recreate(str(region_hist_path(str(src), "1b", "SR", "Recoil"))) as f:
+            write_hist(f, "wjets", nom, edges)
+        variants = {"weight_pdf": 1.10, "weight_scale": 1.20, "weight_pileup": 1.05}
+        for suffix, scale in variants.items():
+            for direction in ("UP", "DOWN"):
+                with uproot.recreate(str(region_syst_hist_path(str(src), "1b", "SR", "Recoil", suffix, direction))) as f:
+                    write_hist(f, "wjets", nom * np.array([scale, 1.0, 1.0, 1.0]), edges)
+        normalize_pdf_histograms(str(src), str(dst), "1b", "SR", "Recoil", syst_suffixes=list(variants),
+                                 pdf_syst_suffix=["weight_pdf", "weight_scale"])
+        integral = {}
+        for suffix in variants:
+            with uproot.open(str(region_syst_hist_path(str(dst), "1b", "SR", "Recoil", suffix, "UP"))) as f:
+                integral[suffix] = float(read_hist(f, "wjets")[0].sum())
+        assert integral["weight_pdf"] == pytest.approx(nom.sum())
+        assert integral["weight_scale"] == pytest.approx(nom.sum())
+        assert integral["weight_pileup"] == pytest.approx((nom * np.array([1.05, 1, 1, 1])).sum())
+
+
+class TestRun2Treatment:
+    """Run 2's handling of the CR-normalised backgrounds and its commands, read from the real combine.yaml."""
+
+    @pytest.fixture(scope="class")
+    def cfg(self):
+        return yaml.safe_load((REPO_ROOT / "configs" / "combine.yaml").read_text())
+
+    def test_sr_data_driven_processes_drop_experimental_nuisances(self, cfg):
+        w = CombineDatacardWriter(cfg)
+        # 1b: wjets and zjets are normalised from the CRs; 2b: ttbar and zjets
+        assert w._sr_data_driven_dropped("1b:SR", "pileup") == {"wjets", "zjets"}
+        assert w._sr_data_driven_dropped("2b:SR", "pileup") == {"ttbar", "zjets"}
+        # zjets keeps the PDF, the (shared) QCD scale and the DY normalisation; W and ttbar keep none
+        for kept in ("pdf_envelope", "qcdscale_dyjets", "norm_dyjets"):
+            assert "zjets" not in w._sr_data_driven_dropped("1b:SR", kept)
+        assert "wjets" in w._sr_data_driven_dropped("1b:SR", "pdf_envelope")
+        assert "ttbar" in w._sr_data_driven_dropped("2b:SR", "pdf_envelope")
+        # control regions: every nuisance applies to every process
+        assert w._sr_data_driven_dropped("1b:CR_Wmunu", "pileup") == set()
+        assert w._sr_data_driven_dropped("2b:CR_Zee", "pileup") == set()
+        cfg2 = yaml.safe_load(yaml.safe_dump(cfg))
+        cfg2["datacard"]["sr_data_driven_nuisances"]["enabled"] = False
+        assert CombineDatacardWriter(cfg2)._sr_data_driven_dropped("1b:SR", "pileup") == set()
+
+    def test_one_qcd_scale_nuisance_for_both_z_processes(self, cfg):
+        systs = cfg["datacard"]["systematics"]
+        assert systs["qcdscale_dyjets"]["processes"] == ["dyjets", "zjets"]
+        assert "qcdscale_zjets" not in systs
+
+    def test_rateparam_ranges_are_run2(self, cfg):
+        assert all(r["range"] == [0.05, 1.95] for r in cfg["datacard"]["rate_parameters"].values())
+
+    def test_pulls_and_impacts_follow_run2_scripts(self, cfg):
+        cmds = cfg["advanced"]["commands"]
+        assert cmds["general_args"] == []
+        for mode in ("PullsCRonly", "PullsAsimovT0", "PullsSbT0", "PullsSbT1"):
+            args = cmds[mode]["steps"][0]["args"]
+            assert args[args.index("--cminDefaultMinimizerStrategy") + 1] == "0"
+        crargs = cmds["PullsCRonly"]["steps"][0]["args"]
+        assert "MINIMIZER_analytic" in crargs and "Minuit2,0:1.0" in crargs
+        for step in cmds["Impacts"]["steps"][:2]:
+            a = step["args"]
+            assert "--robustFit" in a and a[a.index("--rMin") + 1] == "-10" and a[a.index("-m") + 1] == "125"
 

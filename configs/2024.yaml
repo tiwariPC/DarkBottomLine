@@ -1,5 +1,6 @@
 year: 2024
-lumi: 109.82   # To be updated with actual 2024 luminosity
+lumi: 109.82
+lumi_uncertainty: 1.016   # 1.6% (read by the Combine datacard's lumi_13p6TeV_2024 lnN)
 
 # Correction file paths (user must provide actual files)
 corrections:

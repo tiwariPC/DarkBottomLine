@@ -75,6 +75,11 @@ combine_emu: true
 # when this is false, same pattern as merge-emu's combine_emu gate.
 pdf_normalize: true
 
+# Systematics whose Up/Down are rescaled to the nominal integral per process and region (pure shape
+# effect, applied by the normalize-pdf step when pdf_normalize is on). Every other shape systematic
+# in the cards (pileup, b-tag, lepton/trigger SFs, JEC, ...) keeps its rate effect as well.
+shape_only_suffixes: ["weight_pdf", "weight_scale"]
+
 # perBinChannel: independent rateParam per bin/channel — NOT merged into one shared
 # CR->SR transfer factor even when combine_emu: true. Each e-channel and mu-channel
 # CR gets its own rateParam entry.
@@ -136,6 +141,15 @@ datacard:
   data:
     name: "data_obs"
 
+  # MC statistical uncertainty of the background templates (Barlow-Beeston-lite autoMCStats, one
+  # line for every channel). Needs the sum of squared weights in the region ROOT files; signal is
+  # left out unless include_signal is set. threshold = effective number of MC events below which a
+  # bin gets a nuisance (0 would give every bin one); 90 as in the Run 2 cards.
+  mc_stat:
+    enabled: true
+    threshold: 90
+    include_signal: false
+
   systematics:
     # lumi is per-era by construction (uncorrelated across years, like Run2's
     # lumi_13TeV_2016/2017/2018 convention) so merge-eras keeps each year's lumi
@@ -150,18 +164,16 @@ datacard:
       # of the Run3 13.6 TeV luminosity uncertainty).
       name_template: "lumi_13p6TeV_{year}"
       value_source: "eras[].year_config:lumi_uncertainty"
-      value: 1.014            # PLACEHOLDER fallback — replace once each era's Lumi POG
+      value: 1.016            # PLACEHOLDER fallback — replace once each era's Lumi POG
                                 # number is published (2024's is still "to be updated")
       processes: ["signal", "ttbar", "wjets", "zjets", "dyjets", "singletop", "diboson", "smhiggs"]
 
-    # Tau-veto cut efficiency uncertainty — cut exists in objects.py but had
-    # no associated systematic until now (matches Run2's CMS_veto_tau, which
-    # was also a flat lnN). 1.02 (2%) is a placeholder value, not a measured
-    # number — replace once a real estimate exists.
+    # Tau-veto cut efficiency uncertainty, a flat lnN: 6% as in the Run 2 cards (CMS{year}_veto_tau
+    # = 1.06). Not re-measured for Run 3 — replace once a Run 3 estimate exists.
     veto_tau:
       type: "lnN"
       name_template: "CMS{year}_veto_tau"
-      value: 1.02
+      value: 1.06
       processes: ["signal", "ttbar", "wjets", "zjets", "dyjets", "singletop", "diboson", "smhiggs"]
 
     # Flat background normalization uncertainties, matching Run2's real
@@ -170,7 +182,7 @@ datacard:
     # omitted — no QCD CR/process active in Run3 today (see qcd: enabled:
     # false above).
     norm_diboson: {type: "lnN", value: 1.2,  processes: ["diboson"]}
-    norm_dyjets:   {type: "lnN", value: 1.05, processes: ["dyjets"]}
+    norm_dyjets:   {type: "lnN", value: 1.05, processes: ["dyjets", "zjets"]}   # Run 2: dyjets in the CRs, zjets in the SR
     norm_smhiggs: {type: "lnN", value: 1.2,  processes: ["smhiggs"]}
     norm_singletop: {type: "lnN", value: 1.1, processes: ["singletop"]}
 
@@ -244,10 +256,10 @@ datacard:
     JECFlavorQCD: {type: "shape", syst_suffix: "JECFlavorQCD", name_template: "CMS_scale_j_FlavorQCD", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     JECRelativeBal: {type: "shape", syst_suffix: "JECRelativeBal", name_template: "CMS_scale_j_RelativeBal", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     JECRelativeSample_2024: {type: "shape", syst_suffix: "JECRelativeSample_2024", name_template: "CMS_scale_j_RelativeSample_2024", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
-    JER:         {type: "shape", syst_suffix: "JER", name_template: "CMS_res_j_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
-    pileup:      {type: "shape", syst_suffix: "weight_pileup", name_template: "CMS_pileup_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JER:         {type: "shape", syst_suffix: "JER", name_template: "CMS_res_j_13p6TeV", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    pileup:      {type: "shape", syst_suffix: "weight_pileup", name_template: "CMS_pileup_13p6TeV", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     muonSF:      {type: "shape", syst_suffix: "weight_muon", name_template: "CMS_eff_m_id_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
-    electronSF:  {type: "shape", syst_suffix: "weight_electron", name_template: "CMS_eff_e_id_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    electronSF:  {type: "shape", syst_suffix: "weight_electron", name_template: "CMS_eff_e_id_13p6TeV", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     # electronHLT -> CMS_eff_e_trigger_{year}, direct match in
     # systematics_master.yml's electron_efficiency section. metHLT has no
     # official counterpart in the master file (no MET-trigger entry exists
@@ -278,8 +290,9 @@ datacard:
     qcdscale_signal:    {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_signal",   processes: ["signal"]}
     qcdscale_ttbar:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_tt",       processes: ["ttbar"]}
     qcdscale_wjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_wjets",    processes: ["wjets"]}
-    qcdscale_dyjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_dyjets",   processes: ["dyjets"]}
-    qcdscale_zjets:     {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_zjets",    processes: ["zjets"]}
+    # One nuisance shared by the two Z processes, as Run 2's mu_scale_dyjets: the QCD scale of Z->ll+jets
+    # (CR) and Z->nunu+jets (SR) is the same effect, so it is correlated between them.
+    qcdscale_dyjets:    {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_dyjets",   processes: ["dyjets", "zjets"]}
     qcdscale_singletop: {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_singlet",  processes: ["singletop"]}
     qcdscale_diboson:   {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_diboson",  processes: ["diboson"]}
     qcdscale_smhiggs:   {type: "shape", syst_suffix: "weight_scale", name_template: "CMS{year}_qcdscale_smh",      processes: ["smhiggs"]}
@@ -295,14 +308,14 @@ datacard:
   # simultaneously even when combine_emu: true had already merged them into
   # one Wlnu CR — double-applying the correction).
   rate_parameters:
-    wjets_1b_Wmunu:   {type: "rateParam", regions: ["1b:CR_Wmunu"],   processes: ["wjets"], value: 1.0, range: [0.05, 5.0]}
-    wjets_1b_Wenu:    {type: "rateParam", regions: ["1b:CR_Wenu"],    processes: ["wjets"], value: 1.0, range: [0.05, 5.0]}
-    zjets_1b_Zmumu:   {type: "rateParam", regions: ["1b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
-    zjets_1b_Zee:     {type: "rateParam", regions: ["1b:CR_Zee"],     processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
-    ttbar_2b_Topmunu: {type: "rateParam", regions: ["2b:CR_Topmunu"], processes: ["ttbar"], value: 1.0, range: [0.05, 5.0]}
-    ttbar_2b_Topenu:  {type: "rateParam", regions: ["2b:CR_Topenu"],  processes: ["ttbar"], value: 1.0, range: [0.05, 5.0]}
-    zjets_2b_Zmumu:   {type: "rateParam", regions: ["2b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
-    zjets_2b_Zee:     {type: "rateParam", regions: ["2b:CR_Zee"],     processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
+    wjets_1b_Wmunu:   {type: "rateParam", regions: ["1b:CR_Wmunu"],   processes: ["wjets"], value: 1.0, range: [0.05, 1.95]}
+    wjets_1b_Wenu:    {type: "rateParam", regions: ["1b:CR_Wenu"],    processes: ["wjets"], value: 1.0, range: [0.05, 1.95]}
+    zjets_1b_Zmumu:   {type: "rateParam", regions: ["1b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 1.95]}
+    zjets_1b_Zee:     {type: "rateParam", regions: ["1b:CR_Zee"],     processes: ["dyjets"], value: 1.0, range: [0.05, 1.95]}
+    ttbar_2b_Topmunu: {type: "rateParam", regions: ["2b:CR_Topmunu"], processes: ["ttbar"], value: 1.0, range: [0.05, 1.95]}
+    ttbar_2b_Topenu:  {type: "rateParam", regions: ["2b:CR_Topenu"],  processes: ["ttbar"], value: 1.0, range: [0.05, 1.95]}
+    zjets_2b_Zmumu:   {type: "rateParam", regions: ["2b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 1.95]}
+    zjets_2b_Zee:     {type: "rateParam", regions: ["2b:CR_Zee"],     processes: ["dyjets"], value: 1.0, range: [0.05, 1.95]}
     # Merged-channel entries — used for SR's tie-in (and become the CR file's
     # own applicable entry too) ONLY when combine_emu: true, since that's
     # when merge_emu collapses the CR_Wmunu/CR_Wenu histograms into one Wlnu
@@ -311,16 +324,29 @@ datacard:
     # make_datacard's emu_written_dirs dedup — NOT a literal "Wlnu" role,
     # since region_key is always derived from region_role, never
     # region_dir_override (confirmed in combine_tools.py).
-    wjets_1b_Wlnu:    {type: "rateParam", regions: ["1b:CR_Wmunu"],   processes: ["wjets"], value: 1.0, range: [0.05, 5.0]}
-    zjets_1b_Zll:     {type: "rateParam", regions: ["1b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
-    ttbar_2b_Topl:    {type: "rateParam", regions: ["2b:CR_Topmunu"], processes: ["ttbar"], value: 1.0, range: [0.05, 5.0]}
-    zjets_2b_Zll:     {type: "rateParam", regions: ["2b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 5.0]}
+    wjets_1b_Wlnu:    {type: "rateParam", regions: ["1b:CR_Wmunu"],   processes: ["wjets"], value: 1.0, range: [0.05, 1.95]}
+    zjets_1b_Zll:     {type: "rateParam", regions: ["1b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 1.95]}
+    ttbar_2b_Topl:    {type: "rateParam", regions: ["2b:CR_Topmunu"], processes: ["ttbar"], value: 1.0, range: [0.05, 1.95]}
+    zjets_2b_Zll:     {type: "rateParam", regions: ["2b:CR_Zmumu"],   processes: ["dyjets"], value: 1.0, range: [0.05, 1.95]}
     # No qcd_CR rateParam — no QCD CR exists in regions.yaml today.
     # zjets_*_Z{mumu,ee} rateParams (dyjets in the CR, zjets = Z->nunu in the SR) float a plain normalization (CR->SR transfer
     # factor), not a shape — they're unaffected by btag_true's gated_by_cut exclusion
     # above (that gate only governs whether a SHAPE systematic's Up/Down histograms
     # get written/listed for a region, not whether a rateParam applies). No double
     # counting between the two mechanisms.
+
+  # Run 2 treatment of the CR-normalised backgrounds. In the SR, a process that has an SR rateParam
+  # (sr_rate_parameters below: wjets and zjets in 1b, ttbar and zjets in 2b) is normalised from its CR,
+  # so the experimental systematics common to CR and SR are taken to cancel in the transfer and are NOT
+  # applied to it in the SR. Only the nuisances listed in `keep` stay on that process in the SR: the Z(ll)->Z(nunu)
+  # extrapolation keeps the PDF, QCD scale and the DY normalisation; W and ttbar keep none. In the CRs
+  # every nuisance applies to every process.
+  sr_data_driven_nuisances:
+    enabled: true
+    keep:
+      zjets: [pdf_envelope, qcdscale_dyjets, norm_dyjets]
+      wjets: []
+      ttbar: []
 
   # `process` below is the SR process the parameter scales. For Z it is zjets (Z->nunu+jets): the
   # Z(ll) CR parameter is floated on dyjets (Z->ll+jets) in the CR and scales Z->nunu in the SR
@@ -351,7 +377,8 @@ signal_grid:
 fit:
   strategy: "robustHesse"
   options:
-    asymptotic_limits: {r_min: 0.0, r_max: 10.0, r_max_ladder: [5, 50, 500, 5000]}
+    # r_max: Combine's default POI range [0, 20] (the first attempt uses it); null = no --rMax
+    asymptotic_limits: {r_min: 0.0, r_max: 20.0, r_max_ladder: [null, 50, 500, 5000]}
     fit_diagnostics:   {save_shapes: true, save_norm: true, save_with_unc: true}
     goodness_of_fit:   {algorithm: "saturated", toys: 500, seed: 12345}
 
@@ -400,13 +427,33 @@ advanced:
     plot_impacts: "plotImpacts.py"
     diff_nuisances: "diffNuisances.py"
 
+  # The datacard-validation CI builds its workspace with
+  #   --for-fits --no-wrappers --optimize-simpdf-constraints=cms --X-pack-asympows --use-histsum
+  # (--for-fits is an alias of --no-b-only). They are speed/size options and are NOT used here:
+  #   - --use-histsum crashes Asimov generation on our card (e.g. the (1500,1450) limit).
+  #   - --no-b-only / --no-wrappers remove what FitDiagnostics needs: the pulls abort with
+  #     "Missing background ModelConfig 'ModelConfig_bonly'" and segfault in getShapesAndNorms.
+  #   - the other two (--optimize-simpdf-constraints=cms, --X-pack-asympows) were only tested
+  #     together with --no-b-only/--no-wrappers: limit identical to the plain workspace
+  #     (0.3604 at mA=600/ma=150), 6.4 s instead of 10 s, workspace 136 KB instead of 440 KB;
+  #     GoF runs (same p-value, observed statistic 348.5 vs 350.0) but pulls fail as above.
+  # To use the optimised workspace for the limit step only, build it separately with:
+  #   text2workspace.py <card> --channel-masks --no-b-only --no-wrappers \
+  #       --optimize-simpdf-constraints=cms --X-pack-asympows -o <ws>.root
+  # Other CI options, for a CI-style (likelihood publication) run, not used by run-all:
+  #   MultiDimFit: --X-rtd FAST_VERTICAL_MORPH --setParameters r=1 --cminDefaultMinimizerStrategy 0
+  #                --saveFitResult -t -1
+  #   Impacts:     --X-rtd FAST_VERTICAL_MORPH --setParameters r=1 --approx robust --robustFit 1
+  #                --X-rtd MINIMIZER_MaxCalls=9999999 -t -1 (final step also needs --approx robust)
   workspace_options:
     args: ["--channel-masks"]   # unlocks CR-only/SR+CR masked GoF fits
 
   # One entry per run-combine --mode / make-* command. `steps` is a list because
   # Impacts needs 3 chained calls; every other mode is a single-step list of length 1.
   commands:
-    general_args: ["--cminDefaultMinimizerStrategy=0", "--cminDefaultMinimizerTolerance=0.1"]
+    # No global minimiser options: every command uses Combine's defaults except where the mode below sets
+    # its own (the pulls use --cminDefaultMinimizerStrategy 0, as in Run 2's pulls_oneRP.sh).
+    general_args: []
 
     AsymptoticLimits:
       steps:
@@ -415,13 +462,17 @@ advanced:
                   "--run={run_mode}",   # run_mode resolves to "expected" always,
                                         # plus a second step with "observed" appended
                                         # when the region's blind flag is false
-                  # {rmax} comes from fit.options.asymptotic_limits.r_max_ladder
-                  # (CombineRunner._run_asymptotic_validated): Combine silently returns no
-                  # quantiles when --rMax is far above the limit and cuts the upper bands off
-                  # when it is too small, so the smallest ladder value whose five quantiles are
-                  # finite, ordered and below 80% of rMax is used. Limits span r ~ 0.1 to ~500
-                  # over the 29-point grid, so no single fixed value works.
-                  "--rMin=0", "--rMax={rmax}"]
+                  # Run 2 ran plain `combine -M AsymptoticLimits <datacard>`, i.e. the default r range, and
+                  # so do we, with ONE addition: --X-rtd MINIMIZER_no_analytic. With our autoMCStats nuisances
+                  # the default analytic Barlow-Beeston profiling pushes a bin's nuisance outside its [-7, 7]
+                  # range (e.g. prop_bincat_2b_SR_bin4_bin0 = -8.0) even at the most sensitive mass points
+                  # and combine aborts without a limit (19-24 of 29 points missing in the plain-command run).
+                  # {rmax_arg} is empty on the first attempt; CombineRunner._run_asymptotic_validated
+                  # retries with --rMax from fit.options.asymptotic_limits.r_max_ladder only when that
+                  # result is not valid (five finite, ordered quantiles inside the range), because the
+                  # least sensitive mass points need r up to a few hundred.
+                  "{rmax_arg}",
+                  "--X-rtd", "MINIMIZER_no_analytic"]
 
     FitDiagnostics:
       steps:
@@ -443,28 +494,28 @@ advanced:
                   "--setParameters", "{mask_sr_on}",
                   "--X-rtd", "MINIMIZER_analytic",
                   "--cminFallbackAlgo", "Minuit2,0:1.0",
-                  "--rMin=0", "--rMax=5000"]
+                  "--cminDefaultMinimizerStrategy", "0"]
     PullsAsimovT0:
       steps:
         - binary: "combine"
           args: ["-M", "FitDiagnostics", "{workspace}", "-n", "_AsimovT0",
                   "--saveShapes", "--saveWithUncertainties",
                   "-t", "-1", "--expectSignal", "0",
-                  "--rMin=0", "--rMax=5000"]
+                  "--cminDefaultMinimizerStrategy", "0"]
     PullsSbT0:
       steps:
         - binary: "combine"
           args: ["-M", "FitDiagnostics", "{workspace}", "-n", "_SbT0",
                   "--saveShapes", "--saveWithUncertainties",
                   "--expectSignal", "0",
-                  "--rMin=0", "--rMax=5000"]
+                  "--cminDefaultMinimizerStrategy", "0"]
     PullsSbT1:
       steps:
         - binary: "combine"
           args: ["-M", "FitDiagnostics", "{workspace}", "-n", "_SbT1",
                   "--saveShapes", "--saveWithUncertainties",
                   "--expectSignal", "1",
-                  "--rMin=0", "--rMax=5000"]
+                  "--cminDefaultMinimizerStrategy", "0"]
 
     # Two separate combine calls, matching Run2's actual makeGOF_allAlgos.sh —
     # -t -1 (blind_args, used by every other mode) does NOT apply to GoF: it
@@ -486,6 +537,10 @@ advanced:
     # session against real combine 10.6.1: an unmasked GoF was fitting SR
     # data along with CRs, rather than testing whether the CR-only background
     # model describes SR).
+    # MINIMIZER_no_analytic in BOTH steps (the test statistic must be computed the same way in data and
+    # in toys): with the autoMCStats nuisances, the analytic Barlow-Beeston profiling can put a
+    # bin's nuisance (e.g. prop_bincat_1b_Wlnu_bin1_bin0 = 18.1) outside its [-7, 7] range during
+    # the toy fits, which aborts combine.
     GoodnessOfFit:
       steps:
         # No --seed on the observed step (matches Run2's makeGOF_allAlgos.sh —
@@ -496,12 +551,14 @@ advanced:
         - binary: "combine"
           args: ["-M", "GoodnessOfFit", "{workspace}",
                   "--algo={gof_algo}", "-n", "Observed",
+                  "--X-rtd", "MINIMIZER_no_analytic",
                   "--setParametersForFit", "{mask_sr_on}",
                   "--setParametersForEval", "{mask_sr_off}",
                   "--freezeParameters", "r", "--setParameters", "r=0"]
         - binary: "combine"
           args: ["-M", "GoodnessOfFit", "{workspace}",
                   "--algo={gof_algo}", "-n", "Toys",
+                  "--X-rtd", "MINIMIZER_no_analytic",
                   "--setParametersForFit", "{mask_sr_on}",
                   "--setParametersForEval", "{mask_sr_off}",
                   "--freezeParameters", "r", "--setParameters", "r=0,{mask_sr_on}",
@@ -510,18 +567,18 @@ advanced:
                   # overrides); toys <- fit.options.goodness_of_fit.toys (CLI --toys
                   # overrides) — resolved from this same yaml, not passed as Python defaults
 
+    # Run 2's impacts.sh options: --robustFit 1, --expectSignal 0, --rMin -10, -m 125 (the mass label
+    # only names Combine's intermediate files). {blind_args} gives the Asimov (asimov_t0) variant.
     Impacts:
       steps:
         - binary: "combineTool.py"
-          args: ["-M", "Impacts", "-d", "{workspace}", "-m", "120", "{blind_args}", "--doInitialFit",
-                  "--rMin=0", "--rMax=10"]
+          args: ["-M", "Impacts", "-d", "{workspace}", "-m", "125", "{blind_args}", "--doInitialFit",
+                  "--robustFit", "1", "--expectSignal", "0", "--rMin", "-10"]
         - binary: "combineTool.py"
-          args: ["-M", "Impacts", "-d", "{workspace}", "-m", "120", "{blind_args}", "--doFits",
-                  "--parallel={n_workers}",
-                  "--rMin=0", "--rMax=10"]
+          args: ["-M", "Impacts", "-d", "{workspace}", "-m", "125", "{blind_args}", "--doFits",
+                  "--robustFit", "1", "--parallel={n_workers}", "--expectSignal", "0", "--rMin", "-10"]
         - binary: "combineTool.py"
-          args: ["-M", "Impacts", "-d", "{workspace}", "-m", "120", "-o", "{impacts_filename}",
-                  "--rMin=0", "--rMax=10"]
+          args: ["-M", "Impacts", "-d", "{workspace}", "-m", "125", "-o", "{impacts_filename}"]
 
   parallel:
     enabled: true

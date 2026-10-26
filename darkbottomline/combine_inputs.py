@@ -12,7 +12,7 @@ import json
 import logging
 import shutil
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import uproot
@@ -161,6 +161,46 @@ def load_region_syst_histogram(region_root_dir: str, category: str, region_dir: 
     return values
 
 
+def read_hist(f, key: str):
+    """(values, edges, variances) of a TH1 from an open uproot file. variances is the stored
+    per-bin sum of squared weights, or None when the histogram has no Sumw2: uproot would then
+    report variance = content, which is a Poisson error on a weighted yield, not an MC
+    uncertainty, so it must never be used as one."""
+    h = f[key]
+    values, edges = h.to_numpy()
+    try:
+        has_sumw2 = len(h.member("fSumw2")) > 0
+    except Exception:
+        has_sumw2 = False
+    return values, edges, (np.asarray(h.variances(), dtype=float) if has_sumw2 else None)
+
+
+def write_hist(f_out, key: str, values, edges, variances=None) -> None:
+    """Write a TH1; with variances, as a weighted histogram (TH1D with Sumw2)."""
+    values = np.asarray(values, dtype=float)
+    edges = np.asarray(edges, dtype=float)
+    if variances is None:
+        f_out[key] = (values, edges)
+        return
+    import hist
+    h = hist.Hist(hist.axis.Variable(edges, flow=False), storage=hist.storage.Weight())
+    h.view()["value"] = values
+    h.view()["variance"] = np.asarray(variances, dtype=float)
+    f_out[key] = h
+
+
+def load_region_variances(region_root_dir: str, category: str, region_dir: str,
+                           variable: str, key: str) -> Optional[np.ndarray]:
+    """Per-bin sum of squared weights of one nominal histogram, or None if the file has none."""
+    path = region_hist_path(region_root_dir, category, region_dir, variable)
+    if not path.exists():
+        raise FileNotFoundError(f"Region histogram file not found: {path}")
+    with uproot.open(str(path)) as f:
+        if key not in f:
+            raise KeyError(f"Histogram key '{key}' not found in {path}")
+        return read_hist(f, key)[2]
+
+
 def load_region_bin_edges(region_root_dir: str, category: str, region_dir: str,
                            variable: str) -> np.ndarray:
     """Read the bin edges of a region's TotalBkg histogram."""
@@ -254,14 +294,16 @@ def _merge_two_histogram_files(mu_path: Path, e_path: Path, out_path: Path) -> N
         with uproot.recreate(str(out_path)) as f_out:
             for key in all_keys:
                 if key in mu_keys and key in e_keys:
-                    v_mu, edges = f_mu[key].to_numpy()
-                    v_e, _ = f_e[key].to_numpy()
+                    v_mu, edges, var_mu = read_hist(f_mu, key)
+                    v_e, _, var_e = read_hist(f_e, key)
                     merged = v_mu + v_e
+                    # independent samples: variances add; only if both channels have them
+                    var = var_mu + var_e if (var_mu is not None and var_e is not None) else None
                 elif key in mu_keys:
-                    merged, edges = f_mu[key].to_numpy()
+                    merged, edges, var = read_hist(f_mu, key)
                 else:
-                    merged, edges = f_e[key].to_numpy()
-                f_out[key] = (merged.astype(float), edges.astype(float))
+                    merged, edges, var = read_hist(f_e, key)
+                write_hist(f_out, key, merged, edges, var)
 
 
 def merge_emu_histograms(region_root_dir: str, output_dir: str, category: str,
@@ -337,8 +379,8 @@ def passthrough_region_histogram(region_root_dir: str, output_dir: str,
 
     with uproot.open(str(src)) as f_in, uproot.recreate(str(dst)) as f_out:
         for key in {k.split(";")[0] for k in f_in.keys()}:
-            values, edges = f_in[key].to_numpy()
-            f_out[key] = (values.astype(float), edges.astype(float))
+            values, edges, variances = read_hist(f_in, key)
+            write_hist(f_out, key, values, edges, variances)
 
     for syst_suffix in (syst_suffixes or []):
         for direction in ("UP", "DOWN"):
@@ -357,7 +399,7 @@ def passthrough_region_histogram(region_root_dir: str, output_dir: str,
 def normalize_pdf_histograms(region_root_dir: str, output_dir: str, category: str,
                               region_dir: str, variable: str,
                               syst_suffixes: Optional[List[str]] = None,
-                              pdf_syst_suffix: Optional[str] = None) -> str:
+                              pdf_syst_suffix: Optional[Union[str, List[str]]] = None) -> str:
     """Rescale pdf Up/Down shape-variant histograms to preserve the central
     (nominal) integral, per process (Run2 normalisePDF.py logic, ported to
     uproot/numpy).
@@ -365,9 +407,9 @@ def normalize_pdf_histograms(region_root_dir: str, output_dir: str, category: st
     Shape systematics live in SEPARATE per-systematic files, not extra keys
     inside the nominal file (region_syst_hist_path convention). Every
     systematic in syst_suffixes is copied through unchanged EXCEPT
-    pdf_syst_suffix's UP/DOWN files, which get rescaled per-process so each
-    process's integral matches its nominal integral (the actual pdf-envelope
-    normalization Run2's normalisePDF.py performs).
+    pdf_syst_suffix's UP/DOWN files (one suffix or a list), which get rescaled per-process so
+    each process's integral matches its nominal integral (the pdf-envelope normalization Run2's
+    normalisePDF.py performs). The effect is then a pure shape change across the bins of the region.
     """
     src = region_hist_path(region_root_dir, category, region_dir, variable)
     if not src.exists():
@@ -378,12 +420,15 @@ def normalize_pdf_histograms(region_root_dir: str, output_dir: str, category: st
 
     with uproot.open(str(src)) as f_in, uproot.recreate(str(dst)) as f_out:
         for key in {k.split(";")[0] for k in f_in.keys()}:
-            values, edges = f_in[key].to_numpy()
-            f_out[key] = (values.astype(float), edges.astype(float))
+            values, edges, variances = read_hist(f_in, key)
+            write_hist(f_out, key, values, edges, variances)
         nominal_histograms = {k: f_in[k].to_numpy() for k in {kk.split(";")[0] for kk in f_in.keys()}}
 
+    # suffixes whose Up/Down are rescaled to the nominal integral per process (shape-only); a single
+    # suffix (pdf, the original use) or a list (pdf and QCD scale)
+    shape_only = ({pdf_syst_suffix} if isinstance(pdf_syst_suffix, str) else set(pdf_syst_suffix or []))
     for syst_suffix in (syst_suffixes or []):
-        is_pdf = syst_suffix == pdf_syst_suffix
+        is_pdf = syst_suffix in shape_only
         for direction in ("UP", "DOWN"):
             syst_src = region_syst_hist_path(region_root_dir, category, region_dir,
                                               variable, syst_suffix, direction)

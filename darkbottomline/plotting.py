@@ -460,6 +460,23 @@ def _histogram_and_sumw2(
     return counts * weight, counts * (weight ** 2)
 
 
+def _write_th1(rf, key: str, values: np.ndarray, bins: np.ndarray,
+               variances: Optional[np.ndarray] = None) -> None:
+    """Write one TH1 to an open uproot file. With `variances` (per-bin sum of squared weights) it
+    is stored as a weighted histogram (TH1D with Sumw2), which Combine's autoMCStats needs; without
+    them as a plain TH1 whose error is not an MC uncertainty."""
+    values = np.asarray(values, dtype=float)
+    bins = np.asarray(bins, dtype=float)
+    if variances is None:
+        rf[key] = (values, bins)
+        return
+    import hist as _hist
+    h = _hist.Hist(_hist.axis.Variable(bins, flow=False), storage=_hist.storage.Weight())
+    h.view()["value"] = values
+    h.view()["variance"] = np.asarray(variances, dtype=float)
+    rf[key] = h
+
+
 def _histogram_counts(values: np.ndarray, bins: np.ndarray) -> np.ndarray:
     if values.size == 0:
         return np.zeros(len(bins) - 1, dtype=float)
@@ -1490,9 +1507,11 @@ class PlotManager:
             root_out.parent.mkdir(parents=True, exist_ok=True)
             with _up.recreate(str(root_out)) as rf:
                 for label, hv, hs in rows:
-                    rf[label] = (hv.astype(float), bins.astype(float))
+                    _write_th1(rf, label, hv, bins, hs)
                 mc_total = sum(hv for _, hv, _ in rows)
-                rf["TotalBkg"] = (mc_total.astype(float), bins.astype(float))
+                _mc_var = (sum(hs for _, _, hs in rows)
+                           if all(hs is not None for _, _, hs in rows) else None)
+                _write_th1(rf, "TotalBkg", mc_total, bins, _mc_var)
                 if data_ndarray is not None:
                     rf["data_obs"] = (data_ndarray.astype(float), bins.astype(float))
                 # All signal masspoints as individual TH1s (not stacked). Uses the

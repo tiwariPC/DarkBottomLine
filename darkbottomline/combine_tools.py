@@ -19,8 +19,10 @@ from .combine_inputs import (
     load_region_bin_edges,
     load_region_histogram,
     load_region_syst_histogram,
+    load_region_variances,
     region_dir_from_role,
     systematic_applies_to_region,
+    write_hist,
 )
 
 
@@ -133,6 +135,19 @@ class CombineDatacardWriter:
             process_keys = ["signal"] + process_keys
         return process_keys
 
+    def _mc_stat_enabled(self) -> bool:
+        return bool(self.datacard_config.get("mc_stat", {}).get("enabled", False))
+
+    def _mc_stat_line(self) -> Optional[str]:
+        """Barlow-Beeston-lite MC statistical uncertainty of the background templates, for every
+        channel: `* autoMCStats <threshold> <include-signal> <hist-mode>`. Needs the per-bin sum of
+        squared weights in the shapes (write_shapes). Signal is excluded unless asked for."""
+        cfg = self.datacard_config.get("mc_stat", {})
+        if not cfg.get("enabled", False):
+            return None
+        return (f"* autoMCStats {float(cfg.get('threshold', 0)):g} "
+                f"{int(bool(cfg.get('include_signal', False)))} 1")
+
     def _systematics_header_count(self, region_key: str) -> int:
         """kmax counts only lnN/shape systematics — rateParam lines are tracked
         separately by Combine's own parser (HiggsAnalysis/CombinedLimit's
@@ -227,6 +242,25 @@ class CombineDatacardWriter:
                 return False
         return True
 
+    def _sr_data_driven_dropped(self, region_key: str, sys_name: str) -> set:
+        """Run 2 treatment: in the SR, the processes normalised from a CR (the `process` of the category's
+        sr_rate_parameters entries) carry only the nuisances listed under sr_data_driven_nuisances.keep for
+        them; every other nuisance is dropped for those processes. Returns the processes dropped for
+        `sys_name` in this region (empty outside the SR or when the rule is off)."""
+        cfg = self.datacard_config.get("sr_data_driven_nuisances", {})
+        if not cfg.get("enabled", False) or not region_key.endswith(":SR"):
+            return set()
+        category = region_key.split(":")[0]
+        keep = cfg.get("keep", {})
+        dropped = set()
+        for entry in self.datacard_config.get("sr_rate_parameters", {}).get(category, []):
+            proc = entry.get("process")
+            procs = [proc] if isinstance(proc, str) else list(proc or [])
+            for p in procs:
+                if sys_name not in keep.get(p, []):
+                    dropped.add(p)
+        return dropped
+
     def _write_systematics_block(self, lines: List[str], bin_names: List[str],
                                   process_keys: List[str], region_key_by_bin: Dict[str, str],
                                   year: str, region_root_dir: str, category: str,
@@ -248,8 +282,9 @@ class CombineDatacardWriter:
                 applies_here = systematic_applies_to_region(
                     self.regions_config, region_key_by_bin[bin_name], gated_by_cut,
                 )
+                dropped = self._sr_data_driven_dropped(region_key_by_bin[bin_name], sys_name)
                 for proc in process_keys:
-                    if not (applies_here and proc in sys_processes):
+                    if not (applies_here and proc in sys_processes) or proc in dropped:
                         sys_line += " -"
                         continue
                     if sys_type == "lnN":
@@ -269,7 +304,8 @@ class CombineDatacardWriter:
 
     def _write_rate_params_block(self, lines: List[str], bin_name: str, region_key: str,
                                   bin_index: Optional[int] = None,
-                                  category: Optional[str] = None, is_sr: bool = False) -> None:
+                                  category: Optional[str] = None, is_sr: bool = False,
+                                  year: Optional[str] = None) -> None:
         """bin_index (1-based), when given, makes each bin float its process
         normalization INDEPENDENTLY — rate_name gets a _binN suffix, matching
         Run2's real binned convention exactly (verified against the actual
@@ -350,7 +386,10 @@ class CombineDatacardWriter:
                 if is_sr else rate_config.get("processes", [])
             rate_value = rate_config.get("value", 1.0)
             rate_range = rate_config.get("range", [0.05, 1.95])
-            full_rate_name = f"{rate_name}_bin{bin_index}" if bin_index is not None else rate_name
+            # per year and per bin, as Run 2 (ratewjets_1b_2016_bin1): independent normalisations per era
+            full_rate_name = rate_name if year is None else f"{rate_name}_{year}"
+            if bin_index is not None:
+                full_rate_name = f"{full_rate_name}_bin{bin_index}"
             lines.append(
                 f"{full_rate_name} rateParam {bin_name} {','.join(rate_processes)} "
                 f"{rate_value:.3f} [{rate_range[0]:.3f},{rate_range[1]:.3f}]"
@@ -403,7 +442,9 @@ class CombineDatacardWriter:
         self._write_systematics_block(lines, [bin_name], process_keys,
                                        {bin_name: region_key}, year,
                                        region_root_dir, category, region_dir, variable, mass_point)
-        self._write_rate_params_block(lines, bin_name, region_key, category=category, is_sr=is_sr)
+        self._write_rate_params_block(lines, bin_name, region_key, category=category, is_sr=is_sr, year=year)
+        if self._mc_stat_line():
+            lines.append(self._mc_stat_line())
 
         return "\n".join(lines)
 
@@ -450,7 +491,9 @@ class CombineDatacardWriter:
                                        region_root_dir, category, region_dir, variable, mass_point)
         for i, bin_name in enumerate(bin_names):
             self._write_rate_params_block(lines, bin_name, region_key, bin_index=i + 1,
-                                           category=category, is_sr=is_sr)
+                                           category=category, is_sr=is_sr, year=year)
+        if self._mc_stat_line():
+            lines.append(self._mc_stat_line())
 
         return "\n".join(lines)
 
@@ -567,13 +610,17 @@ class CombineDatacardWriter:
                 self.f = f
 
             def __setitem__(self, name, hv):
-                values, edges = hv
+                values, edges, *rest = hv
+                var = rest[0] if rest else None   # per-bin sum of squared weights (MC stat)
                 if not binned:
-                    self.f[name] = (values, edges)
+                    write_hist(self.f, name, values, edges, var)
                     return
                 for i in range(len(values)):
-                    self.f[f"bin{i + 1}/{name}"] = (np.asarray(values[i:i + 1], dtype=float),
-                                                    np.asarray(edges[i:i + 2], dtype=float))
+                    write_hist(self.f, f"bin{i + 1}/{name}", np.asarray(values[i:i + 1], dtype=float),
+                               np.asarray(edges[i:i + 2], dtype=float),
+                               None if var is None else np.asarray(var[i:i + 1], dtype=float))
+
+        mc_stat = self._mc_stat_enabled()
 
         with uproot.recreate(str(shapes_file)) as _rootfile:
             f = _ShapeWriter(_rootfile)
@@ -586,10 +633,12 @@ class CombineDatacardWriter:
                 hist_key = self._process_hist_key(process, mass_point)
 
                 edges = load_region_bin_edges(region_root_dir, category, region_dir, variable)
+                hist_missing = False
                 try:
                     values = load_region_histogram(region_root_dir, category, region_dir,
                                                     variable, hist_key)
                 except KeyError:
+                    hist_missing = True
                     # The plotter writes a process histogram only if the process has
                     # events in the region (e.g. no Z(nunu) in a Z(ll) CR). A missing
                     # background is a genuinely empty one: use zeros, which the
@@ -612,7 +661,21 @@ class CombineDatacardWriter:
                 # nonzero total, so it never surfaced there. Same ZERO_FLOOR
                 # already used for PDF-normalization rescaling (combine_inputs.py).
                 values = np.clip(values.astype(float), ZERO_FLOOR, None)
-                f[datacard_name] = (values, edges.astype(float))
+                variances = None
+                if mc_stat and not proc_config.get("is_signal", False):
+                    # per-bin sum of squared weights of the background, for autoMCStats
+                    if hist_missing:
+                        variances = np.zeros_like(values)
+                    else:
+                        variances = load_region_variances(region_root_dir, category, region_dir,
+                                                          variable, hist_key)
+                        if variances is None:
+                            raise ValueError(
+                                f"mc_stat is enabled but '{hist_key}' in {category}:{region_dir} "
+                                f"({variable}) has no stored sum of squared weights (Sumw2): the "
+                                "region ROOT files predate it. Re-run the plot step.")
+                f[datacard_name] = (values, edges.astype(float)) if variances is None \
+                    else (values, edges.astype(float), variances)
 
                 for sys_name, sys_config in self.datacard_config["systematics"].items():
                     if sys_config.get("type") != "shape":
@@ -1027,7 +1090,7 @@ class CombineRunner:
             "gof_algo": self.fit_config.get("options", {}).get("goodness_of_fit", {}).get("algorithm", "saturated"),
             "toys": self.fit_config.get("options", {}).get("goodness_of_fit", {}).get("toys", 500),
             "run_mode": "expected",
-            "rmax": 5000,
+            "rmax_arg": "",
             "impacts_filename": self.output_config["fit_results"].get("impacts", "impacts.json"),
         }
         if extra_format_args:
@@ -1076,11 +1139,14 @@ class CombineRunner:
         ladder from small to large and keep the first run whose five expected quantiles are
         finite, positive, ordered and below 80% of rMax (observed: one finite positive value)."""
         out = Path(output_dir)
+        default_rmax = float(self.fit_config.get("options", {}).get("asymptotic_limits", {}).get("r_max", 20.0))
         for rmax in ladder:
             for old in out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"):
                 old.unlink()
             self._run_steps("AsymptoticLimits", workspace, output_dir, blind,
-                            extra_format_args={"run_mode": run_mode, "rmax": rmax})
+                            extra_format_args={"run_mode": run_mode,
+                                               "rmax_arg": "" if rmax is None else f"--rMax={rmax}"})
+            range_max = default_rmax if rmax is None else float(rmax)
             files = sorted(out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"))
             if not files:
                 continue
@@ -1091,10 +1157,13 @@ class CombineRunner:
                 continue
             ok = len(vals) >= 1 and np.isfinite(vals).all() and (vals > 0).all()
             if run_mode == "expected":
-                ok = ok and len(vals) == 5 and (np.diff(vals) >= 0).all() and vals.max() < 0.8 * rmax
+                ok = ok and len(vals) == 5 and (np.diff(vals) >= 0).all() and vals.max() < 0.8 * range_max
             if ok:
                 logging.info(f"AsymptoticLimits {run_mode}: valid with rMax={rmax}")
                 return
+        # no valid result: do not leave the last (invalid, possibly empty) output behind
+        for old in out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"):
+            old.unlink()
         raise RuntimeError(f"No valid AsymptoticLimits {run_mode} result for {workspace} with "
                            f"rMax in {ladder}")
 
@@ -1106,7 +1175,7 @@ class CombineRunner:
         label, no --seed passed here), not the output_config's
         "asymptotic_limits.root" name, which is never actually created."""
         ladder = self.fit_config.get("options", {}).get("asymptotic_limits", {}).get(
-            "r_max_ladder", [5, 50, 500, 5000])
+            "r_max_ladder", [None, 50, 500, 5000])
         self._run_asymptotic_validated(datacard_or_workspace, output_dir, blind, "expected", ladder)
         if not blind:
             self._run_asymptotic_validated(datacard_or_workspace, output_dir, blind, "observed", ladder)
@@ -1374,22 +1443,22 @@ class CombineRunner:
                     fontstyle="italic", ha="left", va="bottom")
             ax.text(1.0, 1.02, "13.6 TeV", transform=ax.transAxes, fontsize=14,
                      ha="right", va="bottom")
-        right_x = 0.92
-        line_step = 0.08
-        y0 = 0.92
-        if title_right:
-            ax.text(right_x, y0, title_right, transform=ax.transAxes, fontsize=15,
-                     ha="right", va="top")
-
+        right_x = 0.95
+        line_step = 0.085
+        y0 = 0.95
+        # p-value first, in the upper right corner; then the algorithm/toys line and the hypothesis
+        ax.text(right_x, y0, f"p-value: {p_value:.3f}", transform=ax.transAxes,
+                 fontsize=22, fontstyle="italic", fontweight="bold", ha="right", va="top")
         ax.text(right_x, y0 - line_step, f"{algo.capitalize()}, {n_toys} Toys", transform=ax.transAxes,
                  fontsize=18, fontweight="bold", ha="right", va="top")
-        ax.text(right_x, y0 - 2 * line_step, f"p-value: {p_value:.3f}", transform=ax.transAxes,
-                 fontsize=19, fontstyle="italic", ha="right", va="top")
+        if title_right:
+            ax.text(right_x, y0 - 2 * line_step, title_right, transform=ax.transAxes, fontsize=15,
+                     ha="right", va="top")
 
         fill_handle = plt.Rectangle((0, 0), 1, 1, fc="#c8eab4", ec="#7ce03c",
                                      linewidth=1.3, label="Expected (Toys)")
         ax.legend(handles=[arrow_handle, fill_handle], loc="upper right",
-                  bbox_to_anchor=(right_x, y0 - 2.5 * line_step), frameon=False, fontsize=15)
+                  bbox_to_anchor=(right_x, y0 - 3 * line_step), frameon=False, fontsize=15)
 
         fig.tight_layout()
         fig.savefig(f"{out_stem}.pdf")
