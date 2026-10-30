@@ -221,8 +221,6 @@ def make_prefit_postfit_summary(fit_file: str, fit_dir: str, category: str, out_
             ln.SetLineWidth(3)
             ln.Draw()
             sig_lines.append(ln)
-        sig_leg = sig.Clone("sig_leg")          # legend sample: solid line (a dashed legend line is drawn thin as well)
-        sig_leg.SetLineStyle(1)
     legend = ROOT.TLegend(0.40, 0.66, 0.985, 0.875)
     legend.SetNColumns(3)
     legend.SetBorderSize(0)
@@ -231,8 +229,6 @@ def make_prefit_postfit_summary(fit_file: str, fit_dir: str, category: str, out_
     for p in reversed(order):
         legend.AddEntry(hist[p], PROCESS_LABEL.get(p, p), "f")
     legend.AddEntry(data, "Data (bkg sum for SR)" if pseudo is not None else "Data", "PEL")
-    if has_signal:
-        legend.AddEntry(sig_leg, signal_label, "L")
     legend.Draw("same")
     up.Update()
 
@@ -373,6 +369,23 @@ def make_prefit_postfit_summary(fit_file: str, fit_dir: str, category: str, out_
     t.SetTextFont(62)
     t.SetTextSize(0.055)
     t.DrawLatex(0.13, 0.80, f"{category} category")
+    if has_signal:      # signal entry drawn by hand (same dash pattern as the curve), as ROOT draws dashed legend lines thin
+        dash_ndc = dash / xmax * (1 - lx - rx)
+        x0, y = 0.105, 0.752
+        x1 = x0 + 9 * dash_ndc
+        for k in range(5):
+            ln = ROOT.TLine(x0 + 2 * k * dash_ndc, y, x0 + (2 * k + 1) * dash_ndc, y)
+            ln.SetNDC()
+            ln.SetLineColor(sig.GetLineColor())
+            ln.SetLineWidth(3)
+            ln.Draw()
+            sig_lines.append(ln)
+        t.SetTextFont(42)
+        t.SetTextSize(0.04)
+        t.SetTextAlign(12)
+        t.DrawLatex(x1 + 0.012, y, signal_label)
+        t.SetTextFont(62)
+        t.SetTextAlign(11)
     t.SetTextAlign(21)
     t.SetTextSize(0.047)
     for b, region in enumerate(regions):
