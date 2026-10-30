@@ -191,12 +191,11 @@ datacard:
     # own up/down variations (Run2's weightB / weightFakeB):
     #   btag_true   (CMS_eff_b_{year}):  true b-jets;  weight_btag_true{UP,DOWN}
     #   btag_mistag (CMS_fake_b_{year}): c and light jets, the "fake b"; weight_btag_mistag{UP,DOWN}
-    # The mistag component is a property of every region, so it applies everywhere (Z CRs
-    # without a b-tag requirement included). The true-b component is gated: `gated_by_cut` names
-    # the regions.yaml cut keys whose PRESENCE in a region's `cuts:` block makes it applicable, so
-    # regions without a b-tag requirement (the Z CRs, and the W/Top CRs of the nobtagWT variant)
-    # carry only the fake-b nuisance. The gate is read from the regions file at datacard time, not
-    # re-listed here, so it cannot drift from the region definitions.
+    # Both components are gated: `gated_by_cut` names the regions.yaml cut keys whose PRESENCE in a
+    # region's `cuts:` block makes the nuisance applicable. A region with no b-tag requirement (the Z CRs,
+    # and the W/Top CRs of the nobtagWT variant) carries neither: there both variations move the yield by
+    # < 0.1% (Z CRs), so the nuisances would be inert rows. The gate is read from the regions file at
+    # datacard time, not re-listed here, so it cannot drift from the region definitions.
     # Every shape systematic's variant histograms live in a SEPARATE ROOT file
     # (verified against real plotting.py output — grep for _weight_systs/_kin_systs
     # in plotting.py:2764-2781), named hist_{cat}_{rdir}_{variable}_{syst_suffix}_log.root,
@@ -242,9 +241,11 @@ datacard:
       syst_suffix: "weight_btag_mistag"
       name_template: "CMS_fake_b_{year}"
       processes: ["signal", "ttbar", "wjets", "zjets", "dyjets", "singletop", "diboson", "smhiggs"]
+      gated_by_cut: ["Bjet1bCond", "Bjet2bCond"]
     # JES: reduced 11-source JEC scheme written by the PKL/event plot paths
-    # (hist_<cat>_<region>_Recoil_JEC<source>{UP,DOWN}_log.root). Only Recoil has shifted
-    # variants, so the 2b category (costheta_star) has no JEC/JER shape systematics.
+    # (hist_<cat>_<region>_<Recoil|costheta_star>_JEC<source>{UP,DOWN}_log.root). The shifted quantity is the recoil; for
+    # the 2b fit variable (costheta_star) the variation is the migration of events through recoil > recoil_min (nominal
+    # cos theta* values), see docs/plotting_configuration.md. JER has no 2b (costheta_star) variants.
     JECAbsolute: {type: "shape", syst_suffix: "JECAbsolute", name_template: "CMS_scale_j_Absolute", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     JECAbsolute_2024: {type: "shape", syst_suffix: "JECAbsolute_2024", name_template: "CMS_scale_j_Absolute_2024", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     JECBBEC1: {type: "shape", syst_suffix: "JECBBEC1", name_template: "CMS_scale_j_BBEC1", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
@@ -338,9 +339,11 @@ datacard:
   # Run 2 treatment of the CR-normalised backgrounds. In the SR, a process that has an SR rateParam
   # (sr_rate_parameters below: wjets and zjets in 1b, ttbar and zjets in 2b) is normalised from its CR,
   # so the experimental systematics common to CR and SR are taken to cancel in the transfer and are NOT
-  # applied to it in the SR. Only the nuisances listed in `keep` stay on that process in the SR: the Z(ll)->Z(nunu)
-  # extrapolation keeps the PDF, QCD scale and the DY normalisation; W and ttbar keep none. In the CRs
-  # every nuisance applies to every process.
+  # applied to it in the SR. A gated nuisance (the b-tag ones) is dropped only if the process's CR carries it too
+  # (i.e. the CR has the b-tag requirement); otherwise it does not cancel and stays on the process in the SR.
+  # So incl keeps b-tag on Z(nunu) only (its Z CRs have no b-tag cut), nobtagWT also on W and ttbar, srjets on none.
+  # `keep` lists the nuisances that always stay: the Z(ll)->Z(nunu) extrapolation keeps the PDF, QCD scale and the
+  # DY normalisation; W and ttbar keep none. In the CRs every nuisance applies to every process.
   sr_data_driven_nuisances:
     enabled: true
     keep:

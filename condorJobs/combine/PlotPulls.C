@@ -100,7 +100,12 @@ void PlotPulls(TString filename="pulls_none.root", TString outdir="",
 		h1->SetAxisRange(start+1, last, "X");
 		}
 	if (i == numberOfCanvas){
-		h1->SetAxisRange(start+1, numberOfNuisance+1, "X");
+		// the last page stops at the last drawn nuisance, so the axis has no empty tail
+		// (diffNuisances reserves bins for the floating rate parameters it does not draw;
+		// Run2 always used the full 89-bin page range)
+		int lastDrawn = numberOfNuisance;
+		while (lastDrawn > 1 && TString(h1->GetXaxis()->GetBinLabel(lastDrawn)).Length() == 0) lastDrawn--;
+		h1->SetAxisRange(start+(i==1 ? 0 : 1), lastDrawn+1, "X");
 		}
 	c->Update();
   TString lastName = gSystem->BaseName(filename);

@@ -110,11 +110,16 @@ the PKL path writes variation files next to the nominal one:
 |---|---|---|
 | `hist_<cat>_<region>_<var>_weight_<name>{UP,DOWN}_log.root` | all | 20 weight variations: `pileup`, `btag`, `btag_true`, `btag_mistag`, `muon`, `electron`, `electronHLT`, `metHLT`, `pdf`, `scale` |
 | `hist_<cat>_<region>_Recoil_JER{UP,DOWN}_log.root` | `Recoil` only | JER (no effect: smearing is not implemented) |
-| `hist_<cat>_<region>_Recoil_JEC<source>{UP,DOWN}_log.root` | `Recoil` only | the 11 reduced JEC sources (`Absolute`, `Absolute_2024`, `BBEC1`, `BBEC1_2024`, `EC2`, `EC2_2024`, `HF`, `HF_2024`, `FlavorQCD`, `RelativeBal`, `RelativeSample_2024`) |
+| `hist_<cat>_<region>_<var>_JEC<source>{UP,DOWN}_log.root` | `Recoil`, `costheta_star` | the 11 reduced JEC sources (`Absolute`, `Absolute_2024`, `BBEC1`, `BBEC1_2024`, `EC2`, `EC2_2024`, `HF`, `HF_2024`, `FlavorQCD`, `RelativeBal`, `RelativeSample_2024`) |
 
 Each file has the same keys as the nominal one (process groups, `TotalBkg`, `sig_*` in the SRs).
-Shifted-jet versions exist only for `Recoil`, so a `costheta_star` or `ml_score` fit has no JEC or
-JER shape uncertainties. `--make-syst-plots` also draws central/up/down comparison plots.
+The JEC shift is stored as one shifted quantity, `Recoil_JEC<source>{Up,Down}`. For `Recoil` the shifted
+value is filled; for `costheta_star` (the 2b fit variable) each event keeps its nominal value, since JEC changes
+jet pT and MET but not eta, and the variation is the migration of events through `recoil > recoil_min`
+(an event counts only if its shifted recoil passes). `ml_score` has no JEC variations and JER exists only for
+`Recoil`. Region PKLs and ntuples hold only events that pass the nominal selection, so migration *into* the
+region (nominal recoil below the threshold, shifted above) is not seen and the Up variations understate it.
+`--make-syst-plots` also draws central/up/down comparison plots.
 
 ## Output layout
 

@@ -2154,24 +2154,31 @@ class PlotManager:
                     logging.warning('[Signal PKL:%s] skipping %s: %s', _sl, _sp.name, _sexc)
         logging.info('Signal PKL entries loaded: %d', len(sig_pkl_entries))
 
-        def _sig_rows_from_pkl(_region, _var, _bins, _weight_key=None, _kin_key=None, _recoil_min=0.0):
-            """[(mass_point_label, unscaled hist)] for the signal, from the signal PKL."""
+        def _sig_rows_from_pkl(_region, _var, _bins, _weight_key=None, _kin_key=None, _recoil_min=0.0,
+                               _obs_key=None):
+            """[(mass_point_label, unscaled hist)] for the signal, from the signal PKL.
+            _kin_key: shifted-recoil branch; events with it <= _recoil_min drop out. The filled observable is
+            that same branch (Recoil), or _obs_key when given (cos theta*: nominal values, shifted-recoil mask)."""
             _rows = []
             for _se in sig_pkl_entries:
                 _rh = _se['data'].get('region_histograms', {}).get(_region)
                 if not _rh or len(_rh.get('weight', [])) == 0:
                     continue
                 _v = _rh.get('values', {})
-                _va = _v.get(_kin_key or _var)
+                _va = _v.get(_obs_key or _kin_key or _var)
+                _ka = _v.get(_kin_key) if _kin_key is not None else None
                 _wa = _v.get(_weight_key) if _weight_key else _rh.get('weight')
                 if _va is None or _wa is None or len(_wa) != len(_va):
                     continue
+                if _kin_key is not None and (_ka is None or len(_ka) != len(_va)):
+                    continue
                 _va = np.asarray(_va, dtype=float)
                 _wa = np.asarray(_wa, dtype=float)
+                _ka = np.asarray(_ka, dtype=float) if _ka is not None else None
                 for _gk in sorted(k for k in _v if k.startswith('GenModel_')):
                     _m = np.asarray(_v[_gk]).astype(bool)
-                    if _kin_key is not None:
-                        _m = _m & (_va > _recoil_min)
+                    if _ka is not None:
+                        _m = _m & (_ka > _recoil_min)
                     _vals = _va[_m]
                     _ok = _apply_variable_plot_filter(_var, _vals, return_mask=True)
                     if not _ok.any():
@@ -2581,6 +2588,7 @@ class PlotManager:
                 for _src in jes_sources(year or self.config.get("year", "")):
                     _kin_pk[f"JEC{_src}UP"] = f"Recoil_JEC{_src}Up"
                     _kin_pk[f"JEC{_src}DOWN"] = f"Recoil_JEC{_src}Down"
+                _kin_obs_vars = ("Recoil", "costheta_star")   # fit variables that get the shifted-recoil variations
                 # Recoil threshold re-applied to shifted recoil (events migrating below
                 # it drop out), taken from the year config's event_selection.recoil_min.
                 _recoil_min_pk = float(getattr(self, "recoil_min", 0.0) or 0.0)
@@ -2594,15 +2602,15 @@ class PlotManager:
                             if _e["xsec"] is not None and _wte > 0
                             else (luminosity / _wte if _wte > 0 else 1.0))
 
-                def _sig_rows_pk(_region, _svar, _bins, _weight_branch=None, _kin_branch=None):
+                def _sig_rows_pk(_region, _svar, _bins, _weight_branch=None, _kin_branch=None, _obs_branch=None):
                     _rows = []
                     if not _region.endswith(":SR"):
                         return _rows
-                    _need = _kin_branch or _svar
-                    if not any(isinstance(_s["branches"], dict) and _need in _s["branches"]
-                               for _s in sig_file_entries):
+                    _need = [_b for _b in (_kin_branch, _obs_branch or (None if _kin_branch else _svar)) if _b]
+                    if not all(any(isinstance(_s["branches"], dict) and _n in _s["branches"]
+                                   for _s in sig_file_entries) for _n in _need):
                         return [(f"sig_{_m}", _h) for _m, _h in _sig_rows_from_pkl(
-                            _region, _svar, _bins, _weight_branch, _kin_branch, _recoil_min_pk)]
+                            _region, _svar, _bins, _weight_branch, _kin_branch, _recoil_min_pk, _obs_branch)]
                     for _sfe in sig_file_entries:
                         _sbr = _sfe["branches"]
                         _swte = _sfe["wte"]
@@ -2612,8 +2620,12 @@ class PlotManager:
                         _smask = _signal_region_mask(_region, _sfe)
                         if _smask is None:
                             continue
-                        _vraw = _sbr.get(_kin_branch or _svar)
+                        _vraw = _sbr.get(_obs_branch or _kin_branch or _svar)
                         if _vraw is None or not isinstance(_vraw, np.ndarray) or _vraw.dtype == object:
+                            continue
+                        _kraw = _sbr.get(_kin_branch) if _kin_branch is not None else None
+                        if _kin_branch is not None and (_kraw is None or not isinstance(_kraw, np.ndarray)
+                                                        or _kraw.dtype == object):
                             continue
                         _warr = _sbr.get(_weight_branch or "full_event_weight")
                         if _warr is None:
@@ -2624,9 +2636,12 @@ class PlotManager:
                                 continue
                             _m = _smask & _gm.astype(bool)
                             if _kin_branch is not None:
-                                _kv = np.asarray(_vraw, dtype=float)[_m]
+                                _kv = np.asarray(_kraw, dtype=float)[_m]
+                                _ov = np.asarray(_vraw, dtype=float)[_m]
                                 _sel = _kv > _recoil_min_pk
-                                _vals = _apply_variable_plot_filter(_svar, _kv[_sel])
+                                _ok = _apply_variable_plot_filter(_svar, _ov[_sel], return_mask=True)
+                                _sel = np.flatnonzero(_sel)[_ok]          # selected and not a sentinel value
+                                _vals = _ov[_sel]
                             else:
                                 _vm = np.asarray(_vraw, dtype=float)[_m]
                                 _sel = _apply_variable_plot_filter(_svar, _vm, return_mask=True)
@@ -2686,9 +2701,15 @@ class PlotManager:
                             _write_syst_file(f"hist_{_cat}_{_rdir}_{_svar}_{_wsyst}_log", _rows,
                                              _sig_rows_pk(_region, _svar, _bins, _weight_branch=_wsyst), _bins)
                             _n_syst_files += 1
-                        # kinematic variations (shifted Recoil only)
-                        if _svar == "Recoil":
+                        # kinematic variations: shifted Recoil. For Recoil the filled observable is the shifted recoil
+                        # itself; for cos theta* (2b fit variable) JEC changes no eta, so each event keeps its nominal
+                        # value and only the recoil > recoil_min migration (shifted recoil) changes which events count.
+                        # JER is only written for Recoil.
+                        if _svar in _kin_obs_vars:
                             for _sname, _kbr in _kin_pk.items():
+                                if _svar != "Recoil" and not _sname.startswith("JEC"):
+                                    continue
+                                _obs_br = None if _svar == "Recoil" else _svar
                                 _rows = []
                                 for _proc, _entries in bkg_groups.items():
                                     _ghv = None
@@ -2699,18 +2720,24 @@ class PlotManager:
                                         if _kv is None or _wr is None or len(_wr) != len(_kv):
                                             continue
                                         _kv = np.asarray(_kv, dtype=float)
+                                        _ov = _kv if _obs_br is None else _vd.get(_obs_br)
+                                        if _ov is None or len(_ov) != len(_kv):
+                                            continue
+                                        _ov = np.asarray(_ov, dtype=float)
                                         _sel = _kv > _recoil_min_pk
-                                        _vals = _apply_variable_plot_filter(_svar, _kv[_sel])
+                                        _ok = _apply_variable_plot_filter(_svar, _ov[_sel], return_mask=True)
+                                        _vals = _ov[_sel][_ok]   # e.g. cos theta* is a sentinel for one-jet events
                                         _hv, _ = np.histogram(
                                             _clip_overflow(_vals, _bins), bins=_bins,
-                                            weights=np.asarray(_wr, dtype=float)[_sel] * _bkg_scale_pk(_e))
+                                            weights=np.asarray(_wr, dtype=float)[_sel][_ok] * _bkg_scale_pk(_e))
                                         _ghv = _hv if _ghv is None else _ghv + _hv
                                     if _ghv is not None:
                                         _rows.append((_proc, _ghv))
                                 if not _rows:
                                     continue
                                 _write_syst_file(f"hist_{_cat}_{_rdir}_{_svar}_{_sname}_log", _rows,
-                                                 _sig_rows_pk(_region, _svar, _bins, _kin_branch=_kbr), _bins)
+                                                 _sig_rows_pk(_region, _svar, _bins, _kin_branch=_kbr,
+                                                              _obs_branch=_obs_br), _bins)
                                 _n_syst_files += 1
                 logging.info("Systematic ROOT files written from PKLs: %d (recoil_min=%.1f)",
                              _n_syst_files, _recoil_min_pk)
@@ -3696,7 +3723,7 @@ class PlotManager:
                         )
 
                     def _signal_syst_rows(svar_local, bins_local, weight_override_branch=None,
-                                           kin_branch=None, recoil_min_override=None):
+                                           kin_branch=None, recoil_min_override=None, obs_branch=None):
                         """Per-masspoint signal rows for one systematic variant, mirroring
                         the nominal signal block's GenModel-mask + xsec-lookup logic
                         (raw mass-point keys, UNSCALED — matches write path's sig_{mp_label}
@@ -3717,10 +3744,14 @@ class PlotManager:
                                 continue
 
                             if kin_branch is not None:
-                                _svals_raw = _sbr.get(kin_branch)
+                                _svals_raw = _sbr.get(obs_branch or kin_branch)
                             else:
                                 _svals_raw = _sbr.get(svar_local)
                             if _svals_raw is None or not isinstance(_svals_raw, np.ndarray) or _svals_raw.dtype == object:
+                                continue
+                            _skin_raw = _sbr.get(kin_branch) if kin_branch is not None else None
+                            if kin_branch is not None and (_skin_raw is None or not isinstance(_skin_raw, np.ndarray)
+                                                           or _skin_raw.dtype == object):
                                 continue
 
                             for _gmc in _gm_cols:
@@ -3729,10 +3760,13 @@ class PlotManager:
                                     continue
                                 _mp_mask = _smask_np & (_gm_arr.astype(bool))
                                 if kin_branch is not None:
-                                    _kin_vals = np.asarray(_svals_raw, dtype=float)[_mp_mask]
+                                    _kin_vals = np.asarray(_skin_raw, dtype=float)[_mp_mask]
+                                    _obs_vals = np.asarray(_svals_raw, dtype=float)[_mp_mask]
                                     _rmin = recoil_min_override or 0.0
                                     _kin_sel = _kin_vals > _rmin
-                                    _svals = _apply_variable_plot_filter(svar_local, _kin_vals[_kin_sel])
+                                    _kin_ok = _apply_variable_plot_filter(svar_local, _obs_vals[_kin_sel], return_mask=True)
+                                    _kin_sel = np.flatnonzero(_kin_sel)[_kin_ok]
+                                    _svals = _obs_vals[_kin_sel]
                                 else:
                                     _vals_masked = np.asarray(_svals_raw, dtype=float)[_mp_mask]
                                     _kin_sel = _apply_variable_plot_filter(svar_local, _vals_masked, return_mask=True)
@@ -3823,9 +3857,13 @@ class PlotManager:
                             created.append(str(rpath))
                             logging.debug("Syst ROOT: %s (signal masspoints: %d)", rpath.name, len(sig_rows_syst))
 
-                        # --- Kinematic systematics (JES/JER shifted Recoil) ---
-                        if svar == "Recoil":
+                        # --- Kinematic systematics (JES/JER shifted Recoil; for cos theta* the JEC variations as a
+                        #     migration through the shifted-recoil cut, nominal cos theta* values) ---
+                        if svar in ("Recoil", "costheta_star"):
                             for syst_name, kin_branch in _kin_systs.items():
+                                if svar != "Recoil" and not syst_name.startswith("JEC"):
+                                    continue
+                                obs_br = None if svar == "Recoil" else svar
                                 syst_rows_k: List = []
                                 any_kin = False
                                 for proc_label, entries in bkg_entries.items():
@@ -3836,7 +3874,8 @@ class PlotManager:
                                             continue
                                         br = e["branches"]
                                         kin_v = br.get(kin_branch)
-                                        if kin_v is None:
+                                        obs_v = kin_v if obs_br is None else br.get(obs_br)
+                                        if kin_v is None or obs_v is None:
                                             continue
                                         any_kin = True
                                         scale = ((luminosity * e["xsec"] * 1000.0) / e["wte"]
@@ -3848,9 +3887,12 @@ class PlotManager:
                                         w = np.asarray(w_arr, dtype=float)[mask_np] if w_arr is not None else np.ones(int(mask_np.sum()))
                                         # Re-apply recoil threshold with shifted value
                                         kin_vals = np.asarray(kin_v, dtype=float)[mask_np]
+                                        obs_vals = np.asarray(obs_v, dtype=float)[mask_np]
                                         recoil_min = region_obj.config.get("event_selection", {}).get("recoil_min", 0.0) if hasattr(region_obj, 'config') else 0.0
                                         kin_mask = kin_vals > recoil_min
-                                        vals = _apply_variable_plot_filter(svar, kin_vals[kin_mask])
+                                        kin_ok = _apply_variable_plot_filter(svar, obs_vals[kin_mask], return_mask=True)
+                                        kin_mask = np.flatnonzero(kin_mask)[kin_ok]   # selected and not a sentinel value
+                                        vals = obs_vals[kin_mask]
                                         w = w[kin_mask]
                                         hv, _ = np.histogram(_clip_overflow(vals, bins_syst), bins=bins_syst, weights=w * scale)
                                         group_hv = hv if group_hv is None else group_hv + hv
@@ -3862,7 +3904,8 @@ class PlotManager:
                                 recoil_min_sig = region_obj.config.get("event_selection", {}).get("recoil_min", 0.0) \
                                     if hasattr(region_obj, 'config') else 0.0
                                 sig_rows_k = _signal_syst_rows(svar, bins_syst, kin_branch=kin_branch,
-                                                                recoil_min_override=recoil_min_sig)
+                                                                recoil_min_override=recoil_min_sig,
+                                                                obs_branch=obs_br)
                                 root_stem_k = f"hist_{cat_s}_{rdir_s}_{svar}_{syst_name}_log"
                                 rpath_k = root_dir / f"{root_stem_k}.root"
                                 with _up_syst.recreate(str(rpath_k)) as rf:

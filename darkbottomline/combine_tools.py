@@ -244,20 +244,27 @@ class CombineDatacardWriter:
 
     def _sr_data_driven_dropped(self, region_key: str, sys_name: str) -> set:
         """Run 2 treatment: in the SR, the processes normalised from a CR (the `process` of the category's
-        sr_rate_parameters entries) carry only the nuisances listed under sr_data_driven_nuisances.keep for
-        them; every other nuisance is dropped for those processes. Returns the processes dropped for
+        sr_rate_parameters entries) do not carry the experimental nuisances, because their effect is taken to
+        cancel in the CR -> SR transfer. A nuisance is dropped for such a process only when it is also applied
+        in the process's control region(s): a gated nuisance (e.g. the b-tag ones) that the CR does not carry,
+        because the CR lacks the gating cut, does not cancel and stays on the process in the SR. The nuisances
+        listed under sr_data_driven_nuisances.keep for a process always stay. Returns the processes dropped for
         `sys_name` in this region (empty outside the SR or when the rule is off)."""
         cfg = self.datacard_config.get("sr_data_driven_nuisances", {})
         if not cfg.get("enabled", False) or not region_key.endswith(":SR"):
             return set()
         category = region_key.split(":")[0]
         keep = cfg.get("keep", {})
+        gated_by_cut = self.datacard_config["systematics"].get(sys_name, {}).get("gated_by_cut")
+        rate_parameters = self.datacard_config.get("rate_parameters", {})
         dropped = set()
         for entry in self.datacard_config.get("sr_rate_parameters", {}).get(category, []):
             proc = entry.get("process")
             procs = [proc] if isinstance(proc, str) else list(proc or [])
+            cr_regions = [r for name in entry.get("unmerged", []) for r in rate_parameters.get(name, {}).get("regions", [])]
+            in_every_cr = all(systematic_applies_to_region(self.regions_config, r, gated_by_cut) for r in cr_regions)
             for p in procs:
-                if sys_name not in keep.get(p, []):
+                if sys_name not in keep.get(p, []) and in_every_cr:
                     dropped.add(p)
         return dropped
 

@@ -1661,7 +1661,7 @@ class TestSrRateParamProcess:
 
 
 class TestBtagNuisances:
-    """True-b and fake-b (mistag) are separate nuisances; regions without a b-tag cut get only fake-b."""
+    """True-b and fake-b (mistag) are separate nuisances; regions without a b-tag cut get neither."""
 
     @pytest.fixture(scope="class")
     def systs(self):
@@ -1679,9 +1679,9 @@ class TestBtagNuisances:
         for key in ("1b:SR", "2b:SR", "1b:CR_Wmunu", "2b:CR_Topenu"):   # b-tag required: both
             assert systematic_applies_to_region(regions, key, systs["btag_true"].get("gated_by_cut"))
             assert systematic_applies_to_region(regions, key, systs["btag_mistag"].get("gated_by_cut"))
-        for key in ("1b:CR_Zmumu", "2b:CR_Zee"):                          # no b-tag cut: fake-b only
+        for key in ("1b:CR_Zmumu", "2b:CR_Zee"):                          # no b-tag cut: neither
             assert not systematic_applies_to_region(regions, key, systs["btag_true"].get("gated_by_cut"))
-            assert systematic_applies_to_region(regions, key, systs["btag_mistag"].get("gated_by_cut"))
+            assert not systematic_applies_to_region(regions, key, systs["btag_mistag"].get("gated_by_cut"))
 
 
 class TestMcStat:
@@ -1761,16 +1761,48 @@ class TestRun2Treatment:
     def cfg(self):
         return yaml.safe_load((REPO_ROOT / "configs" / "combine.yaml").read_text())
 
+    def _writer_with_regions(self, cfg, tmp_path, drop_btag_in):
+        """Writer whose regions file lacks the b-tag cut in the named control regions."""
+        regs = yaml.safe_load((REPO_ROOT / "configs" / "regions.yaml").read_text())
+        for key in drop_btag_in:
+            for cut in ("Bjet1bCond", "Bjet2bCond"):
+                regs["regions"][key]["cuts"].pop(cut, None)
+        p = tmp_path / "regions.yaml"; p.write_text(yaml.safe_dump(regs))
+        c = yaml.safe_load(yaml.safe_dump(cfg)); c["regions_config"] = str(p)
+        return CombineDatacardWriter(c)
+
+    def test_btag_dropped_in_sr_only_where_the_cr_carries_it(self, cfg, tmp_path):
+        # incl: W and top CRs have the b-tag cut, the Z CRs do not -> b-tag stays on Z(nunu) only
+        w = self._writer_with_regions(cfg, tmp_path, ["1b:CR_Zmumu", "1b:CR_Zee", "2b:CR_Zmumu", "2b:CR_Zee"])
+        for b in ("btag_true", "btag_mistag"):
+            assert w._sr_data_driven_dropped("1b:SR", b) == {"wjets"}
+            assert w._sr_data_driven_dropped("2b:SR", b) == {"ttbar"}
+        # nobtagWT: no b-tag cut in the W, top and Z CRs -> b-tag stays on all three in the SR
+        w = self._writer_with_regions(cfg, tmp_path, [k for k in ("1b:CR_Wmunu", "1b:CR_Wenu", "2b:CR_Topmunu", "2b:CR_Topenu",
+                                                                  "1b:CR_Zmumu", "1b:CR_Zee", "2b:CR_Zmumu", "2b:CR_Zee")])
+        for b in ("btag_true", "btag_mistag"):
+            assert w._sr_data_driven_dropped("1b:SR", b) == set()
+            assert w._sr_data_driven_dropped("2b:SR", b) == set()
+        # nobtagW: only the W CR lacks the b-tag cut -> b-tag stays on W and on Z(nunu) in 1b, on Z(nunu) only in 2b
+        w = self._writer_with_regions(cfg, tmp_path, ["1b:CR_Wmunu", "1b:CR_Wenu", "1b:CR_Zmumu", "1b:CR_Zee", "2b:CR_Zmumu", "2b:CR_Zee"])
+        assert w._sr_data_driven_dropped("1b:SR", "btag_true") == set()
+        assert w._sr_data_driven_dropped("2b:SR", "btag_true") == {"ttbar"}
+        # other nuisances (not gated) are dropped for the CR-normalised processes whatever the regions are
+        assert w._sr_data_driven_dropped("1b:SR", "pileup") == {"wjets", "zjets"}
+
     def test_sr_data_driven_processes_drop_experimental_nuisances(self, cfg):
         w = CombineDatacardWriter(cfg)
         # 1b: wjets and zjets are normalised from the CRs; 2b: ttbar and zjets
         assert w._sr_data_driven_dropped("1b:SR", "pileup") == {"wjets", "zjets"}
         assert w._sr_data_driven_dropped("2b:SR", "pileup") == {"ttbar", "zjets"}
-        # zjets keeps the PDF, the (shared) QCD scale and the DY normalisation; W and ttbar keep none
-        for kept in ("pdf_envelope", "qcdscale_dyjets", "norm_dyjets"):
+        # zjets keeps the PDF, the (shared) QCD scale, the DY normalisation and the b-tag nuisances; W and ttbar keep none
+        for kept in ("pdf_envelope", "qcdscale_dyjets", "norm_dyjets", "btag_true", "btag_mistag"):   # b-tag: via the Z CR gate
             assert "zjets" not in w._sr_data_driven_dropped("1b:SR", kept)
         assert "wjets" in w._sr_data_driven_dropped("1b:SR", "pdf_envelope")
         assert "ttbar" in w._sr_data_driven_dropped("2b:SR", "pdf_envelope")
+        for b in ("btag_true", "btag_mistag"):                       # kept on Z(nunu) only: its CR has no b-tag cut
+            assert w._sr_data_driven_dropped("1b:SR", b) == {"wjets"}
+            assert w._sr_data_driven_dropped("2b:SR", b) == {"ttbar"}
         # control regions: every nuisance applies to every process
         assert w._sr_data_driven_dropped("1b:CR_Wmunu", "pileup") == set()
         assert w._sr_data_driven_dropped("2b:CR_Zee", "pileup") == set()
