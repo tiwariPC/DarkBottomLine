@@ -1629,6 +1629,55 @@ class CombineRunner:
             )
         return str(plot_matches[0])
 
+    def plot_prefit_postfit_file(self, fit_file: str, fit_dir: str, out_dir: str, tag: str, year: str = "2024",
+                                  mass_point: str = "", unblind_sr: bool = False) -> List[str]:
+        """Pre-fit / post-fit summary plots (darkbottomline/prefit_postfit.py) of one FitDiagnostics file, one per
+        category in advanced.prefit_postfit.edges, written to out_dir as <tag>_<category>.{pdf,png,root}.
+        Process colours are the ones of the data/MC plots (plotting.yaml process_groups, through the
+        datacard.processes plot_group_label). A file without post-fit shapes is skipped with a warning."""
+        from darkbottomline.prefit_postfit import make_prefit_postfit_summary
+
+        cfg = self.advanced_config.get("prefit_postfit", {})
+        with open(cfg.get("plotting_config", "configs/plotting.yaml")) as f:
+            groups = yaml.safe_load(f).get("process_groups", {})
+        colors = {p["name"]: groups[p["plot_group_label"]]["color"]
+                  for p in self.config["datacard"]["processes"].values()
+                  if p.get("plot_group_label") in groups and "color" in groups[p["plot_group_label"]]}
+        lumi_text = self._resolve_lumi_text(year).split(" (")[0]
+        m = re.match(r"MH3_(\d+)_MH4_(\d+)", mass_point or "")
+        signal_label = f"m_{{A}}={m.group(1)}, m_{{a}}={m.group(2)} GeV" if m else "signal"
+        made: List[str] = []
+        for category, edges in cfg.get("edges", {}).items():
+            pdf = make_prefit_postfit_summary(
+                str(fit_file), fit_dir, category, str(out_dir), tag=tag, lumi_text=lumi_text, edges=edges,
+                unblind_sr=unblind_sr, signal_label=signal_label, ratio_range=cfg.get("ratio_range", 0.5),
+                colors=colors, ticks=cfg.get("ticks", {}).get(category))
+            if pdf:
+                made.append(str(pdf))
+        return made
+
+    def run_prefit_postfit(self, output_dir: str, year: str = "2024", mass_point: str = "",
+                            plots_dir: Optional[str] = None) -> List[str]:
+        """Pre-fit / post-fit summary plots for every fit in advanced.prefit_postfit.fits, from the FitDiagnostics
+        files the pulls stage left in output_dir (a mass point's card directory).
+        Output folder: plots_dir/<mass_point> when plots_dir (or advanced.prefit_postfit.output_dir) is given,
+        else <output_dir>/prefit_postfit."""
+        cfg = self.advanced_config.get("prefit_postfit", {})
+        if not cfg.get("fits"):
+            logging.warning("advanced.prefit_postfit.fits is empty — no pre-fit/post-fit plots made")
+            return []
+        base = plots_dir or cfg.get("output_dir")
+        out_dir = Path(base) / mass_point if base else Path(output_dir) / "prefit_postfit"
+        made: List[str] = []
+        for fit in cfg["fits"]:
+            fit_file = Path(output_dir) / fit["file"]
+            if not fit_file.exists():
+                logging.warning(f"{fit_file} not found — run the pulls stage first; skipping {fit['tag']}")
+                continue
+            made += self.plot_prefit_postfit_file(str(fit_file), fit["fit_dir"], str(out_dir), fit["tag"], year=year,
+                                                   mass_point=mass_point, unblind_sr=fit.get("unblind_sr", False))
+        return made
+
     def run_impacts(self, datacard_or_workspace: str, output_dir: str,
                      blind: bool = True, mass_point: str = "") -> str:
         """mass_point is appended to the impacts.json filename (added

@@ -2565,6 +2565,18 @@ def make_impact(args):
     logging.info(f"Impact plot creation completed: {plot_file}")
 
 
+def make_prefit_postfit(args):
+    """Pre-fit / post-fit summary plots of one FitDiagnostics file (the same plots as run-all's prefit-postfit stage)."""
+    config = load_config(args.combine_config)
+    runner = CombineRunner(config)
+    stem = Path(args.input).stem.replace("fitDiagnostics_", "")
+    made = runner.plot_prefit_postfit_file(args.input, args.fit_dir, args.output, args.tag or stem,
+                                           year=args.year or str(config["eras"][0]["year"]),
+                                           mass_point=args.mass_point or "", unblind_sr=args.unblind_sr)
+    for path in made:
+        logging.info(f"wrote {path}")
+
+
 def make_pulls(args):
     """Create pull plots for one of Run2's 4 pulls modes
     (CRonly/asimov_t0/sb_t0/sb_t1) from a workspace, via
@@ -2774,7 +2786,7 @@ def run_all(args):
     combine_config = load_config(args.combine_config)
     stages = set(args.stages) if args.stages and "all" not in args.stages else {
         "merge-emu", "normalize-pdf", "datacard", "merge-region", "merge-categories",
-        "merge-eras", "gof", "impacts", "pulls", "limit",
+        "merge-eras", "gof", "impacts", "pulls", "prefit-postfit", "limit",
     }
 
     if args.era == "full":
@@ -2886,7 +2898,7 @@ def run_all(args):
         )
         merge_eras(merge_eras_args)
 
-    if any(s in stages for s in ("gof", "impacts", "pulls", "limit")):
+    if any(s in stages for s in ("gof", "impacts", "pulls", "prefit-postfit", "limit")):
         writer = CombineDatacardWriter(combine_config)
         failed_limit_points: List[str] = []
         for mass_point in mass_points:
@@ -2932,6 +2944,10 @@ def run_all(args):
                     runner.run_pulls(workspace_file, str(card_dir), str(datacard_file),
                                       mode=pulls_mode, year=era_label, mass_point=mass_point,
                                       category=merged_category_label)
+            if "prefit-postfit" in stages:
+                # Needs the FitDiagnostics files of the pulls stage (same card_dir), run it first or together.
+                runner.run_prefit_postfit(str(card_dir), year=era_label, mass_point=mass_point,
+                                          plots_dir=getattr(args, "prefit_postfit_output", None))
             if "limit" in stages:
                 # One mass point without a valid limit must not abort the other points: record it and carry
                 # on; collect_limits skips points without a result.
@@ -3414,6 +3430,18 @@ Examples:
     impact_parser.add_argument("--unblind", dest="blind", action="store_false", help="Unblind mode -> \"data_t0\" in filename")
     impact_parser.set_defaults(func=make_impact)
 
+    # Pre-fit / post-fit summary plots of one FitDiagnostics file
+    pp_parser = subparsers.add_parser("make-prefit-postfit", help="Pre-fit / post-fit summary plots from a FitDiagnostics file")
+    pp_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
+    pp_parser.add_argument("--input", required=True, help="FitDiagnostics .root file (with --saveShapes --saveWithUncertainties)")
+    pp_parser.add_argument("--fit-dir", required=True, choices=["b", "s"], help="Post-fit shapes folder: b = shapes_fit_b, s = shapes_fit_s")
+    pp_parser.add_argument("--output", required=True, help="Output directory")
+    pp_parser.add_argument("--tag", default=None, help="Output file name prefix (default: the input file's name)")
+    pp_parser.add_argument("--year", help="Data-taking year for the lumi label (default: combine.yaml's first era)")
+    pp_parser.add_argument("--mass-point", help="Mass point, for the signal label (MH3_<mA>_MH4_<ma>_Mchi_1)")
+    pp_parser.add_argument("--unblind-sr", action="store_true", help="Draw the SR data and ratio instead of the background sum")
+    pp_parser.set_defaults(func=make_prefit_postfit)
+
     # Make pulls command (diffNuisances.py + PlotPulls.C wrapper)
     pulls_parser = subparsers.add_parser("make-pulls", help="Create pull plots (diffNuisances.py + PlotPulls.C)")
     pulls_parser.add_argument("--combine-config", required=True, help="Path to combine.yaml")
@@ -3498,9 +3526,12 @@ Examples:
     run_all_parser.add_argument("--stages", nargs="+",
                                choices=["merge-emu", "normalize-pdf", "datacard", "merge-region",
                                         "merge-categories", "merge-eras", "gof", "impacts", "pulls",
-                                        "limit", "all"],
+                                        "prefit-postfit", "limit", "all"],
                                default=["all"], help="Pipeline stages to run")
     run_all_parser.add_argument("--mass-points", nargs="+", help="Restrict to specific mass points (overrides combine.yaml signal_grid.points)")
+    run_all_parser.add_argument("--prefit-postfit-output", default=None,
+                                help="Directory for the prefit-postfit stage plots (<dir>/<mass_point>/...); default: "
+                                     "advanced.prefit_postfit.output_dir, else <card dir>/prefit_postfit")
     run_all_parser.set_defaults(func=run_all)
 
     # Limits summary aggregation (standalone; run-all also calls this automatically

@@ -29,7 +29,8 @@
 #   YEAR, CONFIG, REGIONS_CONFIG, PLOT_CONFIG, DNN_CONFIG, COMBINE_CONFIG,
 #   RAW_INPUT_DIR, PARALLEL_JOBS, EVENTSEL_DIR, REGION_PLOTS_DIR, VERSION,
 #   DNN_OUTDIR, DNN_PLOT_DIR, XSEC_BKG_JSON, XSEC_SIG_JSON,
-#   SIGNAL_SCALE, COMBINE_ERA, COMBINE_STAGES
+#   SIGNAL_SCALE, COMBINE_ERA, COMBINE_STAGES, PREFIT_POSTFIT_OUTPUT
+#   (COMBINE_STAGES=all includes the prefit-postfit plots; PREFIT_POSTFIT_OUTPUT, if set, is their output directory)
 #
 # NOTE on env vars + the default tmux relaunch: the tmux session this script
 # launches itself into does NOT inherit your shell's environment variables
@@ -167,6 +168,7 @@ SIGNAL_SCALE=${SIGNAL_SCALE:-10}
 
 COMBINE_ERA=${COMBINE_ERA:-full}
 COMBINE_STAGES=${COMBINE_STAGES:-all}
+PREFIT_POSTFIT_OUTPUT=${PREFIT_POSTFIT_OUTPUT:-}   # empty -> <mass point card dir>/prefit_postfit
 
 # LOG_DIR/LOG_FILE were already set (and the file truncated fresh) above,
 # before the tmux relaunch block — re-declaring here is a no-op when
@@ -432,6 +434,7 @@ if step_enabled combine; then
         darkbottomline run-all \
         --combine-config "${COMBINE_CONFIG}" \
         --era "${COMBINE_ERA}" \
+        ${PREFIT_POSTFIT_OUTPUT:+--prefit-postfit-output "${PREFIT_POSTFIT_OUTPUT}"} \
         --stages ${COMBINE_STAGES}
     log "Combine pipeline completed"
 else

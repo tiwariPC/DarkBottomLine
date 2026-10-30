@@ -489,11 +489,14 @@ advanced:
     # CombineRunner.run_pulls(). {mask_sr_on} is the same channel-masking
     # token GoodnessOfFit uses (resolved from the datacard's own SR bin
     # names, not hardcoded).
+    # --rMin/--rMax: the post-fit uncertainty step samples toys from the fit covariance; with the default POI range
+    # [0, 20] a sampled r < 0 raises 'Value ... is outside the default range' (combine v11), the step is abandoned and
+    # shapes_fit_b/shapes_fit_s come out empty. The wide range only affects that sampling, not the limits.
     PullsCRonly:
       steps:
         - binary: "combine"
           args: ["-M", "FitDiagnostics", "{workspace}", "-n", "_CRonly",
-                  "--saveShapes", "--saveWithUncertainties",
+                  "--saveShapes", "--saveWithUncertainties", "--rMin", "-20", "--rMax", "20",
                   "--setParameters", "{mask_sr_on}",
                   "--X-rtd", "MINIMIZER_analytic",
                   "--cminFallbackAlgo", "Minuit2,0:1.0",
@@ -502,21 +505,21 @@ advanced:
       steps:
         - binary: "combine"
           args: ["-M", "FitDiagnostics", "{workspace}", "-n", "_AsimovT0",
-                  "--saveShapes", "--saveWithUncertainties",
+                  "--saveShapes", "--saveWithUncertainties", "--rMin", "-20", "--rMax", "20",
                   "-t", "-1", "--expectSignal", "0",
                   "--cminDefaultMinimizerStrategy", "0"]
     PullsSbT0:
       steps:
         - binary: "combine"
           args: ["-M", "FitDiagnostics", "{workspace}", "-n", "_SbT0",
-                  "--saveShapes", "--saveWithUncertainties",
+                  "--saveShapes", "--saveWithUncertainties", "--rMin", "-20", "--rMax", "20",
                   "--expectSignal", "0",
                   "--cminDefaultMinimizerStrategy", "0"]
     PullsSbT1:
       steps:
         - binary: "combine"
           args: ["-M", "FitDiagnostics", "{workspace}", "-n", "_SbT1",
-                  "--saveShapes", "--saveWithUncertainties",
+                  "--saveShapes", "--saveWithUncertainties", "--rMin", "-20", "--rMax", "20",
                   "--expectSignal", "1",
                   "--cminDefaultMinimizerStrategy", "0"]
 
@@ -597,3 +600,20 @@ advanced:
     # CRonly mode uses this macro directly on fit_b (no diffNuisances.py step
     # — see CombineRunner.run_pulls's docstring for why).
     plot_postnuisance_macro: "condorJobs/combine/plotPostNuisance_combine.C"
+
+  # run-all stage "prefit-postfit": pre-fit / post-fit summary plot of every category from the FitDiagnostics files the
+  # pulls stage leaves in each mass point's directory (darkbottomline/prefit_postfit.py). Channel and process names are
+  # read from the file, so combine_emu true (Wlnu, Topl, Zll) and false (Wmunu, Wenu, ...) both work.
+  #   fits:      FitDiagnostics file, shapes folder (b = shapes_fit_b, s = shapes_fit_s) and whether the SR data is drawn
+  #              (unblind_sr: false keeps the SR to the background sum with no ratio; set true to add the SR data and ratio later).
+  #              CRonly masks the SR, so its post-fit SR is a prediction from the CRs alone.
+  #   edges:     bin edges of one region block (1b: Recoil in GeV, 2b: |cos theta*|); the plot keeps the true bin widths
+  #   ticks:     axis labels printed under each block
+  prefit_postfit:
+    plotting_config: "configs/plotting.yaml"   # process colours of the data/MC plots
+    output_dir: null     # null -> <mass point card dir>/prefit_postfit; set to <dir> -> <dir>/<mass_point>/ (CLI: run-all --prefit-postfit-output)
+    fits:
+      - {tag: "CRonly", file: "fitDiagnostics_CRonly.root", fit_dir: "b", unblind_sr: false}
+      - {tag: "SbT1",   file: "fitDiagnostics_SbT1.root",   fit_dir: "s", unblind_sr: false}
+    edges: {"1b": [250, 300, 400, 550, 1000], "2b": [0.0, 0.25, 0.5, 0.75, 1.0]}   # bin edges: sets the bin widths
+    ticks: {"1b": [250, 500, 750, 1000], "2b": [0.0, 0.25, 0.5, 0.75, 1.0]}        # labels under each block

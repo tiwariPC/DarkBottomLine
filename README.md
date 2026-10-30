@@ -431,7 +431,22 @@ darkbottomline make-pulls --combine-config configs/combine.yaml \
     --output outputs/combine/run3/C/<mass_point>/ \
     --mode CRonly|asimov_t0|sb_t0|sb_t1 \
     [--year 2024]
+
+# Pre-fit / post-fit summary plots of one FitDiagnostics file (the same plots as run-all's `prefit-postfit` stage)
+darkbottomline make-prefit-postfit --combine-config configs/combine.yaml \
+    --input outputs/combine/run3/C/<mass_point>/fitDiagnostics_CRonly.root \
+    --fit-dir b|s \
+    --output outputs/prefit_postfit/<mass_point>/ \
+    [--mass-point MH3_600_MH4_150_Mchi_1] [--year 2024] [--unblind-sr]
 ```
+
+The `prefit-postfit` plots (`darkbottomline/prefit_postfit.py`) show, for each category (1b, 2b) and each fit listed in
+`advanced.prefit_postfit.fits`, the stacked processes of every region block (SR, then the CRs), the post-fit total with its
+uncertainty, the data and a Data/Pred. ratio pad with post-fit and pre-fit points. Channel and process names are read from the
+FitDiagnostics file, so merged (`Wlnu`, `Topl`, `Zll`) and separate (`Wmunu`, `Wenu`, ...) e/μ CRs both work; process colours are
+those of the data/MC plots. While the SR is blinded the post-fit background sum stands in for the data there; set `unblind_sr: true`
+for a fit in `combine.yaml` to draw the SR data. The FitDiagnostics pulls commands carry `--rMin -20 --rMax 20`: without it the
+post-fit uncertainty step (`--saveWithUncertainties`) fails on a sampled r < 0 and the post-fit folders come out empty.
 
 ### Full pipeline (orchestrator)
 
@@ -448,7 +463,7 @@ darkbottomline run-all --combine-config configs/combine.yaml --era 2024 \
     --mass-points MH3_600_MH4_150_Mchi_1 MH3_1000_MH4_400_Mchi_1
 ```
 
-`--stages` choices: `merge-emu normalize-pdf datacard merge-region merge-categories merge-eras gof impacts pulls limit all` (default `all`). `run-all` never invokes `analyze` itself — histo-production must already exist. Also aggregates limits automatically (`collect-limits`) whenever `limit` is in `--stages`.
+`--stages` choices: `merge-emu normalize-pdf datacard merge-region merge-categories merge-eras gof impacts pulls prefit-postfit limit all` (default `all`; `prefit-postfit` reads the FitDiagnostics files of `pulls`, so run it after or with `pulls`; `--prefit-postfit-output DIR` writes its plots to `DIR/<mass_point>/` instead of `<card dir>/prefit_postfit/`). `run-all` never invokes `analyze` itself — histo-production must already exist. Also aggregates limits automatically (`collect-limits`) whenever `limit` is in `--stages`.
 
 ### Limits summary + Brazil-band plots
 
@@ -969,9 +984,10 @@ double-count the same underlying uncertainty.
 | `plotting.py` | `PlotManager`: stacked plots, 5 formats (PDF/PNG/ROOT/TXT/TEX), SR blinding, process group routing |
 | `corrections.py` | `CorrectionManager`: correctionlib scale factors |
 | `weights.py` | `WeightCalculator` |
-| `combine_tools.py` | `CombineDatacardWriter`, `CombineRunner`: datacard/shapes generation, region/category/era merge, `combine`/`combineTool.py` invocation (masked GoF, 4 pulls modes, Impacts), and official-tool plotting wrappers (`plotGof.py`, `plotImpacts.py`, `diffNuisances.py`+`PlotPulls.C`) |
+| `combine_tools.py` | `CombineDatacardWriter`, `CombineRunner`: datacard/shapes generation, region/category/era merge, `combine`/`combineTool.py` invocation (masked GoF, 4 pulls modes, Impacts, pre-fit/post-fit plots via `prefit_postfit.py`), and official-tool plotting wrappers (`plotGof.py`, `plotImpacts.py`, `diffNuisances.py`+`PlotPulls.C`) |
+| `prefit_postfit.py` | Pre-fit / post-fit summary plots (stack, post-fit total, data, Data/Pred. ratio) from a FitDiagnostics file; used by `run-all --stages prefit-postfit` and `make-prefit-postfit` |
 | `combine_inputs.py` | Region-histogram I/O, e/mu merge (incl. shape-systematic variants), PDF normalization, signal-grid/era resolution for the Combine pipeline |
-| `cli.py` | CLI: `analyze` (all modes), `make-plots`, `make-stacked-plots`, Combine pipeline (`make-datacard`, `run-combine`, `merge-emu`, `normalize-pdf`, `merge-region`, `merge-categories`, `merge-eras`, `run-all`, `collect-gof`, `make-gof`, `make-impact`, `make-pulls`) |
+| `cli.py` | CLI: `analyze` (all modes), `make-plots`, `make-stacked-plots`, Combine pipeline (`make-datacard`, `run-combine`, `merge-emu`, `normalize-pdf`, `merge-region`, `merge-categories`, `merge-eras`, `run-all`, `collect-gof`, `make-gof`, `make-impact`, `make-pulls`, `make-prefit-postfit`) |
 
 ---
 
