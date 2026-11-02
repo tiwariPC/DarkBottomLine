@@ -89,7 +89,7 @@ noise_filters:
    - "Flag_BadPFMuonDzFilter"
    - "Flag_hfNoisyHitsFilter"
    - "Flag_eeBadScFilter"
-   - "Flag_ecalBadCalibFilter"
+   # - "Flag_ecalBadCalibFilter"   # not recommended in Run 3
 
 # Object selection (preselection: loose pt>10; region: tight pt>20, leading pt>30 in CRs)
 objects:

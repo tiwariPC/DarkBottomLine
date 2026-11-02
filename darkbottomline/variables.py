@@ -89,6 +89,9 @@ def _met_variables(events: ak.Array, objects: Optional[Dict[str, Any]] = None) -
         'MET_pt':  np.asarray(ak.to_numpy(met_pt)) if met_pt is not None else _get('PuppiMET_pt',  'PFMET_pt',  'MET_pt'),
         'MET_phi': np.asarray(ak.to_numpy(met_phi)) if met_phi is not None else _get('PuppiMET_phi', 'PFMET_phi', 'MET_phi'),
         'MET_significance': _get('PFMET_significance', 'MET_significance'),
+        # Calo MET (NanoAOD CaloMET_pt/phi): input to the Run 2 |caloMET - pfMET| / recoil < 0.5 quality cut
+        'CaloMET_pt':  _get('CaloMET_pt'),
+        'CaloMET_phi': _get('CaloMET_phi'),
     }
 
 
@@ -219,12 +222,17 @@ def _jet_lead_variables(objects: Dict[str, Any]) -> Dict[str, np.ndarray]:
     """
     jets = objects.get('jets', ak.Array([]))
     btag = jets.btagScore if hasattr(jets, 'btagScore') else ak.zeros_like(jets.pt)
+    # Truth flavour (0 = light, 4 = c, 5 = b) that selects the b-tag SF; 0 on data and for missing jets
+    flav = jets.hadronFlavour if hasattr(jets, 'hadronFlavour') else ak.zeros_like(jets.pt)
 
     return {
         'Jet1Pt':              _lead(jets.pt,  0),
         'Jet1Eta':             _lead(jets.eta, 0),
         'Jet1Phi':             _lead(jets.phi, 0),
         'Jet1BTagScore':       _lead(btag,     0, default=SENTINEL),
+        'Jet1HadronFlavour':   _lead(flav,     0, default=0).astype(np.int32),
+        'Jet2HadronFlavour':   _lead(flav,     1, default=0).astype(np.int32),
+        'Jet3HadronFlavour':   _lead(flav,     2, default=0).astype(np.int32),
         'Jet2Pt':              _lead(jets.pt,  1),
         'Jet2Eta':             _lead(jets.eta, 1),
         'Jet2Phi':             _lead(jets.phi, 1),
@@ -480,6 +488,7 @@ _SCALAR_BRANCHES: Dict[str, Any] = {
     # from raw NanoAOD (see _raw_jec_inputs_variables).
     'fixedGridRhoFastjetAll': np.float32,
     'MET_pt': np.float32, 'MET_phi': np.float32, 'MET_significance': np.float32,
+    'CaloMET_pt': np.float32, 'CaloMET_phi': np.float32,
     'Recoil': np.float32, 'RecoilPhi': np.float32,
     'Recoil_JERUp': np.float32, 'Recoil_JERDown': np.float32,
     # Static schema (used for empty-event placeholder files, no runtime
@@ -502,6 +511,7 @@ _SCALAR_BRANCHES: Dict[str, Any] = {
     'Jet1Pt': np.float32, 'Jet1Eta': np.float32, 'Jet1Phi': np.float32,
     'Jet2Pt': np.float32, 'Jet2Eta': np.float32, 'Jet2Phi': np.float32,
     'Jet3Pt': np.float32, 'Jet3Eta': np.float32, 'Jet3Phi': np.float32,
+    'Jet1HadronFlavour': np.int32, 'Jet2HadronFlavour': np.int32, 'Jet3HadronFlavour': np.int32,
     'JetHT': np.float32,
     'ratioJet1PtMET': np.float32, 'ratioPtJet21': np.float32,
     'dEtaJet12': np.float32, 'dPhiJet12': np.float32, 'dRJet12': np.float32,

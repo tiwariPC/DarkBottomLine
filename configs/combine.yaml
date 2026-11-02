@@ -234,14 +234,14 @@ datacard:
       syst_suffix: "weight_btag_true"
       name_template: "CMS_eff_b_{year}"
       processes: ["signal", "ttbar", "wjets", "zjets", "dyjets", "singletop", "diboson", "smhiggs"]
-      gated_by_cut: ["Bjet1bCond", "Bjet2bCond"]   # region-applicable iff its
+      gated_by_cut: ["Bjet1bCond", "Bjet1bAnyCond", "Bjet2bCond"]   # region-applicable iff its
                                                      # regions.yaml cuts block has either key
     btag_mistag:
       type: "shape"
       syst_suffix: "weight_btag_mistag"
       name_template: "CMS_fake_b_{year}"
       processes: ["signal", "ttbar", "wjets", "zjets", "dyjets", "singletop", "diboson", "smhiggs"]
-      gated_by_cut: ["Bjet1bCond", "Bjet2bCond"]
+      gated_by_cut: ["Bjet1bCond", "Bjet1bAnyCond", "Bjet2bCond"]
     # JES: reduced 11-source JEC scheme written by the PKL/event plot paths
     # (hist_<cat>_<region>_<Recoil|costheta_star>_JEC<source>{UP,DOWN}_log.root). The shifted quantity is the recoil; for
     # the 2b fit variable (costheta_star) the variation is the migration of events through recoil > recoil_min (nominal

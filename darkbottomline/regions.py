@@ -266,6 +266,24 @@ class Region:
                 if _fname in events.fields:
                     return events[_fname]
             return ak.Array(np.zeros(n_ev, dtype=np.int64))
+        if var == "Bjet1bAnyCond":
+            # Nbjets==1 and that b-jet is the pT-leading or the subleading jet (Bjet1bCond needs the leading one)
+            if all(f in events.fields for f in ("n_bjets", "is_lead_bjet", "is_sublead_bjet")):
+                flag = (events["n_bjets"] == 1) & ((events["is_lead_bjet"] == 1) | (events["is_sublead_bjet"] == 1))
+                return ak.values_astype(flag, np.int64)
+            jets = objects.get("jets", ak.Array([]))
+            if len(ak.flatten(jets)) == 0 or "btag_score" not in objects:
+                return ak.Array(np.zeros(n_ev, dtype=np.int64))
+            try:
+                wp = objects["btag_score"]
+                def _pos_b(idx):
+                    b = ak.pad_none(jets.btagScore, idx + 1, clip=True)[:, idx]
+                    return ak.fill_none(b, SENTINEL) > wp
+                nb = self._safe_num_axis1(objects.get("bjets", ak.Array([])), n_ev)
+                flag = (nb == 1) & (_pos_b(0) | _pos_b(1))
+                return ak.values_astype(ak.fill_none(flag, False, axis=0), np.int64)
+            except (Exception, BaseException):
+                return ak.Array(np.zeros(n_ev, dtype=np.int64))
         if var in ("LeadingBjet", "SubleadingBjet", "Bjet1bCond", "Bjet2bCond"):
             # Positional b-tag flags. LeadingBjet/SubleadingBjet: is the pt-leading
             # (subleading) jet b-tagged. Bjet1bCond/Bjet2bCond: composite category
@@ -466,13 +484,15 @@ class Region:
             except (Exception, BaseException):
                 return self._zeros_like_events(events, n_ev, dtype=float)
         if var == "metQuality":
-            # MET Quality = (pfMET - caloMET) / Recoil
-            pf_met = next((events[v] for v in ("PuppiMET_pt", "PFMET_pt", "MET_pt") if v in events.fields), None)
-            calo_met = events.get("CaloMET_pt", pf_met)  # Fallback to pfMET if caloMET not available
+            # MET quality = |caloMET - MET| / Recoil (Run 2: < 0.5 in the SR and every CR)
+            pf_met = next((events[v] for v in ("MET_pt", "PuppiMET_pt", "PFMET_pt") if v in events.fields), None)
+            if pf_met is None or "CaloMET_pt" not in events.fields:
+                raise KeyError("metQuality needs MET_pt and CaloMET_pt in the events; "
+                               "CaloMET_pt is written by the event selection (variables._met_variables)")
             recoil = self._get_variable_value(events, objects, "Recoil")
 
             # Avoid division by zero
-            met_quality = ak.where(recoil > 0, (pf_met - calo_met) / recoil, 0.0)
+            met_quality = ak.where(recoil > 0, np.abs(pf_met - events["CaloMET_pt"]) / recoil, 0.0)
             return ak.fill_none(met_quality, 0.0, axis=0)
 
         # Direct from events/objects (axis=0 to avoid depth-1 fill_none error)
