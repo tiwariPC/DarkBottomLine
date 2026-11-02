@@ -1821,7 +1821,9 @@ class TestRun2Treatment:
     def test_pulls_and_impacts_follow_run2_scripts(self, cfg):
         cmds = cfg["advanced"]["commands"]
         assert cmds["general_args"] == []
-        for mode in ("PullsCRonly", "PullsAsimovT0", "PullsSbT0", "PullsSbT1"):
+        # PullsSbT0 / PullsSbT1 are commented out in combine.yaml (the same fit as each other); the s+b fit is PullsSbInj
+        assert "PullsSbT0" not in cmds and "PullsSbT1" not in cmds
+        for mode in ("PullsCRonly", "PullsAsimovT0", "PullsSbInj"):
             args = cmds[mode]["steps"][0]["args"]
             assert args[args.index("--cminDefaultMinimizerStrategy") + 1] == "0"
         crargs = cmds["PullsCRonly"]["steps"][0]["args"]

@@ -2940,7 +2940,7 @@ def run_all(args):
                 # just the plain blind FitDiagnostics fit run_fit_diagnostics
                 # gives (that mode alone is still available separately via
                 # run-combine --mode FitDiagnostics for other callers).
-                for pulls_mode in ("CRonly", "asimov_t0", "sb_t0", "sb_t1"):
+                for pulls_mode in ("CRonly", "asimov_t0", "sb_inj"):   # sb_t0/sb_t1 are commented out in combine.yaml
                     runner.run_pulls(workspace_file, str(card_dir), str(datacard_file),
                                       mode=pulls_mode, year=era_label, mass_point=mass_point,
                                       category=merged_category_label)
@@ -3449,7 +3449,7 @@ Examples:
     pulls_parser.add_argument("--sr-datacard", required=True,
                                help="SR bin names source (.txt datacard) for CRonly mode's channel-masking")
     pulls_parser.add_argument("--output", required=True, help="Output directory")
-    pulls_parser.add_argument("--mode", required=True, choices=["CRonly", "asimov_t0", "sb_t0", "sb_t1"],
+    pulls_parser.add_argument("--mode", required=True, choices=["CRonly", "asimov_t0", "sb_t0", "sb_t1", "sb_inj"],
                                help="Pulls mode (Run2's pulls_oneRP.sh)")
     pulls_parser.add_argument("--year", help="Data-taking year, for the lumi label (default: combine.yaml's first era)")
     pulls_parser.add_argument("--mass-point", help="Mass point label — embedded in the output filename only")

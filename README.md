@@ -28,7 +28,7 @@ DarkBottomLine processes NanoAOD datasets through event selection, region analys
 ```bash
 git clone https://github.com/tiwariPC/DarkBottomLine.git
 cd DarkBottomLine
-source local_setup.sh      # conda env + pip install -e .
+source local_setup.sh      # conda env + pip install -e . + TinyTeX in .local/ (LaTeX for the usetex plots)
 ```
 
 ### Lxplus

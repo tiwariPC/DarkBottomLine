@@ -27,6 +27,28 @@ echo "Installing local package..."
 pip install -e "$(dirname "$0")" || { echo "pip install -e failed!"; return 1; }
 echo "Environment ready! Python: $(python --version)"
 
+# TinyTeX (a minimal LaTeX) into <repo>/.local/.TinyTeX, for the plots that use matplotlib's usetex (the limit plots'
+# axis labels and benchmark text box). It is installed by default; it is skipped if already there. conda-forge has no
+# usable LaTeX (texlive-core is only the engines), hence TinyTeX. No PATH change and no links in ~/.local/bin:
+# the plotting scripts add .local/.TinyTeX/bin/x86_64-linux to their own PATH. A failure only warns: nothing else needs LaTeX.
+# Needs curl, perl and xz.
+REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
+TEX_BIN="${REPO_DIR}/.local/.TinyTeX/bin/x86_64-linux"
+if [ -x "${TEX_BIN}/latex" ] && PATH="${TEX_BIN}:${PATH}" kpsewhich type1cm.sty >/dev/null 2>&1; then
+  echo "TinyTeX already installed in ${REPO_DIR}/.local/.TinyTeX, skipping."
+else
+  echo "Installing TinyTeX into ${REPO_DIR}/.local/.TinyTeX ..."
+  TEX_TMP="$(mktemp -d)"; mkdir -p "${REPO_DIR}/.local" "${TEX_TMP}/keep"
+  ( cd "${TEX_TMP}" \
+    && curl -fsSL https://yihui.org/tinytex/install-bin-unix.sh -o install-bin-unix.sh \
+    && TINYTEX_DIR="${REPO_DIR}/.local" sh install-bin-unix.sh "${TEX_TMP}/keep" --no-path \
+    && PATH="${TEX_BIN}:${PATH}" tlmgr update --self \
+    && PATH="${TEX_BIN}:${PATH}" tlmgr install type1cm cm-super underscore dvipng ) \
+    && echo "TinyTeX installed: ${TEX_BIN}" \
+    || echo "Warning: TinyTeX installation failed (needs curl, perl, xz and network); usetex plots will not work until it is installed."
+  rm -rf "${TEX_TMP}"
+fi
+
 # OPTIONAL: build CMS Combine (HiggsAnalysis-CombinedLimit) into this conda
 # env, via its standalone CMake build. Gated behind an explicit env var so
 # plain `source local_setup.sh` behaves exactly as it did before — only

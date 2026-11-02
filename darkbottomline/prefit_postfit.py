@@ -59,7 +59,7 @@ def _first_bin(root_file, path: str):
 def make_prefit_postfit_summary(fit_file: str, fit_dir: str, category: str, out_dir: str, tag: str,
                                  lumi_text: str = "", edges: Optional[List[float]] = None,
                                  unblind_sr: bool = False, signal_label: str = "signal",
-                                 ratio_range: float = 0.5, colors: Optional[Dict[str, str]] = None,
+                                 ratio_range: float = 1.0, colors: Optional[Dict[str, str]] = None,
                                  ticks: Optional[List[float]] = None) -> Optional[Path]:
     """Draw one category's summary; returns the pdf path, or None when the fit file has no
     post-fit shapes for it (a warning says so). colors: {datacard process: '#rrggbb'}, the process
@@ -243,10 +243,10 @@ def make_prefit_postfit_summary(fit_file: str, fit_dir: str, category: str, out_
     low.Draw()
     low.cd()
     frame = ROOT.TH1F(f"ratio_frame_{category}", "", nbins, array("d", xedges))
-    frame.SetMinimum(0.5)
-    frame.SetMaximum(1.5)
+    frame.SetMinimum(1.0 - ratio_range)       # ratio pad spans 1 -/+ ratio_range (default 0 to 2)
+    frame.SetMaximum(1.0 + ratio_range)
     frame.GetYaxis().SetNdivisions(504)
-    frame.GetYaxis().SetLabelSize(0)           # own labels below: no 0.5 / 1.5 labels at the pad edges
+    frame.GetYaxis().SetLabelSize(0)           # own labels below: none at the pad edges
     frame.GetYaxis().SetTitleSize(0.13)
     frame.GetYaxis().SetTitleOffset(0.36)
     frame.GetYaxis().SetTitle("Data/Pred.")
@@ -277,15 +277,15 @@ def make_prefit_postfit_summary(fit_file: str, fit_dir: str, category: str, out_
             n = ref.GetBinContent(i)
             if n <= 1e-6:
                 continue
-            if i in blinded:        # pseudo-data = post-fit background sum: post-fit ratio is 1, pre-fit shows the fit's shift
-                num, err = hist["postfit"].GetBinContent(i), hist["postfit"].GetBinError(i)
+            if i in blinded:        # SR pseudo-data = pre-fit background sum: pre-fit ratio is 1, post-fit shows the fit's shift
+                num, err = hist["prefit"].GetBinContent(i), hist["prefit"].GetBinError(i)
             elif data.GetBinContent(i) > 0:
                 num, err = data.GetBinContent(i), data.GetBinError(i)
             else:
                 continue
             k = g.GetN()
             g.SetPoint(k, ref.GetBinCenter(i), num / n)
-            w = ref.GetBinWidth(i) / 2 if name == "pre" else 0.0
+            w = ref.GetBinWidth(i) / 2          # horizontal bin-width line for both pre- and post-fit
             g.SetPointError(k, w, w, err / n, err / n)
         g.SetMarkerStyle(style)
         g.SetMarkerColor(color)
@@ -311,8 +311,8 @@ def make_prefit_postfit_summary(fit_file: str, fit_dir: str, category: str, out_
     ty.SetTextAlign(32)
     ty.SetTextFont(42)
     ty.SetTextSize(0.13)
-    for v in (0.75, 1.0, 1.25):
-        ty.DrawLatex(lx - 0.008, 0.42 + (v - 0.5) * 0.58, f"{v:g}")
+    for v in (1.0 - ratio_range / 2, 1.0, 1.0 + ratio_range / 2):
+        ty.DrawLatex(lx - 0.008, 0.42 + (v - (1.0 - ratio_range)) / (2 * ratio_range) * 0.58, f"{v:g}")
 
     # tick labels under each block, one axis title per block
     tx = ROOT.TLatex()

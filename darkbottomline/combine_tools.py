@@ -1167,12 +1167,56 @@ class CombineRunner:
                 ok = ok and len(vals) == 5 and (np.diff(vals) >= 0).all() and vals.max() < 0.8 * range_max
             if ok:
                 logging.info(f"AsymptoticLimits {run_mode}: valid with rMax={rmax}")
+                if run_mode == "expected":
+                    self._recheck_asymptotic_median(workspace, output_dir, blind, run_mode, vals, range_max)
                 return
         # no valid result: do not leave the last (invalid, possibly empty) output behind
         for old in out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"):
             old.unlink()
         raise RuntimeError(f"No valid AsymptoticLimits {run_mode} result for {workspace} with "
                            f"rMax in {ladder}")
+
+    # median / half the 16-84% spread of the expected limit is about 3 for the mass points that are not at the edge of
+    # the sensitivity; outside this band at a median far below rMax the default r range gave a wrong median (seen at
+    # (600, 250) of the separate-e/mu run: 0.645 against 0.475 with an explicit --rMax)
+    _MEDIAN_SPREAD_BAND = (2.0, 4.5)
+
+    def _recheck_asymptotic_median(self, workspace: str, output_dir: str, blind: bool, run_mode: str,
+                                    vals: "np.ndarray", range_max: float) -> None:
+        """Rerun with --rMax of a few times the median when the expected quantiles are inconsistent (median much
+        larger than the 16-84% spread allows). The rerun replaces the first result only if it is valid and
+        consistent; otherwise the first result is kept and a warning is logged."""
+        lo, hi = self._MEDIAN_SPREAD_BAND
+        spread = (vals[3] - vals[1]) / 2.0
+        median = float(vals[2])
+        if spread <= 0 or median >= 0.1 * range_max or lo <= median / spread <= hi:
+            return
+        rmax2 = max(5.0 * median, 1.0)
+        out = Path(output_dir)
+        first = sorted(out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"))[0]
+        backup = first.with_name(first.name + ".first")
+        first.replace(backup)
+        try:
+            self._run_steps("AsymptoticLimits", workspace, output_dir, blind,
+                            extra_format_args={"run_mode": run_mode, "rmax_arg": f"--rMax={rmax2:g}"})
+            files = sorted(out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"))
+            with uproot.open(str(files[0])) as f:
+                v2 = f["limit"]["limit"].array(library="np")
+            sp2 = (v2[3] - v2[1]) / 2.0
+            good = (len(v2) == 5 and np.isfinite(v2).all() and (v2 > 0).all() and (np.diff(v2) >= 0).all()
+                    and v2.max() < 0.8 * rmax2 and sp2 > 0 and lo <= v2[2] / sp2 <= hi)
+        except Exception:
+            files, good = [], False
+        if good:
+            logging.warning(f"AsymptoticLimits {run_mode}: median {median:.4g} inconsistent with the 16-84% spread "
+                            f"(ratio {median / spread:.2f}); rerun with --rMax={rmax2:g} gives {v2[2]:.4g}, kept")
+            backup.unlink()
+        else:
+            logging.warning(f"AsymptoticLimits {run_mode}: median {median:.4g} inconsistent with the 16-84% spread "
+                            f"(ratio {median / spread:.2f}) and the rerun with --rMax={rmax2:g} did not help; keeping the first result")
+            for f_ in out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"):
+                f_.unlink()
+            backup.replace(first)
 
     def run_asymptotic_limits(self, datacard_or_workspace: str, output_dir: str,
                                blind: bool = True) -> str:
@@ -1477,8 +1521,9 @@ class CombineRunner:
     _PULLS_MODES = {
         "CRonly": ("PullsCRonly", "Data"),
         "asimov_t0": ("PullsAsimovT0", "Asimov"),
-        "sb_t0": ("PullsSbT0", "Data"),
-        "sb_t1": ("PullsSbT1", "Data"),
+        "sb_t0": ("PullsSbT0", "Data"),        # commented out in combine.yaml (same fit as sb_t1, see there)
+        "sb_t1": ("PullsSbT1", "Data"),        # commented out in combine.yaml
+        "sb_inj": ("PullsSbInj", "Asimov"),    # s+b fit to a post-CR-fit Asimov dataset with a signal injected
     }
 
     def _resolve_lumi_text(self, year: str) -> str:
@@ -1546,12 +1591,14 @@ class CombineRunner:
         self._run_steps(command_name, workspace, output_dir, blind=False,
                          extra_format_args=extra_format_args)
 
-        fd_matches = sorted(Path(output_dir).glob("fitDiagnostics_*.root"))
+        # the file this mode just wrote is the newest one: output_dir also holds the files of the other modes, and the
+        # first one alphabetically (AsimovT0) used to be picked for every mode, so sb_t0/sb_t1 were plotted from it
+        fd_matches = sorted(Path(output_dir).glob("fitDiagnostics_*.root"), key=lambda f: f.stat().st_mtime)
         if not fd_matches:
             raise FileNotFoundError(
                 f"No fitDiagnostics_*.root found in {output_dir} after running {command_name}."
             )
-        fit_diagnostics_file = fd_matches[0]
+        fit_diagnostics_file = fd_matches[-1]
 
         # Persist a stable per-mode copy — Run2 keeps every mode's
         # fitDiagnostics_{catg}_{year}_{mode}_{dirname}.root under
@@ -1650,7 +1697,7 @@ class CombineRunner:
         for category, edges in cfg.get("edges", {}).items():
             pdf = make_prefit_postfit_summary(
                 str(fit_file), fit_dir, category, str(out_dir), tag=tag, lumi_text=lumi_text, edges=edges,
-                unblind_sr=unblind_sr, signal_label=signal_label, ratio_range=cfg.get("ratio_range", 0.5),
+                unblind_sr=unblind_sr, signal_label=signal_label, ratio_range=cfg.get("ratio_range", 1.0),
                 colors=colors, ticks=cfg.get("ticks", {}).get(category))
             if pdf:
                 made.append(str(pdf))
