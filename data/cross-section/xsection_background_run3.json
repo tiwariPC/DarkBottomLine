@@ -415,5 +415,21 @@
         "TTH-Hto2B_Par-M-125_TuneCP5_13p6TeV_powheg-pythia8"
       ]
     }
+  ],
+  "QCD": [
+    {
+      "process": "QCD_Bin-PT-120to170_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8",
+      "xsection": 23140.0,
+      "full_dataset": [
+        "QCD_Bin-PT-120to170_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8"
+      ]
+    },
+    {
+      "process": "QCD_Bin-PT-170to300_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8",
+      "xsection": 7754.0,
+      "full_dataset": [
+        "QCD_Bin-PT-170to300_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8"
+      ]
+    }
   ]
 }

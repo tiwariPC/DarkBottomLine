@@ -43,7 +43,8 @@ from pathlib import Path
 CONDOR_DIR = Path(__file__).resolve().parent
 REPO_DIR = CONDOR_DIR.parent.parent
 DEFAULT_OUTDIR = "/eos/cms/store/group/phys_susy/sus-23-008/run3_bbMET"
-RUN_DIR_RE = re.compile(r"^\d{8}-[0-9a-f]+_\d{8}$")  # <tag>_<DDMMYYYY>
+# <tag>_<DDMMYYYY> (tag = 20261014-d110783) or <commit>-<DDMMYYYY> (02e9153-02112026)
+RUN_DIR_RE = re.compile(r"^(\d{8}-[0-9a-f]+_\d{8}|[0-9a-f]{7,40}-\d{8})$")
 
 
 def resolve_outdir(base: str) -> str:

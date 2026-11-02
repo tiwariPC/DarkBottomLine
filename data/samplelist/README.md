@@ -9,9 +9,9 @@ W+jets, Z(νν)+jets and DY exist in two forms in 2024. They overlap, so use one
 
 | | binned (default) | inclusive |
 |---|---|---|
-| W+jets | `Bin-1J-PTLNu-*` and `Bin-2J-PTLNu-*` (40to100 ... 600) | `Bin-1J-PTLNu-40to100`, `Bin-2J-PTLNu-40to100`, `Bin-PTLNu-100` |
-| Z(νν)+jets | `Bin-1J-PTNuNu-*` and `Bin-2J-PTNuNu-*` | `Bin-1J-PTNuNu-40to100`, `Bin-2J-PTNuNu-40to100`, `Bin-PTNuNu-100` |
-| DY | `Bin-2J-MLL-50-PTLL-*` (40to100 ... 600) | `Bin-2J-MLL-50-PTLL-40to100`, `Bin-MLL-50-PTLL-100` |
+| W+jets | `Bin-1J-PTLNu-*` and `Bin-2J-PTLNu-*` (40to100 ... 600) | `Bin-PTLNu-100` |
+| Z(νν)+jets | `Bin-1J-PTNuNu-*` and `Bin-2J-PTNuNu-*` | `Bin-PTNuNu-100` |
+| DY | `Bin-2J-MLL-50-PTLL-*` (40to100 ... 600) | `Bin-MLL-50-PTLL-100` |
 
 The `*-100` inclusive samples contain everything with pT ≥ 100 GeV, which is why the 100to200, 200to400,
 400to600 and 600 bins must not be used with them. The cross sections are in

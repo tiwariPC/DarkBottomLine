@@ -79,3 +79,15 @@ process_name=DYto2L-2Jets_Bin-MLL-50-PTLL-100_TuneCP5_13p6TeV_amcatnloFXFX-pythi
 - `XSDB xsection (pb)`: Cross section taken from XSDB, in pb.
 - `Twiki xsection (pb)`: Cross section taken from the analysis Twiki or group recommendation page, in pb.
 - `Notes`: Add source links, version numbers, update dates, and applicable campaign information.
+
+## QCD muon-enriched (2024)
+
+From XSDB (Summer24, LO, GenXSecAnalyzer, status `new` / not yet validated), in `xsection_background_run3.json` under `QCD`:
+
+| Dataset | Cross section (pb) | Uncertainty (pb) |
+|---|---:|---:|
+| QCD_Bin-PT-120to170_Fil-MuEnriched | 23140.0 | 71.7 |
+| QCD_Bin-PT-170to300_Fil-MuEnriched | 7754.0 | 23.8 |
+
+The XSDB values include the muon-enrichment filter. QCD is not a process group in `configs/plotting.yaml`
+or `configs/combine.yaml` yet, so these are only picked up once those are wired up.
