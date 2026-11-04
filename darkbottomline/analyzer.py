@@ -863,6 +863,16 @@ class DarkBottomLineAnalyzer:
         else:
             w_full = np.ones(n_ev, dtype=np.float64)
 
+        # metQuality is a region-cut variable, not a branch: take the array the region cuts use (RegionManager)
+        # so it can be plotted without a second definition of the formula
+        met_quality_full = None
+        if self.region_manager is not None and "CaloMET_pt" in events.fields:
+            try:
+                met_quality_full = np.asarray(ak.to_numpy(
+                    self.region_manager.get_variable_value(events, objects, "metQuality")), dtype=np.float64)
+            except (Exception, BaseException) as e:
+                logging.warning(f"metQuality not stored for plotting: {e}")
+
         def _empty_region() -> Dict[str, Any]:
             return {"values": {}, "weight": np.zeros(0, dtype=np.float64)}
 
@@ -900,6 +910,9 @@ class DarkBottomLineAnalyzer:
                 if arr.ndim != 1 or arr.shape[0] != n_r:
                     continue
                 region_values[field] = arr
+
+            if met_quality_full is not None and "metQuality" not in region_values:
+                region_values["metQuality"] = met_quality_full[np.asarray(ak.to_numpy(region_mask), dtype=bool)]
 
             filled_histograms[region_name] = {"values": region_values, "weight": w}
 
