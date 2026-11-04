@@ -484,15 +484,14 @@ class Region:
             except (Exception, BaseException):
                 return self._zeros_like_events(events, n_ev, dtype=float)
         if var == "metQuality":
-            # MET quality = |caloMET - MET| / Recoil (Run 2: < 0.5 in the SR and every CR)
-            pf_met = next((events[v] for v in ("MET_pt", "PuppiMET_pt", "PFMET_pt") if v in events.fields), None)
-            if pf_met is None or "CaloMET_pt" not in events.fields:
-                raise KeyError("metQuality needs MET_pt and CaloMET_pt in the events; "
-                               "CaloMET_pt is written by the event selection (variables._met_variables)")
+            # MET quality = |Recoil - caloMET| / Recoil (< 0.5 in the SR and every CR)
+            if "CaloMET_pt" not in events.fields:
+                raise KeyError("metQuality needs CaloMET_pt in the events; "
+                               "it is written by the event selection (variables._met_variables)")
             recoil = self._get_variable_value(events, objects, "Recoil")
 
             # Avoid division by zero
-            met_quality = ak.where(recoil > 0, np.abs(pf_met - events["CaloMET_pt"]) / recoil, 0.0)
+            met_quality = ak.where(recoil > 0, np.abs(recoil - events["CaloMET_pt"]) / recoil, 0.0)
             return ak.fill_none(met_quality, 0.0, axis=0)
 
         # Direct from events/objects (axis=0 to avoid depth-1 fill_none error)
