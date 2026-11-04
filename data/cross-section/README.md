@@ -88,6 +88,11 @@ From XSDB (Summer24, LO, GenXSecAnalyzer, status `new` / not yet validated), in 
 |---|---:|---:|
 | QCD_Bin-PT-120to170_Fil-MuEnriched | 23140.0 | 71.7 |
 | QCD_Bin-PT-170to300_Fil-MuEnriched | 7754.0 | 23.8 |
+| QCD_Bin-PT-300to470_Fil-MuEnriched | 699.6 | 2.13 |
+| QCD_Bin-PT-470to600_Fil-MuEnriched | 67.67 | 0.2042 |
+| QCD_Bin-PT-600to800_Fil-MuEnriched | 21.27 | 0.06407 |
+| QCD_Bin-PT-800to1000_Fil-MuEnriched | 3.89 | 0.01164 |
+| QCD_Bin-PT-1000_Fil-MuEnriched | 1.323 | 0.003969 |
 
 The XSDB values include the muon-enrichment filter. QCD is not a process group in `configs/plotting.yaml`
 or `configs/combine.yaml` yet, so these are only picked up once those are wired up.

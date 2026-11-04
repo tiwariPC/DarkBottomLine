@@ -430,6 +430,41 @@
       "full_dataset": [
         "QCD_Bin-PT-170to300_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8"
       ]
+    },
+    {
+      "process": "QCD_Bin-PT-300to470_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8",
+      "xsection": 699.6,
+      "full_dataset": [
+        "QCD_Bin-PT-300to470_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8"
+      ]
+    },
+    {
+      "process": "QCD_Bin-PT-470to600_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8",
+      "xsection": 67.67,
+      "full_dataset": [
+        "QCD_Bin-PT-470to600_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8"
+      ]
+    },
+    {
+      "process": "QCD_Bin-PT-600to800_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8",
+      "xsection": 21.27,
+      "full_dataset": [
+        "QCD_Bin-PT-600to800_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8"
+      ]
+    },
+    {
+      "process": "QCD_Bin-PT-800to1000_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8",
+      "xsection": 3.89,
+      "full_dataset": [
+        "QCD_Bin-PT-800to1000_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8"
+      ]
+    },
+    {
+      "process": "QCD_Bin-PT-1000_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8",
+      "xsection": 1.323,
+      "full_dataset": [
+        "QCD_Bin-PT-1000_Fil-MuEnriched_TuneCP5_13p6TeV_pythia8"
+      ]
     }
   ]
 }
