@@ -56,6 +56,36 @@ def _first_bin(root_file, path: str):
     return h.GetBinContent(1), max(h.GetBinErrorUp(1), h.GetBinErrorLow(1))
 
 
+
+def _png_from_pdf(pdf: str, png: str, dpi: int = 250, pad: int = 12) -> bool:
+    """Rasterise the PDF with poppler (pdftoppm) and crop the white margin, overwriting `png`.
+
+    ROOT's own PNG output draws lines and fills differently from its PDF output (missing stack outline,
+    thinner separators, no hatching). On any failure (no pdftoppm, no PIL) the ROOT PNG is left as it is."""
+    import shutil
+    import subprocess
+    import tempfile
+    if shutil.which("pdftoppm") is None:
+        logging.warning("pdftoppm not found: keeping ROOT's PNG for %s", pdf)
+        return False
+    try:
+        from PIL import Image, ImageChops
+        with tempfile.TemporaryDirectory() as tmp:
+            base = str(Path(tmp) / "r")
+            subprocess.run(["pdftoppm", "-png", "-r", str(dpi), "-singlefile", pdf, base], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            im = Image.open(base + ".png").convert("RGB")
+            box = ImageChops.difference(im, Image.new("RGB", im.size, (255, 255, 255))).getbbox()
+            if box is not None:
+                box = (max(box[0] - pad, 0), max(box[1] - pad, 0),
+                       min(box[2] + pad, im.size[0]), min(box[3] + pad, im.size[1]))
+                im = im.crop(box)
+            im.save(png)
+        return True
+    except Exception as exc:
+        logging.warning("PNG from PDF failed for %s (%s): keeping ROOT's PNG", pdf, exc)
+        return False
+
 def make_prefit_postfit_summary(fit_file: str, fit_dir: str, category: str, out_dir: str, tag: str,
                                  lumi_text: str = "", edges: Optional[List[float]] = None,
                                  unblind_sr: bool = False, signal_label: str = "signal",
@@ -398,7 +428,8 @@ def make_prefit_postfit_summary(fit_file: str, fit_dir: str, category: str, out_
     t.DrawLatex(0.985, 0.93, lumi_text + " (13.6 TeV)" if lumi_text else "13.6 TeV")
 
     c.SaveAs(f"{stem}.pdf")
-    c.SaveAs(f"{stem}.png")
+    c.SaveAs(f"{stem}.png")                 # ROOT's raster backend: thin lines, no stack outline, no hatching
+    _png_from_pdf(f"{stem}.pdf", f"{stem}.png")   # replace it by the PDF rasterised (keeps the vector look)
     fo = ROOT.TFile(f"{stem}.root", "RECREATE")
     for h in list(hist.values()):
         h.Write()
