@@ -154,7 +154,7 @@ different `C`/`P`, and a `*_EVENTSELECTION.root` glob would then count those eve
 
 | Option | Default | |
 |---|---|---|
-| `--year` | required | 2022, 2022EE, 2023, 2024 |
+| `--year` | required | 2022, 2022EE, 2023, 2024, 2025, 2026 |
 | `--outdir` | see above | EOS base; outputs go to `<outdir>/<year>/eventsel/<sample>/` |
 | `--samples` / `--exclude` | all | sample-name globs |
 | `--files START:END` | all | restrict file indices per sample (pilots/tests) |

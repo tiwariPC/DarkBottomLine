@@ -176,7 +176,7 @@ def parse_file_range(spec, n):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--year", required=True, choices=["2022", "2022EE", "2023", "2024"])
+    p.add_argument("--year", required=True, choices=["2022", "2022EE", "2023", "2024", "2025", "2026"])
     p.add_argument("--outdir", default=DEFAULT_OUTDIR,
                    help="EOS base dir; a <tag>_<DDMMYYYY> run directory is created in it and outputs go to "
                         "<outdir>/<tag>_<DDMMYYYY>/<year>/eventsel/<sample>/. Pass an existing run directory "

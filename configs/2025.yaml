@@ -1,26 +1,71 @@
 year: 2025
-lumi: 109.96
+lumi: 109.96   # UNVERIFIED placeholder (no 2025 luminosity source yet; run scripts/lumi_calculator.py on the 2025 data)
+# lumi_uncertainty: not set for 2025 (no official value yet; needed by the Combine datacard)
 
 # Correction file paths (user must provide actual files)
 corrections:
    pileup: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_puWeights.json.gz
-   pileup_name: "Collisions2025_355100_357900_eraBCD_GoldenJson"
+   pileup_name: "Collisions25_goldenJSON"
    btagSF: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_btagging.json.gz
    muonSF_highPT: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_muon_HighPt.json.gz
-   muonSF_highPT_name: "NUM_TightPFIso_DEN_TightID"
    muonSF_lowPT: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_muon_JPsi.json.gz
-   muonSF_lowPT_name: "NUM_LooseID_DEN_TrackerMuons"
    electronSF: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_electron.json.gz
-   electronSF_name: "2025Re-recoBCD"
-   electronSF_WP: "Tight"
-   electronHLT: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_electronHlt.json.gz
-   electronHLT_name: "2025Prompt"
-   electronHLT_WP: "HLT_SF_Ele30_TightID"
+   # electronHLT: not available for 2025 (no Electron-HLT-SF in the EGM 2025 area) -> lepton_sf.electron_hlt is empty (SF = 1)
+   # metHlt: no 2025 MET-trigger SF yet (the 2024 one is measured on 2024 data) -> no MET-HLT SF applied (SF = 1)
    jetJEC: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_jet_jerc.json.gz
-   jetJEC_tag: "Summer25_Prompt_V1_MC"
+   jetJEC_tag_mc: "Summer24Prompt25_V3_MC"
+   # Data: L1/L2 from the DATA set plus the run-dependent L2L3Residual.
+   jetJEC_tag_data: "Summer24Prompt25_V3_DATA"
    jetJEC_algo: "AK4PFPuppi"
    jetJEC_level: "L1L2L3Res"
    jetJEC_unc: "Total"
+   jetid: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_jetid.json.gz
+   # Plain Tight (not TightLeptonVeto): this analysis already does dedicated
+   # jet-lepton dR cleaning (clean_jets_from_leptons in objects.py, dr_jet from
+   # config.cleaning), so TightLeptonVeto's built-in lepton veto would duplicate it.
+   jetid_name: "AK4PUPPI_Tight"
+   # Jet veto maps (mandatory for Run 3 analyses per JME recs). Implemented
+   # in CorrectionManager.get_jet_veto_mask but NOT yet wired into event
+   # selection (build_objects/processor.py don't call it) — see the
+   # project plan for the explicit scope decision to add the capability
+   # without activating it this pass.
+   jetvetomaps: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_jetvetomaps.json.gz
+   jetvetomaps_name: "Summer24Prompt25_RunCDEFG_V1"
+   # Default False: get_jet_id_mask/get_corrected_jet_pt_mass/
+   # get_type1_met_shift silently fall back (log a warning, return None ->
+   # caller uses raw/uncorrected values) if config/branches are missing or
+   # evaluation fails. Set true to RAISE instead, so a misconfigured run
+   # fails loudly rather than quietly reverting to uncorrected physics —
+   # useful when you need to be certain a correction is actually applying.
+   # strict: false
+
+# YAML-driven lepton scale factors (see CorrectionManager._sf_components).
+# Components per object are multiplied; SF = 1 outside a component's pt_range.
+# "$pt"/"$eta"/"$abseta"/"$syst" in `inputs` are substituted; other entries are literals.
+# Muon: JPsi (low pT) below 50 GeV, HighPt file from 50 GeV (its first pt bin).
+lepton_sf:
+  muon:
+    tight_muons:
+      - {file: muonSF_lowPT,  name: NUM_TightID_DEN_TrackerMuons, pt_range: [0, 50],
+         inputs: ["$abseta", "$pt", "$syst"], syst: {central: nominal, up: systup, down: systdown}}
+      - {file: muonSF_highPT, name: NUM_TightID_DEN_GlobalMuonProbes, pt_range: [50, .inf],
+         inputs: ["$abseta", "$pt", "$syst"], syst: {central: nominal, up: systup, down: systdown}}
+      - {file: muonSF_highPT, name: NUM_probe_TightRelTkIso_DEN_MediumIDProbes, pt_range: [50, .inf],
+         inputs: ["$abseta", "$pt", "$syst"], syst: {central: nominal, up: systup, down: systdown}}
+    z_sublead_muons:   # loose-only leg of the Z candidate
+      - {file: muonSF_lowPT,  name: NUM_LooseID_DEN_TrackerMuons, pt_range: [0, 50],
+         inputs: ["$abseta", "$pt", "$syst"], syst: {central: nominal, up: systup, down: systdown}}
+      - {file: muonSF_highPT, name: NUM_MediumID_DEN_GlobalMuonProbes, pt_range: [50, .inf],
+         inputs: ["$abseta", "$pt", "$syst"], syst: {central: nominal, up: systup, down: systdown}}
+  electron_id:
+    tight_electrons:
+      - {file: electronSF, name: Electron-ID-SF,
+         inputs: ["2025Prompt", "$syst", "Tight", "$eta", "$pt"], syst: {central: sf, up: sfup, down: sfdown}}
+    z_sublead_electrons:
+      - {file: electronSF, name: Electron-ID-SF,
+         inputs: ["2025Prompt", "$syst", "Loose", "$eta", "$pt"], syst: {central: sf, up: sfup, down: sfdown}}
+  electron_hlt:
+    tight_electrons: []   # no 2025 Electron-HLT-SF yet: explicit SF = 1 (a missing section would raise and zero all weights)
 
 # Data sample settings (set is_data: true when running on collision data)
 data:
@@ -101,9 +146,25 @@ btagging:
    # Tight      0.6708  67.2   0.1     0.4648  72.4   0.1     0.6373  70.6   0.1
    # XTight     0.7846  61.9   0.05    0.6298  68.1   0.05    0.7764  65.4   0.05
    # XXTight    0.9654  42.7   0.01    0.9739  48.3   0.01    0.9815  44.6   0.01
-   algorithm: "PNet"       # PNet, deepJet, deepCSV
-   branch: "Jet_btagPNetB"  # NanoAOD branch name
-   score: 0.2431    # Run3 2023+ PNet medium WP (BTV POG)
+   algorithm: "UParT"       # PNet, deepJet, deepCSV, UParT
+   branch: "Jet_btagUParTAK4B"  # NanoAOD branch name
+   score_loose: 0.0246       # UParT Loose WP (BTV POG Summer24)
+   score: 0.1272            # UParT Medium WP (BTV POG Summer24)
+   score_tight: 0.4648       # UParT Tight WP (BTV POG Summer24)
+   # B-tag SF (correctionlib). sf_type: "shape" (continuous, discr-based)
+   # or "fixed_wp" (per-WP, needs sf_wp). Correction names built from sf_name:
+   #   shape    -> {sf_name}_shape
+   #   fixed_wp -> {sf_name}_comb (b/c, flavor 4,5) + {sf_name}_light (udsg, flavor 0)
+   sf_name: "UParTAK4"      # base correction name in btagging.json.gz
+   sf_type: "fixed_wp"      # Summer24 ships only fixed-WP UParT SFs
+   sf_wp: "M"               # L, M, T, XT, XXT (matches score above)
+   # MC-truth tagging-efficiency map (scripts/btag_efficiency_slimmer.py +
+   # btag_efficiency_maker.py). Needed for the full fixed-WP SF reweighting
+   # formula: SF on tagged jets, (1-SF*eff)/(1-eff) on untagged jets. This is
+   # a placeholder built from a handful of local test samples; will be
+   # replaced by a full-sample-statistics version with the same structure
+   # (hist_<b|c|light>_efficiency_<lwp|mwp|twp>, 6 signed-eta x 9-pt bins).
+   efficiency_map: data/corrections/2025/heavyflavor_efficiency_maps_2025.root
 
 # Event selection (aligned with SUS-23-008)
 event_selection:
