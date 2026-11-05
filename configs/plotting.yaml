@@ -690,6 +690,11 @@ process_groups:
     patterns:
     - QCD_Bin-PT-120to170_Fil-MuEnriched
     - QCD_Bin-PT-170to300_Fil-MuEnriched
+    - QCD_Bin-PT-300to470_Fil-MuEnriched
+    - QCD_Bin-PT-470to600_Fil-MuEnriched
+    - QCD_Bin-PT-600to800_Fil-MuEnriched
+    - QCD_Bin-PT-800to1000_Fil-MuEnriched
+    - QCD_Bin-PT-1000_Fil-MuEnriched
   Signal_2HDMa:
     type: signal
     patterns:

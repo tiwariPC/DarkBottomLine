@@ -8,6 +8,12 @@ import numpy as np
 from typing import Dict, Any, List, Tuple
 
 
+def met_quality(met_pt, calo_met_pt, recoil):
+    """MET quality = |MET - caloMET| / Recoil (Run 2: < 0.5). The one definition (regions.py imports it)."""
+    q = ak.where(recoil > 0, np.abs(met_pt - calo_met_pt) / recoil, 0.0)
+    return ak.fill_none(q, 0.0, axis=0)
+
+
 def _safe_float(val, default=0.0) -> float:
     return default if val is None else float(val)
 
@@ -93,6 +99,15 @@ def _build_event_cut_masks(
     else:
         delta_phi_cut = ak.ones_like(events["event"], dtype=bool)
 
+    # MET quality |MET - caloMET| / Recoil < met_quality_max (Run 2: 0.5), with the same Type-1 MET as the recoil
+    met_quality_max = selection.get("met_quality_max")
+    if met_quality_max is not None:
+        if "CaloMET_pt" not in events.fields:
+            raise KeyError("event_selection.met_quality_max needs CaloMET_pt in the events")
+        met_quality_cut = met_quality(objects["met_pt"], events["CaloMET_pt"], recoil) < met_quality_max
+    else:
+        met_quality_cut = ak.ones_like(events["event"], dtype=bool)
+
     # Canonical order — trigger & filters first, then object cuts
     masks = {
         "OR Trigger":       trigger_cut,
@@ -105,12 +120,14 @@ def _build_event_cut_masks(
         "N_{j}":            jet_cut,
         "p_{T}^{Jet1}":     jet1_pt_cut,
         "#Delta#phi":       delta_phi_cut,
+        "MET quality":      met_quality_cut,
     }
 
     diagnostics = {
         "recoil_min": recoil_min,
         "jet1_pt_min": jet1_pt_min,
         "delta_phi_min": delta_phi_min,
+        "met_quality_max": met_quality_max,
         "n_muons_min": selection["min_muons"],
         "n_muons_max": selection["max_muons"],
         "n_electrons_min": selection["min_electrons"],
@@ -174,6 +191,10 @@ def _build_event_cut_masks(
             logger.info(f"  DeltaPhi cut (min > {delta_phi_min}): {ak.sum(delta_phi_cut)} pass")
         else:
             logger.info("  DeltaPhi cut: DISABLED")
+        if met_quality_max is not None:
+            logger.info(f"  MET quality cut (< {met_quality_max}): {ak.sum(met_quality_cut)} pass")
+        else:
+            logger.info("  MET quality cut: DISABLED")
 
     return masks, diagnostics
 

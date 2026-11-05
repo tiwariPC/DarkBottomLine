@@ -10,6 +10,7 @@ from typing import Dict, Any, List, Optional, Union
 import logging
 
 from .objects import SENTINEL
+from .selections import met_quality
 
 warnings.filterwarnings("ignore", message="invalid value encountered in sqrt",
                         category=RuntimeWarning)
@@ -454,6 +455,10 @@ class Region:
                     return np.zeros(n_ev, dtype=np.float64)
             return np.zeros(n_ev, dtype=np.float64)
         if var == "DeltaPhi":
+            # Flat-branch path (reading EVENTSELECTION.root): min DeltaPhi(jet, MET) as computed in the event selection
+            # (Type-1 MET phi, wrapped to [0, pi]).
+            if "dPhi_jetMET" in events.fields:
+                return ak.fill_none(ak.values_astype(events["dPhi_jetMET"], float), 0.0)
             jets = objects.get("jets", ak.Array([]))
             met_phi = next((events[v] for v in ("PuppiMET_phi", "PFMET_phi", "MET_phi") if v in events.fields), None)
 
@@ -466,7 +471,8 @@ class Region:
                 has_jets = np.any(np.asarray(n_jets_per_event) > 0)
                 if has_jets:
                     jet_phi = jets.phi
-                    delta_phi = ak.min(np.abs(jet_phi - met_phi), axis=1)
+                    dphi = np.abs(jet_phi - met_phi)
+                    delta_phi = ak.min(np.where(dphi > np.pi, 2 * np.pi - dphi, dphi), axis=1)
                     return ak.fill_none(delta_phi, 0.0, axis=0)
             except (Exception, BaseException):
                 pass
@@ -490,10 +496,7 @@ class Region:
                 raise KeyError("metQuality needs MET_pt and CaloMET_pt in the events; "
                                "CaloMET_pt is written by the event selection (variables._met_variables)")
             recoil = self._get_variable_value(events, objects, "Recoil")
-
-            # Avoid division by zero
-            met_quality = ak.where(recoil > 0, np.abs(pf_met - events["CaloMET_pt"]) / recoil, 0.0)
-            return ak.fill_none(met_quality, 0.0, axis=0)
+            return met_quality(pf_met, events["CaloMET_pt"], recoil)
 
         # Direct from events/objects (axis=0 to avoid depth-1 fill_none error)
         if hasattr(events, var):
@@ -531,6 +534,9 @@ class RegionManager:
 
         # Create region objects
         for region_name, region_config in self.config.get("regions", {}).items():
+            if not region_config.get("enabled", True):
+                logging.info(f"Region {region_name} is disabled (enabled: false in {config_path}); skipped")
+                continue
             self.regions[region_name] = Region(region_name, region_config)
 
         logging.debug(f"Loaded {len(self.regions)} regions: {list(self.regions.keys())}")

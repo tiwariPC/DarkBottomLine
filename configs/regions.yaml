@@ -9,7 +9,7 @@ regions:
       Bjet1bCond: "==1"       # Nbjets==1 & pt-leading jet is the b-tagged one
       Njets: "<=2"
       Nleptons: "==0"
-      metQuality: "<0.5"     # |MET - caloMET| / Recoil, as in Run 2 (rejects fake MET)
+      DeltaPhi: ">0.5"        # min DeltaPhi(jet, MET), was an event-selection cut (delta_phi_min); reversed (<0.5) for the QCD CRs
 
   "2b:SR":
     description: "Signal region, 2 b-tag category (paper: 2 b-tags, up to 1 additional jet)"
@@ -19,7 +19,7 @@ regions:
       Njets: "<=3"
       NjetsMin: ">=2"
       Nleptons: "==0"
-      metQuality: "<0.5"     # |MET - caloMET| / Recoil, as in Run 2 (rejects fake MET)
+      DeltaPhi: ">0.5"        # min DeltaPhi(jet, MET), was an event-selection cut (delta_phi_min); reversed (<0.5) for the QCD CRs
 
   "1b:CR_Wmunu":
     description: "W+jets control region in 1b category (muon)"
@@ -34,7 +34,7 @@ regions:
       MET: ">100"
       MTMin: ">0"            # removes non-prompt muons (data/MC 2.1 at mT<40, e channel flat)
       MT: "<160"
-      metQuality: "<0.5"     # |MET - caloMET| / Recoil, as in Run 2 (rejects fake MET)
+      DeltaPhi: ">0.5"        # min DeltaPhi(jet, MET), was an event-selection cut (delta_phi_min); reversed (<0.5) for the QCD CRs
   "1b:CR_Wenu":
     description: "W+jets control region in 1b category (electron)"
     trigger: "ele"
@@ -48,7 +48,7 @@ regions:
       MET: ">100"
       MTMin: ">0"            # same definition as 1b:CR_Wmunu
       MT: "<160"
-      metQuality: "<0.5"     # |MET - caloMET| / Recoil, as in Run 2 (rejects fake MET)
+      DeltaPhi: ">0.5"        # min DeltaPhi(jet, MET), was an event-selection cut (delta_phi_min); reversed (<0.5) for the QCD CRs
   "2b:CR_Topmunu":
     description: "Top control region in 2b category (muon)"
     trigger: "met"
@@ -60,7 +60,7 @@ regions:
       NmuonsTight: "==1"      # signal lepton tight ID + pt>30 (Run 2 parity)
       Nelectrons: "==0"
       MT: "<160"
-      metQuality: "<0.5"     # |MET - caloMET| / Recoil, as in Run 2 (rejects fake MET)
+      DeltaPhi: ">0.5"        # min DeltaPhi(jet, MET), was an event-selection cut (delta_phi_min); reversed (<0.5) for the QCD CRs
   "2b:CR_Topenu":
     description: "Top control region in 2b category (electron)"
     trigger: "ele"
@@ -72,7 +72,7 @@ regions:
       NelectronsTight: "==1"  # signal lepton tight ID + pt>32 (Run 2 parity)
       Nmuons: "==0"
       MT: "<160"
-      metQuality: "<0.5"     # |MET - caloMET| / Recoil, as in Run 2 (rejects fake MET)
+      DeltaPhi: ">0.5"        # min DeltaPhi(jet, MET), was an event-selection cut (delta_phi_min); reversed (<0.5) for the QCD CRs
 
   "1b:CR_Zmumu":
     description: "Z+jets CR (1b) muon: 2 OS muons, leading tight pt>30, subleading loose pt>10"
@@ -84,7 +84,7 @@ regions:
       NelectronsZ: "==0"
       MllMin: ">70"
       MllMax: "<110"
-      metQuality: "<0.5"     # |MET - caloMET| / Recoil, as in Run 2 (rejects fake MET)
+      DeltaPhi: ">0.5"        # min DeltaPhi(jet, MET), was an event-selection cut (delta_phi_min); reversed (<0.5) for the QCD CRs
   "1b:CR_Zee":
     description: "Z+jets CR (1b) electron: 2 OS electrons, leading tight pt>30, subleading loose pt>10"
     trigger: "ele"
@@ -95,7 +95,7 @@ regions:
       NmuonsZ: "==0"
       MllMin: ">70"
       MllMax: "<110"
-      metQuality: "<0.5"     # |MET - caloMET| / Recoil, as in Run 2 (rejects fake MET)
+      DeltaPhi: ">0.5"        # min DeltaPhi(jet, MET), was an event-selection cut (delta_phi_min); reversed (<0.5) for the QCD CRs
 
   "2b:CR_Zmumu":
     description: "Z+jets CR (2b) muon: 2 OS muons, leading tight pt>30, subleading loose pt>10"
@@ -108,7 +108,7 @@ regions:
       NelectronsZ: "==0"
       MllMin: ">70"
       MllMax: "<110"
-      metQuality: "<0.5"     # |MET - caloMET| / Recoil, as in Run 2 (rejects fake MET)
+      DeltaPhi: ">0.5"        # min DeltaPhi(jet, MET), was an event-selection cut (delta_phi_min); reversed (<0.5) for the QCD CRs
   "2b:CR_Zee":
     description: "Z+jets CR (2b) electron: 2 OS electrons, leading tight pt>30, subleading loose pt>10"
     trigger: "ele"
@@ -120,7 +120,30 @@ regions:
       NmuonsZ: "==0"
       MllMin: ">70"
       MllMax: "<110"
-      metQuality: "<0.5"     # |MET - caloMET| / Recoil, as in Run 2 (rejects fake MET)
+      DeltaPhi: ">0.5"        # min DeltaPhi(jet, MET), was an event-selection cut (delta_phi_min); reversed (<0.5) for the QCD CRs
+
+  # QCD control regions: the SR selections with the DeltaPhi cut reversed. Disabled by default: they need event-selection
+  # outputs produced without the delta_phi_min cut (otherwise they are empty). Set `enabled: true` to switch them on.
+  "1b:CR_QCD":
+    enabled: false
+    description: "QCD control region, 1 b-tag category (1b SR with min DeltaPhi(jet, MET) < 0.5)"
+    trigger: "met"
+    cuts:
+      Bjet1bCond: "==1"
+      Njets: "<=2"
+      Nleptons: "==0"
+      DeltaPhi: "<0.5"        # reversed w.r.t. the SR
+
+  "2b:CR_QCD":
+    enabled: false
+    description: "QCD control region, 2 b-tag category (2b SR with min DeltaPhi(jet, MET) < 0.5)"
+    trigger: "met"
+    cuts:
+      Bjet2bCond: "==1"
+      Njets: "<=3"
+      NjetsMin: ">=2"
+      Nleptons: "==0"
+      DeltaPhi: "<0.5"        # reversed w.r.t. the SR
 
 # Global region settings
 settings:
