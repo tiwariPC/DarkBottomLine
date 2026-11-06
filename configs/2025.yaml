@@ -1,5 +1,5 @@
 year: 2025
-lumi: 109.96   # UNVERIFIED placeholder (no 2025 luminosity source yet; run scripts/lumi_calculator.py on the 2025 data)
+lumi: 110.628   # PRELIMINARY: brilcalc on the 2025 golden JSON with normtag_BRIL (normtag_PHYSICS ends at run 386951, no official 2025 value yet); the same normtag gives ~4.8% less than PHYSICS for 2024
 # lumi_uncertainty: not set for 2025 (no official value yet; needed by the Combine datacard)
 
 # Correction file paths (user must provide actual files)
@@ -11,7 +11,7 @@ corrections:
    muonSF_lowPT: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_muon_JPsi.json.gz
    electronSF: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_electron.json.gz
    # electronHLT: not available for 2025 (no Electron-HLT-SF in the EGM 2025 area) -> lepton_sf.electron_hlt is empty (SF = 1)
-   # metHlt: no 2025 MET-trigger SF yet (the 2024 one is measured on 2024 data) -> no MET-HLT SF applied (SF = 1)
+   metHlt: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_metHlt.json.gz   # MET-HLT-SF measured on 2025 Muon data (scripts/met_trigger_efficiency.py); skims miss 117 timed-out files
    jetJEC: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_jet_jerc.json.gz
    jetJEC_tag_mc: "Summer24Prompt25_V3_MC"
    # Data: L1/L2 from the DATA set plus the run-dependent L2L3Residual.
