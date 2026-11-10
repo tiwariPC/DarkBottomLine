@@ -4,6 +4,7 @@ Command-line interface for DarkBottomLine framework.
 
 import argparse
 import logging
+import re
 import sys
 import yaml
 import numpy as np
@@ -307,7 +308,7 @@ def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args,
     import awkward as ak
     import pandas as pd
     from dnn.common import sanitize_feature_frame
-    from dnn.make_trees import _is_data, _is_signal_heuristic
+    from dnn.make_trees import _is_data, _is_signal_heuristic, _is_test_sample
 
     n = len(events)
     sig_patterns = tuple(getattr(args, "signal_pattern", None) or ())
@@ -340,13 +341,15 @@ def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args,
                 key = fpath if fpath in label_map else _os.path.basename(fpath)
                 lbl = label_map.get(key, 0)
                 is_data = _is_data(fpath)
+                if is_data or _is_test_sample(fpath):
+                    lbl = -1  # sentinel: will be excluded
                 with uproot.open(fpath) as f:
                     cnt = int(f["Events"].num_entries)
                 file_entries.append((cnt, lbl, is_data))
         else:
             for fpath in input_files:
                 is_data = _is_data(fpath)
-                if is_data:
+                if is_data or _is_test_sample(fpath):
                     sig = -1  # sentinel: will be excluded
                 else:
                     sig = 1 if _is_signal_heuristic(fpath, sig_patterns, sig_prefix) else 0
@@ -359,10 +362,13 @@ def _train_dnn_on_events(events, train_dnn_config: str, dnn_outdir: str, args,
         keep_parts = []
         n_data_skipped = 0
         for cnt, sig, is_data in file_entries:
-            if is_data:
+            # sig < 0 marks data files and test/placeholder samples alike: they
+            # are written out with a dummy label but dropped by the keep-mask.
+            if sig < 0:
                 y_parts.append(np.full(cnt, -1, dtype="i4"))
                 keep_parts.append(np.zeros(cnt, dtype=bool))
-                n_data_skipped += cnt
+                if is_data:
+                    n_data_skipped += cnt
             else:
                 y_parts.append(np.full(cnt, sig, dtype="i4"))
                 keep_parts.append(np.ones(cnt, dtype=bool))
@@ -1025,7 +1031,7 @@ def run_analyzer(args):
         make_event_plots(args)
         return
 
-    # region-analysis mode: delegate to _run_analyzer_from_eventselection then plot
+    # region-analysis mode: delegate to _run_analyzer_from_eventselection then plot.
     if mode == "region-analysis":
         if getattr(args, "per_sample_only", False):
             if not args.output:
@@ -1341,7 +1347,7 @@ def run_analyzer(args):
                     # (generator × pileup × btag SF × …).
                     from .objects import build_objects
                     from .selections import _build_event_cut_masks
-                    from dnn.make_trees import _is_data, _is_signal_heuristic
+                    from dnn.make_trees import _is_data, _is_signal_heuristic, _is_test_sample
                     import awkward as _ak
 
                     n_total = len(events)
@@ -1357,12 +1363,16 @@ def run_analyzer(args):
                     n_data_total = 0
                     for fpath in input_files:
                         is_data = _is_data(fpath)
+                        is_test = _is_test_sample(fpath)
                         with uproot.open(fpath) as f:
                             cnt = int(f["Events"].num_entries)
-                        if is_data:
+                        # Data files and test/placeholder samples both get a
+                        # dummy label and are dropped by the keep-mask below.
+                        if is_data or is_test:
                             y_parts_full.append(np.full(cnt, -1, dtype="i4"))
                             keep_parts_full.append(np.zeros(cnt, dtype=bool))
-                            n_data_total += cnt
+                            if is_data:
+                                n_data_total += cnt
                         else:
                             sig = 1 if _is_signal_heuristic(fpath, sig_patterns, sig_prefix) else 0
                             y_parts_full.append(np.full(cnt, sig, dtype="i4"))
@@ -1588,7 +1598,7 @@ def _load_one_eventsel_file(task: tuple):
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
     import uproot
-    from dnn.make_trees import _sample_name, _is_data, _is_signal_heuristic
+    from dnn.make_trees import _sample_name, _is_data, _is_signal_heuristic, _is_test_sample
     from dnn.data import read_branch_as_array, read_tree_branches_as_arrays
     from dnn.feature_engineering import build_feature_frame_from_tree
     from dnn.common import sanitize_feature_frame
@@ -1596,9 +1606,15 @@ def _load_one_eventsel_file(task: tuple):
 
     (fpath, feat_list, sig_patterns, signal_prefix, label_map, weight_branch,
      max_events_per_file, signal_cross_sections, background_cross_sections,
-     lumi, parametric_input, mass_grid_list, seed, file_index) = task
+     lumi, parametric_input, mass_grid_list, seed, file_index,
+     event_fraction, signal_mass_filter) = task
 
     sample = _sample_name(fpath)
+
+    # Test/placeholder samples carry the same GenModel_* branches as the
+    # production signal, so they are refused before any labelling decision.
+    if _is_test_sample(fpath):
+        return ("skip", fpath, "test/placeholder sample (never used for training)")
 
     if label_map:
         key = fpath if fpath in label_map else os.path.basename(fpath)
@@ -1624,20 +1640,27 @@ def _load_one_eventsel_file(task: tuple):
             if "Events" not in in_f:
                 return ("skip", fpath, "No Events tree")
             tree = in_f["Events"]
-            # Randomly sample ~half of each ROOT file's events for training
-            # (signal and background only; data files are skipped above).
-            # Deterministic per (run seed, file index); the CLI
+            # Randomly keep *event_fraction* of each ROOT file's events for
+            # training (signal and background only; data files are skipped
+            # above). Deterministic per (run seed, file index); the CLI
             # --max-events-per-sample cap is intentionally not applied here.
+            # event_fraction >= 1 reads the whole file (no sampling).
             n_total = int(tree.num_entries)
-            sampling_rng = np.random.default_rng((seed, file_index, 0))
-            keep = sampling_rng.random(n_total) < 0.5
+            if event_fraction >= 1.0:
+                keep = None
+            else:
+                sampling_rng = np.random.default_rng((seed, file_index, 0))
+                keep = sampling_rng.random(n_total) < event_fraction
 
             df, src, _ = build_feature_frame_from_tree(
                 tree, feat_list,
                 max_events=None,
                 entry_mask=keep,
             )
-            df = sanitize_feature_frame(df)
+            # float32 immediately: the feature frame is the dominant memory
+            # item, and building it in float64 doubles every later copy (the
+            # concat, the train/val/test splits and the scaled matrices).
+            df = sanitize_feature_frame(df).astype("float32", copy=False)
             n = len(df)
 
             avail = set(tree.keys())
@@ -1719,15 +1742,44 @@ def _load_one_eventsel_file(task: tuple):
                             tree, gm_cols_mass, max_events=None, entry_mask=keep
                         )
                         for gmc in gm_cols_mass:
-                            parsed = _parse_masspoint_label(gmc[len("GenModel_"):])
+                            label = gmc[len("GenModel_"):]
+                            if (signal_mass_filter is not None
+                                    and label.lower() not in signal_mass_filter):
+                                # Held out of the training grid: leave the mass
+                                # unset so the event is dropped below.
+                                continue
+                            parsed = _parse_masspoint_label(label)
                             if parsed is None:
                                 continue
                             mask = gm_arr_mass[gmc][:n].astype(bool)
                             mass_arr[mask] = parsed
-                    n_unlabeled = int(np.isnan(mass_arr).any(axis=1).sum())
-                    if n_unlabeled:
+                    labeled = np.isfinite(mass_arr).all(axis=1)
+                    n_unlabeled = int((~labeled).sum())
+                    if signal_mass_filter is not None:
+                        # Mass points held out of the grid are removed from the
+                        # signal entirely: they must not leak in as background,
+                        # and must not be handed a random mass.
+                        if n_unlabeled:
+                            n_kept = int(labeled.sum())
+                            logging.warning(
+                                "Excluded %d of %d signal events in %s "
+                                "(mass points outside the training grid)",
+                                n_unlabeled, n, Path(fpath).name,
+                            )
+                            if n_kept == 0:
+                                return ("skip", fpath,
+                                        "no signal events left after excluding mass points")
+                            df = df.iloc[np.flatnonzero(labeled)].reset_index(drop=True)
+                            w_arr = w_arr[labeled]
+                            mass_arr = mass_arr[labeled]
+                            n = n_kept
+                            weight_stats = {
+                                "negative_events": int(np.count_nonzero(w_arr < 0.0)),
+                                "sum_signed": float(np.sum(w_arr, dtype="f8")),
+                            }
+                    elif n_unlabeled:
                         idx = _rng.integers(0, len(_mass_grid_arr), size=n_unlabeled)
-                        mass_arr[np.isnan(mass_arr).any(axis=1)] = _mass_grid_arr[idx]
+                        mass_arr[~labeled] = _mass_grid_arr[idx]
                         logging.warning(
                             "%d/%d signal events in %s had no matching GenModel masspoint — "
                             "assigned a random grid mass instead", n_unlabeled, n, Path(fpath).name,
@@ -1752,6 +1804,8 @@ def _load_training_data_from_eventsel(
     label_csv,
     weight_branch: str,
     max_events_per_file,
+    event_fraction: float = 0.5,
+    signal_mass_filter: Optional[set] = None,
     signal_cross_sections: Optional[Dict[str, float]] = None,
     background_cross_sections: Optional[Dict[str, float]] = None,
     lumi: float = 1.0,
@@ -1824,7 +1878,8 @@ def _load_training_data_from_eventsel(
         (
             fpath, feat_list, sig_patterns, signal_prefix, label_map, weight_branch,
             max_events_per_file, signal_cross_sections, background_cross_sections,
-            lumi, parametric_input, mass_grid, seed, idx,
+            lumi, parametric_input, mass_grid, seed, idx, event_fraction,
+            signal_mass_filter,
         )
         for idx, fpath in enumerate(input_files)
     ]
@@ -1902,6 +1957,9 @@ def _load_training_data_from_eventsel(
     w = np.concatenate(w_parts)
     mass = np.concatenate(mass_parts, axis=0) if parametric_input else None
     sample_ids = np.concatenate(sample_parts)
+    # Everything is merged into X now; release the per-file frames so the
+    # whole background does not sit in host memory twice.
+    del X_parts
     return X, y, w, feature_sources, mass, sample_ids
 
 
@@ -1955,15 +2013,49 @@ def train_dnn(args):
     # grid in the checkpoint.
     parametric_input = bool(trainer.model_config.get("parametric_input", False))
     mass_grid = None
+    signal_mass_filter = None
     if parametric_input:
+        masspoint_patterns = tuple(getattr(args, "masspoint_pattern", None) or ())
+        excluded = {
+            s.strip().lower()
+            for s in (getattr(args, "exclude_masspoints", None) or "").split(",")
+            if s.strip()
+        }
+        grid_labels = [
+            label for label in signal_cross_sections
+            if (not masspoint_patterns
+                or any(re.search(p, label, re.IGNORECASE) for p in masspoint_patterns))
+            and label.lower() not in excluded
+        ]
+        if masspoint_patterns or excluded:
+            missing = sorted(excluded - {l.lower() for l in signal_cross_sections})
+            if missing:
+                raise ValueError(
+                    f"--exclude-masspoints: not in --xsection-signal-json: {missing}"
+                )
+            signal_mass_filter = {l.lower() for l in grid_labels}
+            logging.info(
+                "Parametric mass grid restricted to %d mass point(s)%s",
+                len(grid_labels),
+                f", holding out {sorted(x for x in excluded)}" if excluded else "",
+            )
+            for label in sorted(grid_labels):
+                logging.info("  grid: %s", label)
+            held_out = [l for l in sorted(signal_cross_sections) if l.lower() not in signal_mass_filter]
+            if held_out:
+                logging.info("Mass points outside the training grid "
+                             "(dropped from the signal): %s", held_out)
+        else:
+            grid_labels = list(signal_cross_sections)
         mass_grid = sorted({
-            parsed for label in signal_cross_sections
+            parsed for label in grid_labels
             if (parsed := _parse_masspoint_label(label)) is not None
         })
         if not mass_grid:
             raise ValueError(
                 "model.parametric_input is true in dnn.yaml but no (MH3, MH4) "
-                "masspoints could be parsed — pass --xsection-signal-json."
+                "masspoints could be parsed — pass --xsection-signal-json "
+                "(and check --masspoint-pattern / --exclude-masspoints)."
             )
 
     # Load feature matrix directly from flat Events trees — no ppbbchichi-trees.root written
@@ -1975,6 +2067,8 @@ def train_dnn(args):
         label_csv=args.label_csv,
         weight_branch=getattr(args, "weight_branch", "full_event_weight"),
         max_events_per_file=args.max_events_per_sample,
+        event_fraction=getattr(args, "event_fraction", 0.5),
+        signal_mass_filter=signal_mass_filter,
         signal_cross_sections=signal_cross_sections or None,
         background_cross_sections=background_cross_sections or None,
         lumi=lumi,
@@ -1984,15 +2078,20 @@ def train_dnn(args):
         seed=int(trainer.training_config.get("seed", 7)),
     )
 
+    # Hand ownership of the large arrays to the trainer and drop this frame's
+    # references: the trainer releases them after its train/val/test split, so
+    # the full feature matrix is not kept alive for the whole training.
+    _hold = [X, y, w, sample_ids, mass]
+    del X, y, w, sample_ids, mass
     metrics = trainer.train_from_arrays(
-        X=X,
-        y=y,
-        w=w,
-        sample_ids=sample_ids,
+        X=_hold.pop(0),
+        y=_hold.pop(0),
+        w=_hold.pop(0),
+        sample_ids=_hold.pop(0),
+        mass=_hold.pop(0),
         feature_sources=feature_sources,
         outdir=args.outdir,
         plot_dir=args.plot_dir,
-        mass=mass,
     )
 
     logging.info(
@@ -3295,6 +3394,25 @@ Examples:
     train_dnn_parser.add_argument(
         "--max-events-per-sample", type=int, default=200000,
         help="Cap events loaded per sample (default: 200000)",
+    )
+    train_dnn_parser.add_argument(
+        "--event-fraction", type=float, default=0.5,
+        help="Randomly keep this fraction of each input file's events "
+             "(default: 0.5, deterministic per seed). Use 1.0 to train on "
+             "the full data set.",
+    )
+    train_dnn_parser.add_argument(
+        "--masspoint-pattern", action="append", default=None,
+        dest="masspoint_pattern",
+        help="Parametric models: regex(es) selecting which signal mass points "
+             "enter the training grid, e.g. 'MH3_1500_'. Repeatable.",
+    )
+    train_dnn_parser.add_argument(
+        "--exclude-masspoints", default=None,
+        help="Parametric models: comma-separated mass point labels to hold out "
+             "of training, e.g. 'MH3_1500_MH4_100_Mchi_1,...'. Those events are "
+             "dropped from the signal (not turned into background), so the "
+             "points stay usable for an interpolation test.",
     )
     train_dnn_parser.add_argument(
         "--xsection-signal-json", default=None,

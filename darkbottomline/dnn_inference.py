@@ -7,6 +7,7 @@ Public API (DNNInference) preserved for cli.py and tests.
 
 import json
 import logging
+import os
 import numpy as np
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -14,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import torch
 
 from dnn.model import load_checkpoint
+from dnn.scaler import MassScaler as _MassScaler
 from dnn.scaler import StandardScaler as _StandardScaler
 from dnn.feature_engineering import build_feature_frame_from_tree
 from dnn.common import sanitize_feature_frame
@@ -63,6 +65,26 @@ def _resolve_mass_scan(spec: Optional[str], inference) -> Optional[List[Tuple[fl
 
 
 def _resolve_device() -> torch.device:
+    requested = os.environ.get("DNN_INFERENCE_DEVICE", "auto").strip().lower()
+    if requested == "cpu":
+        return torch.device("cpu")
+    if requested == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "DNN_INFERENCE_DEVICE=cuda was requested, but CUDA is not available."
+            )
+        return torch.device("cuda")
+    if requested == "mps":
+        if not hasattr(torch.backends, "mps") or not torch.backends.mps.is_available():
+            raise RuntimeError(
+                "DNN_INFERENCE_DEVICE=mps was requested, but MPS is not available."
+            )
+        return torch.device("mps")
+    if requested not in ("", "auto"):
+        raise ValueError(
+            "DNN_INFERENCE_DEVICE must be one of auto, cpu, cuda, or mps; "
+            f"got {requested!r}."
+        )
     if torch.cuda.is_available():
         return torch.device("cuda")
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -95,6 +117,15 @@ class DNNInference:
         if Path(scaler_path).exists():
             self._scaler = _StandardScaler.from_jsonable(
                 json.loads(Path(scaler_path).read_text())
+            )
+
+        # Parametric models also carry the scaling of their (MH3, MH4) inputs,
+        # written next to the checkpoint by the trainer.
+        mass_scaler_path = str(model_path).replace(".pt", "_mass_scaler.json")
+        self._mass_scaler: Optional[_MassScaler] = None
+        if Path(mass_scaler_path).exists():
+            self._mass_scaler = _MassScaler.from_jsonable(
+                json.loads(Path(mass_scaler_path).read_text())
             )
 
         # Optional yaml config for feature/model info
@@ -161,17 +192,44 @@ class DNNInference:
             model_path, self._spec.n_inputs, len(self.features), self.device,
         )
 
+        # Backward-compatible public metadata used by older integrations.
+        self.model_config: Dict[str, Any] = {
+            "input_features": len(self.features),
+            "hidden_layers": list(self._spec.hidden_layers),
+            "dropout": float(self._spec.dropout),
+            "parametric_input": self._parametric,
+            "output_activation": "sigmoid",
+        }
+        self.feature_config: Dict[str, Any] = {"features": list(self.features)}
+
     # ------------------------------------------------------------------
     # Core scoring
     # ------------------------------------------------------------------
 
-    def _score_numpy(self, X: np.ndarray, masses: Optional[np.ndarray] = None) -> np.ndarray:
-        """Scale X, optionally append (MH3, MH4) mass columns, run net, return scores."""
-        X = X.astype("f8")
-        if self._scaler is not None:
-            X = self._scaler.transform(X)
+    def _batch_size(self) -> int:
+        raw = os.environ.get("DNN_INFERENCE_BATCH_SIZE", "65536")
+        try:
+            size = int(raw)
+        except ValueError as exc:
+            raise ValueError(
+                "DNN_INFERENCE_BATCH_SIZE must be a positive integer; "
+                f"got {raw!r}."
+            ) from exc
+        if size <= 0:
+            raise ValueError(
+                "DNN_INFERENCE_BATCH_SIZE must be a positive integer; "
+                f"got {size}."
+            )
+        return size
 
-        Xt = torch.from_numpy(X.astype("float32")).to(self.device)
+    def _score_numpy(self, X: np.ndarray, masses: Optional[np.ndarray] = None) -> np.ndarray:
+        """Scale and score in bounded batches so one large file cannot exhaust VRAM."""
+        X = np.asarray(X)
+        if X.ndim != 2:
+            raise ValueError(f"Expected a 2D feature array, got shape={X.shape}.")
+        n_events = len(X)
+        if n_events == 0:
+            return np.empty(0, dtype="f4")
 
         if self._parametric:
             if masses is None:
@@ -181,34 +239,63 @@ class DNNInference:
                         "masses were passed — cannot score without a mass hypothesis."
                     )
                 benchmark = np.asarray(self.mass_grid[0], dtype="f8")
-                masses = np.tile(benchmark, (len(X), 1))
+                masses = np.tile(benchmark, (n_events, 1))
             masses = np.asarray(masses, dtype="f8")
             if masses.ndim == 1:
                 masses = np.tile(masses.reshape(-1, 1), (1, 2))  # legacy 1-column callers
-            Mt = torch.from_numpy(masses.astype("float32")).to(self.device)
-            Xt = torch.cat([Xt, Mt], dim=-1)
+            if len(masses) != n_events:
+                raise ValueError(
+                    f"features and masses have different lengths: "
+                    f"{n_events} and {len(masses)}."
+                )
 
-        with torch.no_grad():
-            scores = torch.sigmoid(self._net(Xt).squeeze(1)).cpu().numpy()
-        return scores
+        batch_size = self._batch_size()
+        scores_parts = []
+        with torch.inference_mode():
+            for start in range(0, n_events, batch_size):
+                stop = min(start + batch_size, n_events)
+                X_batch = X[start:stop].astype("float32", copy=True)
+                if self._scaler is not None:
+                    X_batch = self._scaler.transform(X_batch, copy=False)
+                Xt = torch.from_numpy(X_batch).to(self.device)
+
+                if self._parametric:
+                    mass_batch = masses[start:stop]
+                    if self._mass_scaler is not None:
+                        mass_batch = self._mass_scaler.transform(mass_batch)
+                    Mt = torch.from_numpy(
+                        mass_batch.astype("float32", copy=False)
+                    ).to(self.device)
+                    Xt = torch.cat([Xt, Mt], dim=-1)
+
+                scores_parts.append(
+                    torch.sigmoid(self._net(Xt).squeeze(1)).cpu().numpy()
+                )
+        return np.concatenate(scores_parts).astype("f4", copy=False)
 
     # ------------------------------------------------------------------
     # Feature extraction from uproot trees (ppbbchichi ROOT format)
     # ------------------------------------------------------------------
 
-    def extract_features(self, tree, max_events: Optional[int] = None) -> np.ndarray:
+    def extract_features(
+        self,
+        tree,
+        max_events: Optional[int] = None,
+        entry_mask: Optional[np.ndarray] = None,
+    ) -> np.ndarray:
         """
         Extract this model's feature set (self.features) from an uproot tree.
 
         Args:
             tree: uproot TTree object
             max_events: optional event limit
+            entry_mask: optional boolean mask selecting tree entries to read
 
         Returns:
             numpy array shape (N, len(self.features))
         """
         df, _, _ = build_feature_frame_from_tree(
-            tree, self.features, max_events=max_events
+            tree, self.features, max_events=max_events, entry_mask=entry_mask
         )
         df = sanitize_feature_frame(df)
         return df.to_numpy(dtype="f8")
@@ -252,7 +339,11 @@ class DNNInference:
         return results
 
     def predict_from_tree(
-        self, tree, masses: Optional[np.ndarray] = None, max_events: Optional[int] = None
+        self,
+        tree,
+        masses: Optional[np.ndarray] = None,
+        max_events: Optional[int] = None,
+        entry_mask: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
         Extract features from uproot tree and score in one call.
@@ -261,11 +352,14 @@ class DNNInference:
             tree: uproot TTree
             masses: optional mass parameter array
             max_events: optional event limit
+            entry_mask: optional boolean mask selecting tree entries to read
 
         Returns:
             scores array
         """
-        X = self.extract_features(tree, max_events=max_events)
+        X = self.extract_features(
+            tree, max_events=max_events, entry_mask=entry_mask
+        )
         return self._score_numpy(X, masses)
 
     # ------------------------------------------------------------------
@@ -332,4 +426,6 @@ class DNNInference:
             "parametric_input": self._parametric,
             "mass_grid": self.mass_grid,
             "scaler_loaded": self._scaler is not None,
+            "model_config": dict(self.model_config),
+            "feature_config": dict(self.feature_config),
         }

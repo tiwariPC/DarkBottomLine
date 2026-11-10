@@ -16,6 +16,7 @@ Public API (DNNTrainer, ParametricDNN) preserved for cli.py and tests.
 from __future__ import annotations
 
 import csv
+import gc
 import json
 import logging
 import os
@@ -29,6 +30,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from dnn.model import ModelSpec, build_mlp, parse_hidden_layers, save_checkpoint, load_checkpoint
+from dnn.scaler import MassScaler as _MassScaler
 from dnn.scaler import StandardScaler as _StandardScaler
 
 
@@ -428,12 +430,28 @@ def fit_dnn_weight_models(
         mask = samples == sample
         sample_features = features.loc[mask] if hasattr(features, "loc") else features[mask]
         if mode == "local_cancellation":
-            model, sample_stats = fit_local_cancellation_mapping(
-                sample_features,
-                w[mask],
-                cfg,
-            )
-            sample_local = apply_local_cancellation_mapping(sample_features, w[mask], model)
+            try:
+                model, sample_stats = fit_local_cancellation_mapping(
+                    sample_features,
+                    w[mask],
+                    cfg,
+                )
+                sample_local = apply_local_cancellation_mapping(
+                    sample_features, w[mask], model)
+            except ValueError as exc:
+                if "non-positive signed yield" not in str(exc):
+                    raise
+                # A slice whose net yield is <= 0 (typically a handful of
+                # events after the split) cannot be represented with
+                # non-negative weights. Fall back to clipping the negative
+                # weights for that slice instead of aborting the whole training.
+                logging.warning(
+                    "Sample %s has a non-positive signed yield in the training "
+                    "split (%s); clipping its negative weights instead.",
+                    sample, exc)
+                sample_local, sample_stats = prepare_dnn_training_weights(
+                    sample_features, w[mask], dict(cfg, mode="clip_negative"))
+                model = {"mode": "clip_negative"}
         else:
             sample_local, sample_stats = prepare_dnn_training_weights(
                 sample_features,
@@ -472,14 +490,19 @@ def apply_dnn_weight_models(
             )
         mask = samples == sample
         sample_features = features.loc[mask] if hasattr(features, "loc") else features[mask]
-        if mode == "local_cancellation":
+        # Dispatch on the per-sample model: a sample whose training split has a
+        # non-positive signed yield falls back to clip_negative (see
+        # fit_dnn_weight_models) while the others stay local-cancellation.
+        sample_mode = str(models[sample_key].get("mode", mode)).strip().lower()
+        if sample_mode == "local_cancellation":
             local[mask] = apply_local_cancellation_mapping(
                 sample_features,
                 w[mask],
                 models[sample_key],
             )
         else:
-            local[mask], _ = prepare_dnn_training_weights(sample_features, w[mask], cfg)
+            local[mask], _ = prepare_dnn_training_weights(
+                sample_features, w[mask], dict(cfg, mode=sample_mode))
     return local
 
 
@@ -781,21 +804,138 @@ def _weighted_corrcoef(sx: np.ndarray, sy: np.ndarray, sw: np.ndarray) -> float:
     return cov_xy / np.sqrt(cov_xx * cov_yy)
 
 
-def _batched_predict_logits(net, X, batch_size: int):
+def _malloc_trim() -> None:
+    """Return free glibc arenas to the OS (no-op where unsupported).
+
+    Long pipelines that allocate and free many medium-sized pandas blocks leave
+    the freed pages in the allocator's arenas; RSS then stays high even though
+    the objects are gone. This makes the release visible to the OS.
+    """
+    try:
+        import ctypes
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+
+def _log_mem(tag: str) -> None:
+    """Log current and peak RSS when DNN_MEM_TRACE=1 (diagnostics only)."""
+    level = os.environ.get("DNN_MEM_TRACE")
+    if level not in ("1", "2"):
+        return
+    if level == "2":
+        # Return free arenas to the OS before sampling: distinguishes real
+        # live memory from allocator fragmentation.
+        try:
+            import ctypes
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
+    try:
+        with open("/proc/self/status") as fh:
+            vals = {}
+            for line in fh:
+                if line.startswith(("VmRSS:", "VmHWM:")):
+                    vals[line.split(":")[0]] = int(line.split()[1])
+        logging.info(
+            "[mem] %-30s RSS=%6.1f GB  peak=%6.1f GB",
+            tag, vals["VmRSS"] / 1048576, vals["VmHWM"] / 1048576,
+        )
+    except Exception:
+        pass
+    if level != "2":
+        return
+    # Detailed audit: the largest live numpy arrays / DataFrames.
+    try:
+        import gc
+        import pandas as pd
+        items = []
+        for obj in gc.get_objects():
+            try:
+                if isinstance(obj, np.ndarray):
+                    items.append((int(obj.nbytes), "ndarray", tuple(obj.shape), str(obj.dtype)))
+                elif isinstance(obj, pd.DataFrame):
+                    items.append((int(obj.memory_usage(deep=False).sum()), "DataFrame",
+                                  tuple(obj.shape), str(obj.dtypes.iloc[0])))
+            except Exception:
+                continue
+        items.sort(reverse=True)
+        total_df = sum(int(o.memory_usage(deep=False).sum()) for o in gc.get_objects()
+                       if isinstance(o, pd.DataFrame) and not o.empty)
+        total_np = sum(int(o.nbytes) for o in gc.get_objects()
+                       if isinstance(o, np.ndarray) and o.nbytes > 1 << 20)
+        logging.info("[mem]   totals: DataFrames=%.2f GB  ndarrays(>1MB)=%.2f GB",
+                     total_df / 1073741824, total_np / 1073741824)
+        for nbytes, kind, shape, dtype in items[:8]:
+            logging.info("[mem]   %-9s %7.2f GB  shape=%-18s %s",
+                         kind, nbytes / 1073741824, str(shape), dtype)
+        # Who still holds the largest objects? (frame names + container types)
+        big = [o for o in gc.get_objects()
+               if isinstance(o, pd.DataFrame) and o.memory_usage(deep=False).sum() > 2e8]
+        for o in big[:2]:
+            holders = []
+            for r in gc.get_referrers(o):
+                if isinstance(r, dict) and "__name__" in r:
+                    continue
+                if hasattr(r, "f_code"):
+                    holders.append("frame:" + r.f_code.co_name)
+                else:
+                    holders.append(type(r).__name__)
+            logging.info("[mem]   holder of shape=%s: %s",
+                         tuple(o.shape), ", ".join(sorted(set(holders))[:8]))
+    except Exception:
+        pass
+
+
+def _batched_predict_logits(net, X, batch_size: int, device=None):
     """Forward pass in chunks, returning concatenated logits without ever
     materializing the full (N x hidden) activation tensor at once."""
     outs = []
     bs = int(batch_size)
     for start in range(0, int(X.shape[0]), bs):
-        outs.append(net(X[start:start + bs]).squeeze(1))
+        xb = X[start:start + bs]
+        if device is not None:
+            xb = xb.to(device)
+        outs.append(net(xb).squeeze(1))
     if not outs:
         return torch.empty(0, device=X.device)
     return torch.cat(outs)
 
 
-def _batched_predict_sigmoid(net, X, batch_size: int) -> np.ndarray:
+def _batched_predict_logits_parametric(net, X, M, batch_size: int, device=None):
+    """Same as :func:`_batched_predict_logits` for a parametric model.
+
+    The mass columns are concatenated *per batch*. Concatenating them for the
+    whole split instead would need a second full copy of the tensor on the
+    device (for the validation split of a ~100M-row sample that is several GB),
+    which does not fit next to the resident train/val/test tensors.
+    """
+    outs = []
+    bs = int(batch_size)
+    for start in range(0, int(X.shape[0]), bs):
+        xb = X[start:start + bs]
+        mb = M[start:start + bs]
+        if device is not None:
+            xb = xb.to(device)
+            mb = mb.to(device)
+        outs.append(net(torch.cat([xb, mb], dim=-1)).squeeze(1))
+    if not outs:
+        return torch.empty(0, device=X.device)
+    return torch.cat(outs)
+
+
+def _batched_predict_sigmoid(net, X, batch_size: int, device=None) -> np.ndarray:
     """Batched forward pass returning sigmoid scores as a numpy array."""
-    return torch.sigmoid(_batched_predict_logits(net, X, batch_size)).cpu().numpy()
+    return torch.sigmoid(
+        _batched_predict_logits(net, X, batch_size, device=device)
+    ).cpu().numpy()
+
+
+def _batched_predict_sigmoid_parametric(net, X, M, batch_size: int, device=None) -> np.ndarray:
+    """Batched sigmoid scores for a parametric model (see above)."""
+    return torch.sigmoid(
+        _batched_predict_logits_parametric(net, X, M, batch_size, device=device)
+    ).cpu().numpy()
 
 
 def _plot_feature_correlation(
@@ -824,8 +964,12 @@ def _plot_feature_correlation(
     CMSPlotStyle().set_style()
 
     n = len(features)
-    X = np.asarray(X_df[features].to_numpy())
-    X = np.where((X == SENTINEL) | ~np.isfinite(X), np.nan, X)
+    # float32, in place: np.where(..., np.nan, X) would promote to float64 and
+    # allocate a second full copy of the (large) training matrix.
+    X = X_df[features].to_numpy(dtype="f4", copy=True)
+    bad = (X == SENTINEL) | ~np.isfinite(X)
+    if bad.any():
+        X[bad] = np.nan
     w_all = np.maximum(np.asarray(weights, dtype="f8"), 0.0) if weights is not None else None
 
     corr = np.full((n, n), np.nan, dtype="f8")
@@ -1269,20 +1413,27 @@ class ParametricDNN(nn.Module):
     def __init__(self, config: Dict[str, Any]):
         super().__init__()
         self.config = config
+        # Preserve the public attributes used by older callers while the
+        # implementation below builds the shared dnn.model MLP.
+        self.input_features = int(config.get("input_features", 25))
+        self.activation = str(config.get("activation", "relu"))
+        self.dropout = float(config.get("dropout", 0.1))
+        self.output_activation = str(config.get("output_activation", "sigmoid"))
         self.parametric_input = bool(config.get("parametric_input", True))
 
-        n_inputs = int(config.get("input_features", 25))
+        n_inputs = self.input_features
         if self.parametric_input:
             n_inputs += MASS_DIM
 
         hidden = config.get("hidden_layers", [128, 128])
         if isinstance(hidden, str):
             hidden = list(parse_hidden_layers(hidden))
+        self.hidden_layers = [int(h) for h in hidden]
 
         spec = ModelSpec(
             n_inputs=n_inputs,
-            hidden_layers=tuple(int(h) for h in hidden),
-            dropout=float(config.get("dropout", 0.1)),
+            hidden_layers=tuple(self.hidden_layers),
+            dropout=self.dropout,
             parametric=self.parametric_input,
         )
         self._net = build_mlp(spec)
@@ -1323,6 +1474,9 @@ class DNNTrainer:
 
         self.model = ParametricDNN(self.model_config)
         self._dnn_scaler: Optional[_StandardScaler] = None
+        # Only populated for parametric runs (see MASS_DIM below); left as None
+        # for ordinary models so nothing about them changes.
+        self._mass_scaler: Optional[_MassScaler] = None
         self.history: Dict[str, List[float]] = {
             "train_loss": [], "val_loss": [],
             "train_acc": [], "val_acc": [],
@@ -1447,18 +1601,23 @@ class DNNTrainer:
         features = list(X.columns)
         if sample_ids is None:
             sample_ids = np.full(len(X), "<in-memory>", dtype=object)
+        # Hand ownership of the large arrays to the pipeline and drop this
+        # frame's references. The pipeline releases them after its split, which
+        # only frees the memory if no caller still holds a reference.
+        _hold = [X, y, w, sample_ids, mass]
+        del X, y, w, sample_ids, mass
         return self._run_training_pipeline(
-            X=X,
-            y=y,
-            w=w,
-            sample_ids=sample_ids,
+            X=_hold.pop(0),
+            y=_hold.pop(0),
+            w=_hold.pop(0),
+            sample_ids=_hold.pop(0),
+            mass=_hold.pop(0),
             features=features,
             feature_sources=feature_sources or {},
             outdir=outdir,
             plot_dir=plot_dir,
             region="preselection",
             root_path="<in-memory>",
-            mass=mass,
         )
 
     # ------------------------------------------------------------------
@@ -1605,6 +1764,10 @@ class DNNTrainer:
         from sklearn.metrics import roc_auc_score, roc_curve
 
         n_events = len(X)
+        # The loader has just released ~one feature matrix worth of per-file
+        # frames; return those arenas before the pipeline allocates its own.
+        _malloc_trim()
+        _log_mem("after load (pipeline entry)")
         # Keep feature matrices in float32 throughout; the model is trained
         # in float32 anyway, and float64 copies of a ~10M-row frame are what
         # exhaust memory on shared hosts.
@@ -1677,6 +1840,7 @@ class DNNTrainer:
         sample_val = sample_ids[val_idx]
         sample_test = sample_ids[test_idx]
 
+        _log_mem('after split indices')
         weight_features_train = X.iloc[train_idx]
         weight_features_val = X.iloc[val_idx]
         weight_features_test = X.iloc[test_idx]
@@ -1714,38 +1878,68 @@ class DNNTrainer:
 
         # Feature ranking is trained on training rows. Its physical histograms
         # use signed weights; ordinary feature AUC uses non-negative local weights.
+        _log_mem('after local-cancellation fit')
         sig_syst_val = float(self.training_config.get("sig_syst", 0.0))
+        # These are diagnostic plots/rankings, not model inputs. On very large
+        # samples they would need a full extra copy of the training frame, so
+        # they are computed on a random subsample (DNN_DIAG_MAX_ROWS).
+        diag_max = int(os.environ.get("DNN_DIAG_MAX_ROWS", 5_000_000))
+        if len(weight_features_train) > diag_max:
+            _rng = np.random.default_rng(int(self.training_config.get("seed", 7)))
+            _idx = np.sort(_rng.choice(len(weight_features_train), diag_max, replace=False))
+            diag_X = weight_features_train.iloc[_idx]
+            diag_y = y_train_i[_idx]
+            diag_ws = w_signed_train[_idx]
+            diag_wm = w_train_local[_idx]
+            logging.info(
+                "Feature diagnostics on a random %d-row subsample of %d training rows",
+                diag_max, len(weight_features_train))
+        else:
+            diag_X, diag_y, diag_ws, diag_wm = (
+                weight_features_train, y_train_i, w_signed_train, w_train_local)
         signif_rows = _compute_feature_significance(
-            weight_features_train,
-            y_train_i,
-            w_signed_train,
+            diag_X,
+            diag_y,
+            diag_ws,
             features,
             plot_dir_p,
             source_map=feature_sources,
             sig_syst=sig_syst_val,
             plot_dir=plot_dir_p,
             variable_labels=self.config.get("variable_labels"),
-            metric_weights=w_train_local,
+            metric_weights=diag_wm,
         )
         logging.info("Feature significance written to %s", plot_dir_p / "feature_significance.csv")
 
-        _plot_feature_correlation(weight_features_train, features, plot_dir_p / "feature_correlation.png",
+        _plot_feature_correlation(diag_X, features, plot_dir_p / "feature_correlation.png",
                                    variable_labels=self.config.get("variable_labels"))
         logging.info("Feature correlation matrix written to %s", plot_dir_p / "feature_correlation.png")
 
-        _plot_feature_correlation(weight_features_train, features, plot_dir_p / "feature_correlation_weighted.png",
-                                   variable_labels=self.config.get("variable_labels"), weights=w_train_local)
+        _plot_feature_correlation(diag_X, features, plot_dir_p / "feature_correlation_weighted.png",
+                                   variable_labels=self.config.get("variable_labels"), weights=diag_wm)
         logging.info("Weighted feature correlation matrix written to %s", plot_dir_p / "feature_correlation_weighted.png")
 
+        del diag_X, diag_y, diag_ws, diag_wm
+        _malloc_trim()
+
+        _log_mem('after significance')
         if top_k > 0:
             ranked = [str(r["feature"]) for r in signif_rows if str(r.get("feature", "")) in X.columns]
             keep = ranked[: min(top_k, len(ranked))]
             features = list(keep)
             logging.info("Selected top-%d features: %s", len(features), features)
 
-        X_train = X.iloc[train_idx][features].copy()
-        X_val = X.iloc[val_idx][features].copy()
-        X_test = X.iloc[test_idx][features].copy()
+        if list(features) == list(X.columns):
+            # weight_features_* already hold exactly these rows and columns -
+            # reuse them instead of allocating a second full copy of the split.
+            X_train, X_val, X_test = (weight_features_train,
+                                      weight_features_val,
+                                      weight_features_test)
+        else:
+            X_train = weight_features_train[features]
+            X_val = weight_features_val[features]
+            X_test = weight_features_test[features]
+            weight_features_train = weight_features_val = weight_features_test = None
 
         if drop_constant:
             X_train, kept, dropped = _drop_constant_features(X_train, missing_sentinel=-9999.0)
@@ -1755,12 +1949,26 @@ class DNNTrainer:
             X_val = X_val[features].copy()
             X_test = X_test[features].copy()
 
+        # The train/val/test frames are independent copies now. Release the
+        # full input matrix and the full label/weight/id arrays so they do not
+        # sit in memory through significance, correlation and scaling.
+        del X
+        y = w_signed = sample_ids = None
+        _malloc_trim()
+
         topo_indices = [int(features.index(f)) for f in topo_feats if f in features]
 
         if parametric:
             mass_train = np.asarray(mass)[train_idx]
             mass_val = np.asarray(mass)[val_idx]
             mass_test = np.asarray(mass)[test_idx]
+            # Scale the mass inputs on the training split, exactly like the
+            # features. Without this the raw GeV values are concatenated next
+            # to standardized features and the network trains badly.
+            self._mass_scaler = _MassScaler.fit(mass_train)
+            mass_train = self._mass_scaler.transform(mass_train)
+            mass_val = self._mass_scaler.transform(mass_val)
+            mass_test = self._mass_scaler.transform(mass_test)
         else:
             mass_train = mass_val = mass_test = None
 
@@ -1787,15 +1995,27 @@ class DNNTrainer:
             w_test_loss *= np.where(y_test_i == 1, f_s, f_b)
 
         # Scale
+        _log_mem('before to_numpy')
         X_train_np = X_train.to_numpy(dtype="f4")
         X_val_np = X_val.to_numpy(dtype="f4")
         X_test_np = X_test.to_numpy(dtype="f4")
+        n_train_rows, n_val_rows, n_test_rows = len(X_train_np), len(X_val_np), len(X_test_np)
+        # Release the DataFrame copies now that numpy owns the data. Without
+        # this both representations (and the scaled copy below) coexist, which
+        # for a large sample is several full feature matrices at once.
+        weight_features_train = weight_features_val = weight_features_test = None
+        X_train = X_val = X_test = None
+        _malloc_trim()
+        _log_mem('after to_numpy + frame release')
         self._dnn_scaler = _StandardScaler.fit(X_train_np, missing_sentinel=-9999.0)
-        X_train_np = self._dnn_scaler.transform(X_train_np).astype("float32")
-        X_val_np = self._dnn_scaler.transform(X_val_np).astype("float32")
-        X_test_np = self._dnn_scaler.transform(X_test_np).astype("float32")
+        # Standardize in place: no second full-size buffer.
+        X_train_np = self._dnn_scaler.transform(X_train_np, copy=False)
+        X_val_np = self._dnn_scaler.transform(X_val_np, copy=False)
+        X_test_np = self._dnn_scaler.transform(X_test_np, copy=False)
+        _malloc_trim()
 
         # Build model matching actual feature count (+ MASS_DIM when parametric)
+        _log_mem('after scaling')
         n_inputs = int(X_train_np.shape[1]) + (MASS_DIM if parametric else 0)
         spec = ModelSpec(
             n_inputs=n_inputs,
@@ -1811,22 +2031,39 @@ class DNNTrainer:
         optim = torch.optim.AdamW(net.parameters(), lr=lr)
         bce_loss = nn.BCEWithLogitsLoss(reduction="none")
 
-        Xtr = torch.from_numpy(X_train_np)
-        ytr = torch.from_numpy(y_train_i.astype("float32"))
-        wtr = torch.from_numpy(w_train_loss.astype("float32"))
-        Xva = torch.from_numpy(X_val_np)
-        yva = torch.from_numpy(y_val_i.astype("float32"))
-        wva_t = torch.from_numpy(w_val_loss.astype("float32"))
-        Xte = torch.from_numpy(X_test_np)
+        # Keep the full train/val/test tensors resident on the compute device.
+        # The network is tiny, so per-batch host->device copies were dominating
+        # wall time; batching below slices the device tensors directly.
+        dev = self.device
+        # DNN_DEVICE_RESIDENT=0 keeps the feature tensors on the host and moves
+        # one batch at a time to the compute device. The default keeps them
+        # resident (much faster epochs) but needs VRAM proportional to the
+        # sample size, which caps how much data fits on a 16 GB card.
+        resident = os.environ.get("DNN_DEVICE_RESIDENT", "1") != "0"
 
+        def _to_dev(t):
+            return t.to(dev) if resident else t
+
+        Xtr = _to_dev(torch.from_numpy(X_train_np))
+        ytr = _to_dev(torch.from_numpy(y_train_i.astype("float32")))
+        wtr = _to_dev(torch.from_numpy(w_train_loss.astype("float32")))
+        Xva = _to_dev(torch.from_numpy(X_val_np))
+        yva = _to_dev(torch.from_numpy(y_val_i.astype("float32")))
+        wva_t = _to_dev(torch.from_numpy(w_val_loss.astype("float32")))
+        Xte = _to_dev(torch.from_numpy(X_test_np))
+
+        Mtr = None
         if parametric:
-            Mtr = torch.from_numpy(np.asarray(mass_train, dtype="float32"))
-            Mva = torch.from_numpy(np.asarray(mass_val, dtype="float32"))
-            Mte = torch.from_numpy(np.asarray(mass_test, dtype="float32"))
-            loader = DataLoader(TensorDataset(Xtr, ytr, wtr, Mtr), batch_size=batch_size, shuffle=True, drop_last=False)
+            Mtr = _to_dev(torch.from_numpy(np.asarray(mass_train, dtype="float32")))
+            Mva = _to_dev(torch.from_numpy(np.asarray(mass_val, dtype="float32")))
+            Mte = _to_dev(torch.from_numpy(np.asarray(mass_test, dtype="float32")))
         else:
             Mva = Mte = None
-            loader = DataLoader(TensorDataset(Xtr, ytr, wtr), batch_size=batch_size, shuffle=True, drop_last=False)
+
+        # The training data now lives on the compute device; release the host
+        # numpy buffers (on the CPU device torch shares them, so this is safe).
+        del X_train_np, X_val_np, X_test_np
+        gc.collect()
 
         best_auc, best_state, bad = -np.inf, None, 0
         train_losses: List[float] = []
@@ -1838,14 +2075,18 @@ class DNNTrainer:
             net.train()
             running, n_batches = 0.0, 0
 
-            for batch in loader:
-                if parametric:
-                    xb, yb, wb, mb = batch
-                    mb = mb.to(self.device)
-                else:
-                    xb, yb, wb = batch
-                    mb = None
-                xb, yb, wb = xb.to(self.device), yb.to(self.device), wb.to(self.device)
+            n_train_rows = int(Xtr.shape[0])
+            perm = torch.randperm(n_train_rows, device=Xtr.device)
+            for start in range(0, n_train_rows, batch_size):
+                idx = perm[start:start + batch_size]
+                xb = Xtr[idx]
+                yb = ytr[idx]
+                wb = wtr[idx]
+                mb = Mtr[idx] if parametric else None
+                if not resident:
+                    xb, yb, wb = xb.to(dev), yb.to(dev), wb.to(dev)
+                    if mb is not None:
+                        mb = mb.to(dev)
                 optim.zero_grad(set_to_none=True)
                 net_in = torch.cat([xb, mb], dim=-1) if parametric else xb
                 logits = net(net_in).squeeze(1)
@@ -1864,12 +2105,21 @@ class DNNTrainer:
 
             net.eval()
             with torch.no_grad():
-                Xva_in = torch.cat([Xva.to(self.device), Mva.to(self.device)], dim=-1) if parametric else Xva.to(self.device)
-                logits_va = _batched_predict_logits(net, Xva_in, batch_size)
+                # Concatenate the mass columns per batch: building one full
+                # (N, n_features + 2) copy of the validation split every epoch
+                # does not fit beside the resident train/val/test tensors.
+                if parametric:
+                    logits_va = _batched_predict_logits_parametric(
+                        net, Xva, Mva, batch_size, device=dev)
+                else:
+                    logits_va = _batched_predict_logits(net, Xva, batch_size, device=dev)
                 y_score_va = torch.sigmoid(logits_va).cpu().numpy()
-                wva_d = wva_t.to(self.device)
+                wva_d = wva_t
+                # When the tensors stay on the host, logits come back on the
+                # device: bring them to the label array's device for the loss.
+                logits_va_l = logits_va if logits_va.device == yva.device else logits_va.cpu()
                 loss_val = float(
-                    (bce_loss(logits_va, yva.to(self.device)) * (wva_d / (wva_d.mean() + 1e-12))).mean().detach().cpu()
+                    (bce_loss(logits_va_l, yva) * (wva_d / (wva_d.mean() + 1e-12))).mean().detach().cpu()
                 )
 
             auc = float(roc_auc_score(y_val_i, y_score_va, sample_weight=w_val_local))
@@ -1902,16 +2152,16 @@ class DNNTrainer:
         net.eval()
         with torch.no_grad():
             if parametric:
-                Xte_in = torch.cat([Xte.to(self.device), Mte.to(self.device)], dim=-1)
-                Xtr_in = torch.cat([Xtr.to(self.device), Mtr.to(self.device)], dim=-1)
-                Xva_in = torch.cat([Xva.to(self.device), Mva.to(self.device)], dim=-1)
+                y_score_test = _batched_predict_sigmoid_parametric(
+                    net, Xte, Mte, batch_size, device=dev)
+                y_score_train = _batched_predict_sigmoid_parametric(
+                    net, Xtr, Mtr, batch_size, device=dev)
+                y_score_val = _batched_predict_sigmoid_parametric(
+                    net, Xva, Mva, batch_size, device=dev)
             else:
-                Xte_in = Xte.to(self.device)
-                Xtr_in = Xtr.to(self.device)
-                Xva_in = Xva.to(self.device)
-            y_score_test = _batched_predict_sigmoid(net, Xte_in, batch_size)
-            y_score_train = _batched_predict_sigmoid(net, Xtr_in, batch_size)
-            y_score_val = _batched_predict_sigmoid(net, Xva_in, batch_size)
+                y_score_test = _batched_predict_sigmoid(net, Xte, batch_size, device=dev)
+                y_score_train = _batched_predict_sigmoid(net, Xtr, batch_size, device=dev)
+                y_score_val = _batched_predict_sigmoid(net, Xva, batch_size, device=dev)
 
         auc_test = float(roc_auc_score(y_test_i, y_score_test, sample_weight=w_test_local))
         auc_train = float(roc_auc_score(y_train_i, y_score_train, sample_weight=w_train_local))
@@ -1963,6 +2213,11 @@ class DNNTrainer:
             (outdir_p / "scaler.json").write_text(scaler_json)
             # DNNInference looks for "<model_stem>_scaler.json" next to the checkpoint.
             (outdir_p / f"{model_path.stem}_scaler.json").write_text(scaler_json)
+        if self._mass_scaler is not None:
+            mass_scaler_json = json.dumps(self._mass_scaler.to_jsonable(), indent=2) + "\n"
+            (outdir_p / "mass_scaler.json").write_text(mass_scaler_json)
+            # Same sidecar convention as the feature scaler.
+            (outdir_p / f"{model_path.stem}_mass_scaler.json").write_text(mass_scaler_json)
 
         # Metrics JSON
         metrics = {
@@ -1990,7 +2245,7 @@ class DNNTrainer:
                 "parametric": bool(spec.parametric), "mass_grid": spec.mass_grid,
             },
             "auc_train": auc_train, "auc_val": auc_val, "auc_test": auc_test,
-            "n_train": int(len(X_train)), "n_val": int(len(X_val)), "n_test": int(len(X_test)),
+            "n_train": int(n_train_rows), "n_val": int(n_val_rows), "n_test": int(n_test_rows),
             "seed": seed,
         }
 
@@ -2142,17 +2397,30 @@ class DNNTrainer:
 
         Xva = val_features.to(self.device)
         yva = val_labels.to(self.device)
+        Mva = train_masses.new_empty((0,))  # replaced below when parametric
+        if self.model.parametric_input:
+            if train_masses.ndim != 2 or train_masses.shape[1] != MASS_DIM:
+                raise ValueError(
+                    "Parametric training requires masses with shape (N, 2)."
+                )
+            if val_masses.ndim != 2 or val_masses.shape[1] != MASS_DIM:
+                raise ValueError(
+                    "Parametric validation requires masses with shape (N, 2)."
+                )
+            Mva = val_masses.to(self.device)
         best_auc, best_state, bad = -np.inf, None, 0
+        best_val_loss = float("inf")
         epoch = 0
 
         for epoch in range(1, epochs + 1):
             net.train()
             running, n_batches = 0.0, 0
 
-            for xb, yb, _mb in loader:
-                xb, yb = xb.to(self.device), yb.to(self.device)
+            for xb, yb, mb in loader:
+                xb, yb, mb = xb.to(self.device), yb.to(self.device), mb.to(self.device)
                 optimizer.zero_grad(set_to_none=True)
-                logits = net(xb).squeeze(1)
+                net_in = torch.cat([xb, mb], dim=-1) if self.model.parametric_input else xb
+                logits = net(net_in).squeeze(1)
                 loss = (bce(logits, yb) / (bce(logits, yb).mean() + 1e-12)).mean()
                 loss.backward()
                 optimizer.step()
@@ -2161,14 +2429,18 @@ class DNNTrainer:
 
             net.eval()
             with torch.no_grad():
-                score_va = torch.sigmoid(net(Xva).squeeze(1)).cpu().numpy()
+                val_in = torch.cat([Xva, Mva], dim=-1) if self.model.parametric_input else Xva
+                logits_va = net(val_in).squeeze(1)
+                score_va = torch.sigmoid(logits_va).cpu().numpy()
+                val_loss = float(bce(logits_va, yva).mean().detach().cpu())
 
             y_va_np = yva.cpu().numpy().astype("i4")
             auc = float(roc_auc_score(y_va_np, score_va)) if len(np.unique(y_va_np)) > 1 else 0.0
             avg_loss = running / max(1, n_batches)
             self.history["train_loss"].append(avg_loss)
-            self.history["val_loss"].append(avg_loss)
+            self.history["val_loss"].append(val_loss)
             self.history["val_auc"].append(auc)
+            best_val_loss = min(best_val_loss, val_loss)
 
             if epoch % 10 == 0:
                 logging.info("Epoch %03d  loss=%.6f  val_auc=%.6f", epoch, avg_loss, auc)
@@ -2187,7 +2459,12 @@ class DNNTrainer:
             net.load_state_dict(best_state)
 
         logging.info("Training complete. Best val AUC=%.4f", best_auc)
-        return {"best_val_auc": best_auc, "final_epoch": epoch, "history": self.history}
+        return {
+            "best_val_loss": best_val_loss,
+            "best_val_auc": best_auc,
+            "final_epoch": epoch,
+            "history": self.history,
+        }
 
     # ------------------------------------------------------------------
     # Evaluation

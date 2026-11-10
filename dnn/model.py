@@ -73,14 +73,69 @@ def load_checkpoint(path: str, *, map_location: str = "cpu"):
 
     ckpt = torch.load(path, map_location=map_location)
     spec_d = ckpt.get("spec") or {}
-    spec = ModelSpec(
-        n_inputs=int(spec_d["n_inputs"]),
-        hidden_layers=tuple(int(x) for x in spec_d.get("hidden_layers", [])),
-        dropout=float(spec_d.get("dropout", 0.0)),
-        parametric=bool(spec_d.get("parametric", False)),
-        mass_grid=spec_d.get("mass_grid"),
-    )
+    state_dict = ckpt.get("state_dict") or ckpt.get("model_state_dict")
+    if state_dict is None:
+        raise KeyError(
+            f"Checkpoint {path!r} has neither 'state_dict' nor 'model_state_dict'."
+        )
+
+    # Older checkpoints stored the training YAML under model_config and used
+    # ParametricDNN's "_net." state-dict prefix.
+    legacy = ckpt.get("model_config") or {}
+    if spec_d:
+        spec = ModelSpec(
+            n_inputs=int(spec_d["n_inputs"]),
+            hidden_layers=tuple(int(x) for x in spec_d.get("hidden_layers", [])),
+            dropout=float(spec_d.get("dropout", 0.0)),
+            parametric=bool(spec_d.get("parametric", False)),
+            mass_grid=spec_d.get("mass_grid"),
+        )
+    else:
+        hidden_raw = legacy.get(
+            "hidden_layers",
+            ckpt.get("hidden_layers", ()),
+        )
+        hidden = (
+            parse_hidden_layers(hidden_raw)
+            if isinstance(hidden_raw, str)
+            else tuple(int(x) for x in hidden_raw)
+        )
+        parametric = bool(
+            legacy.get("parametric_input", ckpt.get("parametric_input", False))
+        )
+        first_weight = next(
+            (
+                value for key, value in state_dict.items()
+                if key.replace("_net.", "", 1).endswith("weight")
+                and getattr(value, "ndim", 0) == 2
+            ),
+            None,
+        )
+        if first_weight is None:
+            raise KeyError(f"Could not infer model input width from checkpoint {path!r}.")
+        model_inputs = int(first_weight.shape[1])
+        event_inputs = int(
+            legacy.get(
+                "input_features",
+                model_inputs - (2 if parametric else 0),
+            )
+        )
+        spec = ModelSpec(
+            n_inputs=event_inputs + (2 if parametric else 0),
+            hidden_layers=hidden,
+            dropout=float(
+                legacy.get("dropout", ckpt.get("dropout", 0.0))
+            ),
+            parametric=parametric,
+            mass_grid=legacy.get("mass_grid", ckpt.get("mass_grid")),
+        )
+
+    if any(str(key).startswith("_net.") for key in state_dict):
+        state_dict = {
+            str(key).replace("_net.", "", 1): value
+            for key, value in state_dict.items()
+        }
     model = build_mlp(spec)
-    model.load_state_dict(ckpt["state_dict"])
+    model.load_state_dict(state_dict)
     model.eval()
     return model, spec

@@ -95,6 +95,18 @@ def _weight_branch_for(var: str, default_weight: str) -> str:
     return _VAR_WEIGHT_OVERRIDE.get(var, default_weight)
 
 
+def _release_allocator_memory() -> None:
+    """Collect Python cycles and return free glibc arenas to the OS."""
+    import ctypes
+    import gc
+
+    gc.collect()
+    try:
+        ctypes.CDLL("libc.so.6").malloc_trim(0)
+    except Exception:
+        pass
+
+
 def _is_number(v: Any) -> bool:
     return isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, bool)
 
@@ -3007,7 +3019,9 @@ class PlotManager:
             logging.info("DNN scoring enabled for region-from-events plots: model=%s, mass_scan=%s",
                         dnn_model, _dnn_mass_scan_resolved)
 
-        def _score_tree_with_dnn(tree) -> Dict[str, np.ndarray]:
+        def _score_tree_with_dnn(
+            tree, entry_mask: Optional[np.ndarray] = None
+        ) -> Dict[str, np.ndarray]:
             """Score an uproot Events tree with the shared DNN model; returns {branch: scores}.
 
             Uses build_feature_frame_from_tree (via DNNInference.extract_features) so
@@ -3020,7 +3034,7 @@ class PlotManager:
             parametric models; no-op for non-parametric models). Otherwise one
             {"ml_score_mh3_<a>_mh4_<b>": ...} per scanned point.
             """
-            X = _dnn_inference.extract_features(tree)
+            X = _dnn_inference.extract_features(tree, entry_mask=entry_mask)
             n = X.shape[0]
             if _dnn_mass_scan_resolved is None:
                 scores = _dnn_inference.predict(X, None).ravel()
@@ -3072,28 +3086,31 @@ class PlotManager:
                     tree = f["Events"]
                     branches: dict = {}
                     skipped_branches = []
-                    _always_load_prefixes = (
-                        "weight_", "full_event_weight", "pass_met_trigger",
-                        "pass_ele_trigger", "GenModel_", "event", "run",
-                        # object counts for region cuts
-                        "n_bjets", "njets", "n_muons", "n_electrons", "n_taus",
+                    # These are the exact branches required to evaluate the
+                    # configured regions and fill the requested histograms.
+                    # Do not use broad prefixes here: "weight_" and "Recoil"
+                    # would read every systematic variation even for a nominal
+                    # ml_score plot and dominate the job's CPU and memory.
+                    _always_branches = {
+                        "full_event_weight", weight_branch,
+                        "pass_met_trigger", "pass_ele_trigger",
+                        "event", "run",
+                        "Bjet1bCond", "Bjet2bCond",
+                        "is_lead_bjet", "is_sublead_bjet",
+                        "n_bjets", "njets", "n_jets",
+                        "n_muons", "n_electrons", "n_taus",
+                        "n_tight_muons", "n_tight_electrons",
                         "n_z_muons", "n_z_electrons",
-                        # reco primary vertices (source for PV_npvsGood[_noPU] data/MC plots)
-                        "PV_npvsGood", "PV_npvs",
-                        # MET branches for MT, Mll, Recoil cuts
                         "MET_pt", "MET_phi", "PuppiMET_pt", "PuppiMET_phi",
-                        "Recoil", "Recoil_JES", "Recoil_JER",
-                        # lepton kinematics for MT / Z mass cuts
-                        "muon_lep1_pt", "muon_lep1_phi", "muon_lep1_eta",
-                        "muon_lep2_pt", "muon_lep2_phi", "muon_lep2_eta",
-                        "electron_lep1_pt", "electron_lep1_phi", "electron_lep1_eta",
-                        "electron_lep2_pt", "electron_lep2_phi", "electron_lep2_eta",
-                        "mll", "Mll",
-                    )
+                        "Recoil",
+                        "mt", "MT", "w_mt", "mll", "Mll", "z_mass", "Zpt",
+                    }
                     for bname in tree.keys():
                         _bname = str(bname)
-                        _always = any(_bname.startswith(p) or _bname == p
-                                      for p in _always_load_prefixes)
+                        _always = (
+                            _bname in _always_branches
+                            or _bname.startswith("GenModel_")
+                        )
                         if variables is not None and not _always and not _should_load_key(_bname, variables):
                             continue
                         try:
@@ -3121,9 +3138,49 @@ class PlotManager:
                             ', '.join(f"{n}({r[:40]})" for n, r in skipped_branches[:5])
                             + ('...' if len(skipped_branches) > 5 else '')
                         )
+                    # DNN scoring is the expensive part.  If only a known set of
+                    # kinematics is requested (for example one ml_score plot in
+                    # the control regions), evaluate those region masks first,
+                    # score only the selected events, and discard everything
+                    # else.  Event weights and the file's full weighted-total
+                    # normalization are unchanged, so yields remain physical.
                     if _dnn_inference is not None and branches:
+                        import awkward as _ak
+                        ak_dict = {
+                            k: v for k, v in branches.items()
+                            if isinstance(v, np.ndarray)
+                            and v.ndim == 1 and v.dtype != object
+                        }
+                        events_ak = _ak.Array(ak_dict)
+                        n_all = len(events_ak)
+                        keep = np.zeros(n_all, dtype=bool)
+                        for _region_name in target_regions:
+                            _region = region_manager.regions.get(_region_name)
+                            if _region is None:
+                                continue
+                            try:
+                                _mask = _region.apply_cuts(events_ak, objects={})
+                                keep |= np.asarray(_mask, dtype=bool)
+                            except Exception as _cut_err:
+                                logging.warning(
+                                    "Could not preselect %s for %s: %s",
+                                    _region_name, path.name, _cut_err,
+                                )
+                        n_keep = int(np.count_nonzero(keep))
+                        logging.info(
+                            "DNN preselection %s: kept %d/%d events (%.3f%%) "
+                            "for %d region(s)",
+                            path.name, n_keep, n_all,
+                            100.0 * n_keep / n_all if n_all else 0.0,
+                            len(target_regions),
+                        )
+                        branches = {
+                            k: v[keep] for k, v in branches.items()
+                            if isinstance(v, np.ndarray)
+                            and v.ndim == 1 and len(v) == n_all
+                        }
                         try:
-                            branches.update(_score_tree_with_dnn(tree))
+                            branches.update(_score_tree_with_dnn(tree, entry_mask=keep))
                         except Exception as _dnn_err:
                             logging.warning("DNN scoring failed for %s: %s", path.name, _dnn_err)
                     return {"branches": branches, "wte": wte, "wte_gm": read_weighted_total_events_per_genmodel(f)}
@@ -3158,6 +3215,368 @@ class PlotManager:
             if path.suffix == ".root":
                 return _load_events_root(path, variables)
             return _load_events_pkl(path, variables)
+
+        # A DNN score plot in control regions only needs small histogram
+        # accumulators.  Processing one file at a time avoids retaining the
+        # selected branches from every 5-10 GB input simultaneously, which
+        # previously drove the process above 100 GB and triggered the host OOM
+        # killer.  The legacy in-memory path remains available for dynamic-bin
+        # variables and signal-region overlays.
+        _streamable = (
+            _dnn_inference is not None
+            and variables
+            and not any(":SR" in region for region in target_regions)
+            and os.environ.get("DNN_PLOT_STREAMING", "1") != "0"
+        )
+        _stream_bins: Dict[Tuple[str, str], np.ndarray] = {}
+        if _streamable:
+            for _region_name in target_regions:
+                for _var in variables:
+                    _bins = self._build_bins_from_config(_var)
+                    if _bins is None:
+                        _streamable = False
+                        break
+                    _stream_bins[(_region_name, _var)] = np.asarray(_bins, dtype=float)
+                if not _streamable:
+                    break
+
+        if _streamable:
+            import awkward as _ak
+
+            logging.info(
+                "Using streaming DNN control-region mode: one input file at a "
+                "time, histogram accumulators only"
+            )
+
+            def _events_ak_from_branches(branches: Dict[str, Any]):
+                ak_dict = {}
+                for key, value in branches.items():
+                    if not isinstance(value, np.ndarray) or value.ndim != 1:
+                        continue
+                    if value.dtype == object:
+                        try:
+                            ak_dict[key] = _ak.Array(list(value))
+                        except Exception:
+                            pass
+                    else:
+                        ak_dict[key] = value
+                return _ak.Array(ak_dict)
+
+            def _stream_values(
+                branches: Dict[str, Any],
+                events_ak,
+                region_obj,
+                var: str,
+            ):
+                vals_raw = branches.get(_value_branch(var))
+                if vals_raw is None:
+                    _var_map = {
+                        "mt": "MT",
+                        "z_mass": "Mll",
+                        "z_pt": "Zpt",
+                        "mll": "Mll",
+                    }
+                    canonical = _var_map.get(_value_branch(var), _value_branch(var))
+                    try:
+                        values = region_obj._get_variable_value(
+                            events_ak, objects={}, var=canonical
+                        )
+                        if values is not None:
+                            vals_raw = np.asarray(
+                                _ak.to_numpy(
+                                    _ak.fill_none(
+                                        values
+                                        if isinstance(values, _ak.Array)
+                                        else _ak.Array(values),
+                                        _SENTINEL,
+                                    )
+                                ),
+                                dtype=float,
+                            )
+                    except Exception:
+                        vals_raw = None
+                if (
+                    vals_raw is None
+                    or not isinstance(vals_raw, np.ndarray)
+                    or vals_raw.dtype == object
+                ):
+                    return None
+                return np.asarray(vals_raw, dtype=float)
+
+            def _file_histograms(
+                loaded: Dict[str, Any],
+                *,
+                scale: float,
+                is_data: bool,
+            ) -> Dict[Tuple[str, str], Tuple[np.ndarray, np.ndarray]]:
+                branches = loaded["branches"]
+                events_ak = _events_ak_from_branches(branches)
+                result: Dict[Tuple[str, str], Tuple[np.ndarray, np.ndarray]] = {}
+                for region_name in target_regions:
+                    region_obj = region_manager.regions.get(region_name)
+                    if region_obj is None:
+                        continue
+                    try:
+                        mask = np.asarray(
+                            region_obj.apply_cuts(events_ak, objects={}),
+                            dtype=bool,
+                        )
+                    except Exception as exc:
+                        logging.warning(
+                            "Region mask failed for %s: %s", region_name, exc
+                        )
+                        continue
+                    if not np.any(mask):
+                        continue
+                    for var in variables:
+                        bins = _stream_bins[(region_name, var)]
+                        values_raw = _stream_values(
+                            branches, events_ak, region_obj, var
+                        )
+                        if values_raw is None or len(values_raw) != len(mask):
+                            continue
+                        keep = _apply_variable_plot_filter(
+                            var, values_raw[mask], return_mask=True
+                        )
+                        values = values_raw[mask][keep]
+                        if values.size == 0:
+                            continue
+                        if is_data:
+                            weights = np.ones(values.size, dtype=float)
+                        else:
+                            weight_arr = branches.get(
+                                _weight_branch_for(var, weight_branch)
+                            )
+                            if weight_arr is None:
+                                weights = np.ones(values.size, dtype=float)
+                            else:
+                                weights = (
+                                    np.asarray(weight_arr, dtype=float)[mask][keep]
+                                    * scale
+                                )
+                        hv, _ = np.histogram(
+                            _clip_overflow(values, bins),
+                            bins=bins,
+                            weights=weights,
+                        )
+                        hs, _ = np.histogram(
+                            _clip_overflow(values, bins),
+                            bins=bins,
+                            weights=weights ** 2,
+                        )
+                        result[(region_name, var)] = (hv, hs)
+                return result
+
+            bkg_hists: Dict[
+                Tuple[str, str], Dict[str, Tuple[np.ndarray, np.ndarray]]
+            ] = {}
+            data_hists: Dict[Tuple[str, str], np.ndarray] = {}
+            stream_errors: List[str] = []
+            loaded_backgrounds = 0
+            loaded_data = 0
+
+            logging.info("=== Streaming background files for region plots ===")
+            for proc_label, patterns in process_groups.items():
+                paths = self._resolve_group_files(input_folder, patterns)
+                for path in paths:
+                    loaded = _load_file(path, variables)
+                    if loaded is None:
+                        stream_errors.append(f"{proc_label}: failed to load {path.name}")
+                        continue
+                    missing_scores = [
+                        var for var in variables
+                        if var not in loaded["branches"]
+                        and not var.startswith("ml_score_mh3_")
+                    ]
+                    if missing_scores:
+                        stream_errors.append(
+                            f"{proc_label}: {path.name} has no {missing_scores}"
+                        )
+                        loaded = None
+                        _release_allocator_memory()
+                        continue
+                    stem = path.stem.replace("_EVENTSELECTION", "")
+                    xsec = (
+                        _find_xsec(path.stem, cross_sections)
+                        or _find_xsec(stem, cross_sections)
+                        or _find_xsec(path.name, cross_sections)
+                    )
+                    wte = float(loaded["wte"])
+                    scale = (
+                        (luminosity * xsec * 1000.0) / wte
+                        if xsec is not None and wte > 0
+                        else (luminosity / wte if wte > 0 else 1.0)
+                    )
+                    hists = _file_histograms(loaded, scale=scale, is_data=False)
+                    for key, (hv, hs) in hists.items():
+                        group = bkg_hists.setdefault(key, {})
+                        if proc_label in group:
+                            old_hv, old_hs = group[proc_label]
+                            group[proc_label] = (old_hv + hv, old_hs + hs)
+                        else:
+                            group[proc_label] = (hv, hs)
+                    loaded_backgrounds += 1
+                    logging.info(
+                        "[%s] streamed %s: events=%d, xsec=%s",
+                        proc_label,
+                        path.name,
+                        len(loaded["branches"].get("event", [])),
+                        f"{xsec:.4g} pb" if xsec is not None else "None",
+                    )
+                    loaded = None
+                    _release_allocator_memory()
+
+            logging.info("=== Streaming data files for region plots ===")
+            raw_data_cfg = self.config.get("process_groups", {})
+            for label, patterns in data_groups.items():
+                group_cfg = raw_data_cfg.get(label, {})
+                region_patterns = (
+                    group_cfg.get("regions", [])
+                    if isinstance(group_cfg, dict)
+                    else []
+                )
+                for path in self._resolve_group_files(input_folder, patterns):
+                    loaded = _load_file(path, variables)
+                    if loaded is None:
+                        stream_errors.append(f"data {label}: failed to load {path.name}")
+                        continue
+                    missing_scores = [
+                        var for var in variables
+                        if var not in loaded["branches"]
+                        and not var.startswith("ml_score_mh3_")
+                    ]
+                    if missing_scores:
+                        stream_errors.append(
+                            f"data {label}: {path.name} has no {missing_scores}"
+                        )
+                        loaded = None
+                        _release_allocator_memory()
+                        continue
+                    hists = _file_histograms(loaded, scale=1.0, is_data=True)
+                    for key, (hv, _hs) in hists.items():
+                        region_name, _var = key
+                        if region_patterns and not any(
+                            pat in region_name for pat in region_patterns
+                        ):
+                            continue
+                        if key in data_hists:
+                            data_hists[key] = data_hists[key] + hv
+                        else:
+                            data_hists[key] = hv
+                    loaded_data += 1
+                    logging.info(
+                        "[Data:%s] streamed %s", label, path.name
+                    )
+                    loaded = None
+                    _release_allocator_memory()
+
+            if stream_errors:
+                logging.error(
+                    "Streaming control-region job aborted because DNN scores or "
+                    "input files were missing: %s",
+                    "; ".join(stream_errors[:10]),
+                )
+                return []
+            if not bkg_hists:
+                logging.warning("No background histogram was accumulated")
+                return []
+
+            events_plot_tasks = []
+            skipped_region_var = []
+            for region_name in target_regions:
+                for var in variables:
+                    key = (region_name, var)
+                    bins = _stream_bins[key]
+                    group_map = bkg_hists.get(key, {})
+                    bkg_rows = []
+                    for proc_label in process_groups:
+                        if proc_label in group_map:
+                            bkg_rows.append((proc_label, *group_map[proc_label]))
+                        else:
+                            zeros = np.zeros(len(bins) - 1, dtype=float)
+                            bkg_rows.append((proc_label, zeros, zeros.copy()))
+                    total_mc = sum(hv for _, hv, _hs in bkg_rows)
+                    if np.allclose(total_mc, 0.0):
+                        skipped_region_var.append((region_name, var, "zero_yield"))
+                        continue
+                    data_hist = data_hists.get(key)
+                    logging.info(
+                        "Plotting %s/%s: bins=%d, bkg_rows=%d, total_mc=%.3f, "
+                        "data=%s",
+                        region_name,
+                        var,
+                        len(bins) - 1,
+                        len(bkg_rows),
+                        float(np.sum(total_mc)),
+                        (
+                            f"sum={float(np.sum(data_hist)):.1f}"
+                            if data_hist is not None
+                            else "none"
+                        ),
+                    )
+                    plot_kwargs = dict(
+                        variable=var,
+                        bins=bins,
+                        background_rows=bkg_rows,
+                        data_ndarray=data_hist,
+                        output_dir=output_dir,
+                        luminosity=luminosity,
+                        year=year,
+                        region=region_name,
+                        version=version,
+                        save_root=True,
+                        signal_rows=None,
+                    )
+                    events_plot_tasks.append(
+                        (self.config, plot_kwargs, region_name, var)
+                    )
+
+            num_workers = int(
+                os.environ.get(
+                    "PLOT_NUM_WORKERS", max(1, (os.cpu_count() or 1))
+                )
+            )
+            num_workers = max(1, min(num_workers, len(events_plot_tasks)))
+            if num_workers > 1 and len(events_plot_tasks) > 1:
+                import multiprocessing as mp
+
+                ctx = mp.get_context("spawn")
+                with ctx.Pool(processes=num_workers) as pool:
+                    task_results = pool.map(
+                        _plot_stacked_variable_worker, events_plot_tasks
+                    )
+            else:
+                task_results = [
+                    _plot_stacked_variable_worker(task)
+                    for task in events_plot_tasks
+                ]
+
+            created: List[str] = []
+            for region_name, var, files in task_results:
+                created.extend(files)
+                logging.info(
+                    "Created region-from-events plot: %s / %s -> %d files",
+                    region_name,
+                    var,
+                    len(files),
+                )
+            if skipped_region_var:
+                logging.warning(
+                    "Skipped %d streaming region/var combos: %s",
+                    len(skipped_region_var),
+                    ", ".join(
+                        f"{region}/{var}({why})"
+                        for region, var, why in skipped_region_var
+                    ),
+                )
+            logging.info(
+                "Streaming control-region plots complete: %d plots created "
+                "(%d background files, %d data files)",
+                len(created),
+                loaded_backgrounds,
+                loaded_data,
+            )
+            return created
 
         # ---- load per-group ----
         # {proc_label: [{"branches": dict, "wte": float, "xsec": float|None}]}
@@ -3244,7 +3663,7 @@ class PlotManager:
                 paths = self._resolve_group_files(input_folder, sig_patterns)
                 for p in paths:
                     # Load all branches for signal (need GenModel_* regardless of variable whitelist)
-                    loaded = _load_file(p, variables=None)
+                    loaded = _load_file(p, variables)
                     if loaded is None:
                         logging.warning("[Signal:%s] failed to load %s", sig_label, p.name)
                         continue
@@ -3289,7 +3708,13 @@ class PlotManager:
 
             # Determine variable list from first available group
             if variables:
-                candidate_vars = variables
+                # An explicit --plot-variables list is the final request, not
+                # merely an extra candidate set.  Combining it with the full
+                # common/region whitelist here silently plotted every default
+                # variable and made a one-variable DNN control-region job read
+                # and fill many unnecessary histograms.
+                candidate_vars = list(dict.fromkeys(variables))
+                var_list = candidate_vars
             else:
                 all_branches: set = set()
                 for entries in bkg_entries.values():
@@ -3300,22 +3725,22 @@ class PlotManager:
                     b for b in all_branches
                     if not any(b.startswith(p) for p in _weight_prefixes)
                 )
-            # Include derived vars from the whitelist even if not stored as branches.
-            # _get_allowed_variables_for_region intersects with candidate_vars, so
-            # we union in the full whitelist first so derived vars survive intersection.
-            _whitelist = (self.common_variables
-                          + list(self.region_variables.get(region_name) or
-                                 next((v for k, v in self.region_variables.items() if k in region_name), []) or []))
-            if _dnn_mass_scan_resolved is not None:
-                # Mass-scan mode: "ml_score" was never written as a branch (only
-                # ml_score_mh3_<a>_mh4_<b> variants were) and regions.py's generic
-                # fallback would otherwise silently return an all-zeros array for
-                # it (treating it as a legitimate-but-missing derived variable) —
-                # drop the literal whitelist entry so only the real scan branches
-                # (already in candidate_vars) get expanded/plotted.
-                _whitelist = [v for v in _whitelist if v != "ml_score"]
-            candidate_vars = list(dict.fromkeys(list(candidate_vars) + _whitelist))
-            var_list = self._get_allowed_variables_for_region(region_name, candidate_vars)
+            if not variables:
+                # Include derived vars from the whitelist even if not stored as
+                # branches. The region filter intersects the whitelist with the
+                # variables actually available in these files.
+                _whitelist = (self.common_variables
+                              + list(self.region_variables.get(region_name) or
+                                     next((v for k, v in self.region_variables.items() if k in region_name), []) or []))
+                if _dnn_mass_scan_resolved is not None:
+                    # Mass-scan mode: "ml_score" was never written as a branch
+                    # (only ml_score_mh3_* variants were); drop the literal
+                    # whitelist entry so the real scan branches are plotted.
+                    _whitelist = [v for v in _whitelist if v != "ml_score"]
+                candidate_vars = list(dict.fromkeys(list(candidate_vars) + _whitelist))
+                var_list = self._get_allowed_variables_for_region(
+                    region_name, candidate_vars
+                )
             logging.info("Region '%s': candidate_vars=%d, after filtering=%d",
                          region_name, len(candidate_vars), len(var_list))
 
