@@ -167,12 +167,17 @@ class DarkBottomLineProcessor:
             self._one_mc_for_all_lumis = [float(lumi_by_year[str(y)]) for y in self._one_mc_for_all_years]
             self._one_mc_for_all_salt = int(split_cfg.get("salt", 12345))
             self._one_mc_for_all_this_year = this_year
-            self._mc_year_split_scale = 1.0 / year_lumi_fraction(
+            self._mc_year_split_fraction = year_lumi_fraction(
                 this_year, {str(y): float(lumi_by_year[str(y)]) for y in years}
             )
+            # No weight rescaling: this year's slice is normalised like a whole sample, with the slice's own
+            # weighted_total_events (computed after the split) and this year's lumi, so
+            # sum(w) * xsec * lumi / weighted_total_events already equals the unsplit yield.
+            # (Rescaling by 1/f as well would double count and overshoot by 1/f.)
+            self._mc_year_split_scale = 1.0
             logging.info(
                 f"one_mc_for_all enabled for year={this_year}: lumi_fraction="
-                f"{1.0/self._mc_year_split_scale:.4f}, weight_rescale={self._mc_year_split_scale:.4f}"
+                f"{self._mc_year_split_fraction:.4f}, weights not rescaled"
             )
 
         logging.debug(f"Initialized DarkBottomLine processor for year {config.get('year', 'unknown')} (is_data={self.is_data})")

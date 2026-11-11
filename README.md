@@ -155,10 +155,13 @@ How it works:
 - Year `y` keeps a fraction `f_y = L_y / (L_2024 + L_2025 + L_2026)` of the
   events (about 44.6% / 44.9% / 10.5% with the current luminosities), and the
   three kept sets never overlap.
-- All weights (`full_event_weight` and every `weight_*` variation) are
-  multiplied by `1/f_y`, so each year's total yield matches the unsplit result.
-  `weighted_total_events` is computed after the split, so normalization stays
-  consistent.
+- The weights are **not** rescaled. The saved `total_events` and
+  `weighted_total_events` are those of the kept slice (about `f_y` of the whole
+  file), so the usual normalisation `weight * xsec * lumi_y / weighted_total_events`
+  already gives the full-sample yield for year `y`, with the statistical power of
+  the slice. Summed over the three years, `total_events` and
+  `weighted_total_events` equal the values of one run without the flag.
+  (Rescaling the weights by `1/f_y` as well would overshoot the yield by `1/f_y`.)
 - Year-specific corrections (pileup, SFs, JEC, b-tag) are still applied to each
   year's own slice.
 - MC only: the flag is ignored (with a warning) together with `--data`.

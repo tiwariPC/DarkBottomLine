@@ -351,6 +351,8 @@ class DarkBottomLineAnalyzer:
         events = self.base_processor.apply_mc_year_split(events)
         if self.base_processor._one_mc_for_all:
             logging.info(f"Events after one-mc-for-all year split: {len(events)}")
+            if total_events is not None:
+                total_events = len(events)   # saved total_events = this year's slice, not the whole input file
 
         # Compute weighted_total_events from raw events before any selection
         weighted_total_events = self.base_processor.correction_manager.get_weighted_total_events(events)
@@ -1248,6 +1250,11 @@ if COFFEA_AVAILABLE:
             if self.analyzer.base_processor.is_data:
                 events_to_process = self.analyzer.base_processor.apply_lumi_mask(events_to_process)
 
+            # one-mc-for-all: keep only this year's slice BEFORE weighted_total_events and the selection/weights
+            # rebuilt below, so the futures/dask output is split exactly like the iterative one. Idempotent: the
+            # analyzer.process() call below applies the same deterministic split again and keeps every event.
+            events_to_process = self.analyzer.base_processor.apply_mc_year_split(events_to_process)
+
             # Accumulate weighted_total_events across chunks.
             # Also persist to a temp file so postprocess() can sum across
             # workers (futures/dask workers run in separate processes and do
@@ -1265,6 +1272,7 @@ if COFFEA_AVAILABLE:
                 try:
                     with open(_wte_file, "wb") as _f:
                         pickle.dump({"weighted_total_events": float(chunk_h),
+                                     "n_events_kept": int(len(events_to_process)),
                                      "weighted_total_events_per_genmodel": {k: float(v) for k, v in chunk_gm.items()}},
                                     _f, protocol=pickle.HIGHEST_PROTOCOL)
                 except Exception as _e:
@@ -1674,12 +1682,14 @@ if COFFEA_AVAILABLE:
                 ]
                 if wte_files:
                     _wte_total = 0.0
+                    _n_kept_total = 0
                     _gm_total: Dict[str, float] = {}
                     for _wf in wte_files:
                         try:
                             with open(_wf, "rb") as _f:
                                 _wd = pickle.load(_f)
                                 _wte_total += float(_wd.get("weighted_total_events", 0.0))
+                                _n_kept_total += int(_wd.get("n_events_kept", 0))
                                 for _gm, _gv in (_wd.get("weighted_total_events_per_genmodel") or {}).items():
                                     _gm_total[_gm] = _gm_total.get(_gm, 0.0) + float(_gv)
                             os.remove(_wf)
@@ -1687,6 +1697,9 @@ if COFFEA_AVAILABLE:
                             logging.warning(f"Failed to load wte chunk {_wf}: {_e}")
                     self.weighted_total_events = _wte_total
                     self.weighted_total_events_per_genmodel = _gm_total
+                    if getattr(self.analyzer.base_processor, "_one_mc_for_all", False):
+                        # one-mc-for-all: total_events is this year's slice, not the whole input file
+                        self.total_events = _n_kept_total
                     logging.info(f"Summed weighted_total_events from {len(wte_files)} worker files: {_wte_total}")
 
             # ── Merge region analysis results from per-chunk temp files ───────
