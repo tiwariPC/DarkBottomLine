@@ -127,6 +127,51 @@ for f in /path/to/NanoAODv12_2022/*.root; do
 done
 ```
 
+### `--one-mc-for-all`: disjoint MC split across years (MC only)
+
+When the same MC sample is processed once per year (2024, 2025, 2026), each
+year's job fills its Combine channel from the same events, so `autoMCStats`
+treats three correlated channels as independent and underestimates the MC
+statistical uncertainty. `--one-mc-for-all` makes the three year-channels
+statistically disjoint.
+
+```bash
+# Run once per year, same MC file, same flag
+for yr in 2024 2025 2026; do
+  darkbottomline analyze \
+      --mode event-selection \
+      --config configs/${yr}.yaml \
+      --input /path/to/DYto2L-2Jets_..._NanoAOD.root \
+      --event-selection-output outputs/eventsel/${yr}/DYto2L-2Jets_EVENTSELECTION.root \
+      --one-mc-for-all
+done
+```
+
+How it works:
+
+- Each event is hashed on `(run, luminosityBlock, event, salt)` into a uniform
+  number in [0, 1). Cumulative luminosity fractions assign it to exactly one
+  year, so every job computes the same assignment and keeps only its own bucket.
+- Year `y` keeps a fraction `f_y = L_y / (L_2024 + L_2025 + L_2026)` of the
+  events (about 44.6% / 44.9% / 10.5% with the current luminosities), and the
+  three kept sets never overlap.
+- All weights (`full_event_weight` and every `weight_*` variation) are
+  multiplied by `1/f_y`, so each year's total yield matches the unsplit result.
+  `weighted_total_events` is computed after the split, so normalization stays
+  consistent.
+- Year-specific corrections (pileup, SFs, JEC, b-tag) are still applied to each
+  year's own slice.
+- MC only: the flag is ignored (with a warning) together with `--data`.
+- Off by default: without the flag every year processes 100% of the file,
+  exactly as before.
+
+Configuration lives in the top-level `one_mc_for_all:` block of each
+`configs/<year>.yaml` (`years`, `lumi_by_year`, `salt`). **Keep this block
+identical in all three year configs**: the same `salt` and luminosities are what
+make the three jobs agree on the split, and `lumi_by_year` must match each
+config's `lumi:` value. The statistics each year sees drop by `f_y`; that is the
+real information content of the shared sample.
+
 ---
 
 ## Mode 1 + plots: `event-selection` + `--make-event-selection-plots`

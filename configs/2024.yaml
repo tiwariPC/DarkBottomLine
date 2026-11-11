@@ -2,6 +2,19 @@ year: 2024
 lumi: 109.82
 lumi_uncertainty: 1.016   # 1.6% (read by the Combine datacard's lumi_13p6TeV_2024 lnN)
 
+# Deterministic disjoint year-split for shared MC reprocessed per year (see
+# darkbottomline/mc_year_split.py). Only takes effect with --one-mc-for-all
+# (off by default). Mirrors the three years' `lumi:` values above — keep in
+# sync if those change. salt is shared so the same (run, luminosityBlock,
+# event) hashes to the same year bucket in all three years' jobs.
+one_mc_for_all:
+  years: ["2024", "2025", "2026"]
+  lumi_by_year:
+    "2024": 109.82
+    "2025": 110.628
+    "2026": 25.794
+  salt: 12345
+
 # Correction file paths (user must provide actual files)
 corrections:
    pileup: data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_puWeights_BCDEFGHI.json.gz

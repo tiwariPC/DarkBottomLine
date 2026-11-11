@@ -706,6 +706,7 @@ process_groups:
     - SR
     - munu
     - mumu
+    - QCD
     patterns:
     - JetMET-Run
     - JetMET0-Run
@@ -721,3 +722,7 @@ process_groups:
     - EGamma-Run
     - EGamma0-Run
     - EGamma1-Run
+    - EGamma2-Run
+    - EGamma3-Run
+    - EGamma4-Run
+    - EGamma5-Run

@@ -23,6 +23,7 @@ from .selections import apply_selection
 from .corrections import CorrectionManager
 from .histograms import HistogramManager
 from .variables import compute_event_variables
+from .mc_year_split import assign_year_bucket, year_lumi_fraction
 
 
 def _compute_weight_statistics(weights: np.ndarray) -> Dict[str, float]:
@@ -128,6 +129,52 @@ class DarkBottomLineProcessor:
             "event_weights": {},
         }
 
+        # one-mc-for-all: deterministic disjoint year-split of shared MC (see
+        # mc_year_split.py). Off by default — config must explicitly set
+        # data.one_mc_for_all=True (wired from --one-mc-for-all in cli.py).
+        # When enabled, this year's job keeps only its ~lumi-fraction slice
+        # of events and rescales weights by 1/f_y, so that per-year Combine
+        # channels become statistically disjoint (autoMCStats becomes valid
+        # again) instead of all three channels reusing ~100% of the same MC.
+        # MC-only: real collision data is never duplicated/reweighted across
+        # years the way this shared MC is, so there is nothing to split —
+        # force the flag off for data rather than silently no-op on a
+        # half-initialized state.
+        if data_cfg.get("one_mc_for_all", False) and self.is_data:
+            logging.warning(
+                "data.one_mc_for_all=True but is_data=True — one_mc_for_all only "
+                "applies to MC (the same sample reprocessed per year); ignoring it "
+                "for this data file."
+            )
+        self._one_mc_for_all = bool(data_cfg.get("one_mc_for_all", False)) and not self.is_data
+        self._mc_year_split_scale = 1.0
+        if self._one_mc_for_all:
+            split_cfg = config.get("one_mc_for_all", {})
+            years = split_cfg.get("years")
+            lumi_by_year = split_cfg.get("lumi_by_year")
+            if not years or not lumi_by_year:
+                raise ValueError(
+                    "data.one_mc_for_all=True requires a top-level 'one_mc_for_all: "
+                    "{years: [...], lumi_by_year: {...}}' block in the config."
+                )
+            this_year = str(config.get("year"))
+            if this_year not in years:
+                raise ValueError(
+                    f"one_mc_for_all.years={years} does not contain this config's "
+                    f"year={this_year!r}."
+                )
+            self._one_mc_for_all_years = [str(y) for y in years]
+            self._one_mc_for_all_lumis = [float(lumi_by_year[str(y)]) for y in self._one_mc_for_all_years]
+            self._one_mc_for_all_salt = int(split_cfg.get("salt", 12345))
+            self._one_mc_for_all_this_year = this_year
+            self._mc_year_split_scale = 1.0 / year_lumi_fraction(
+                this_year, {str(y): float(lumi_by_year[str(y)]) for y in years}
+            )
+            logging.info(
+                f"one_mc_for_all enabled for year={this_year}: lumi_fraction="
+                f"{1.0/self._mc_year_split_scale:.4f}, weight_rescale={self._mc_year_split_scale:.4f}"
+            )
+
         logging.debug(f"Initialized DarkBottomLine processor for year {config.get('year', 'unknown')} (is_data={self.is_data})")
 
     def apply_lumi_mask(self, events: ak.Array) -> ak.Array:
@@ -167,6 +214,33 @@ class DarkBottomLineProcessor:
                 "Golden JSON filter removed ALL events, entirely due to missing run coverage "
                 "in the golden JSON (see warning above), not due to certified-lumi selection."
             )
+        return events
+
+    def apply_mc_year_split(self, events: ak.Array) -> ak.Array:
+        """
+        Filter MC events down to this year's deterministic disjoint lumi-fraction
+        bucket (see mc_year_split.assign_year_bucket). No-op if one_mc_for_all is
+        not enabled. Same (run, luminosityBlock, event) always hashes to the same
+        bucket, so the kept subsets across years are provably disjoint.
+        """
+        if not self._one_mc_for_all:
+            return events
+        n_before = len(events)
+        run = ak.to_numpy(events.run)
+        lumiblock = ak.to_numpy(events.luminosityBlock)
+        event_no = ak.to_numpy(events.event)
+        buckets = assign_year_bucket(
+            run, lumiblock, event_no,
+            self._one_mc_for_all_years, self._one_mc_for_all_lumis,
+            salt=self._one_mc_for_all_salt,
+        )
+        keep = buckets == self._one_mc_for_all_this_year
+        events = events[keep]
+        logging.info(
+            f"one_mc_for_all: {n_before} -> {len(events)} events "
+            f"({len(events)/n_before*100:.1f}% kept for year={self._one_mc_for_all_this_year})"
+            if n_before > 0 else "one_mc_for_all: 0 events before split, nothing to filter"
+        )
         return events
 
     def process(self, events: ak.Array, event_selection_output: Optional[str] = None) -> Dict[str, Any]:
@@ -232,6 +306,11 @@ class DarkBottomLineProcessor:
                 }
                 return self.accumulator
 
+        # one-mc-for-all: disjoint year-split (no-op unless enabled; see __init__)
+        events = self.apply_mc_year_split(events)
+        if self._one_mc_for_all:
+            print(f"  Events after one-mc-for-all year split: {len(events)}")
+
         # weighted_total_events: sum of sign(genWeight) over ALL events before any selection
         weighted_total_events = self.correction_manager.get_weighted_total_events(events)
         print(f"  weighted_total_events (normalization): {weighted_total_events}")
@@ -290,6 +369,14 @@ class DarkBottomLineProcessor:
             weight_results = self.correction_manager.compute_event_weights(
                 selected_events, selected_objects
             )
+            if self._one_mc_for_all and self._mc_year_split_scale != 1.0:
+                # Compensate for keeping only a lumi-fraction f_y of events:
+                # multiply every weight component by 1/f_y so each year's
+                # total predicted yield matches the unsplit (flag-off) result.
+                weight_results = {
+                    k: (v * self._mc_year_split_scale if isinstance(v, ak.Array) else v)
+                    for k, v in weight_results.items()
+                }
             event_weights = np.asarray(ak.to_numpy(weight_results["full_event_weight"]))
             print(f"  Weights calculated successfully: {len(event_weights)} weights")
 

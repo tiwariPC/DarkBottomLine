@@ -346,6 +346,12 @@ class DarkBottomLineAnalyzer:
                     "event_weights": {},
                 }
 
+        # one-mc-for-all: disjoint year-split (no-op unless enabled; see
+        # processor.py's DarkBottomLineProcessor.__init__/apply_mc_year_split)
+        events = self.base_processor.apply_mc_year_split(events)
+        if self.base_processor._one_mc_for_all:
+            logging.info(f"Events after one-mc-for-all year split: {len(events)}")
+
         # Compute weighted_total_events from raw events before any selection
         weighted_total_events = self.base_processor.correction_manager.get_weighted_total_events(events)
         weighted_total_events_per_genmodel = (
@@ -391,6 +397,13 @@ class DarkBottomLineAnalyzer:
                 weight_results = self.base_processor.correction_manager.compute_event_weights(
                     events, objects
                 )
+                if self.base_processor._one_mc_for_all and self.base_processor._mc_year_split_scale != 1.0:
+                    # Compensate for keeping only a lumi-fraction f_y of events:
+                    # multiply every weight component by 1/f_y (see processor.py).
+                    weight_results = {
+                        k: (v * self.base_processor._mc_year_split_scale if isinstance(v, ak.Array) else v)
+                        for k, v in weight_results.items()
+                    }
                 event_weights_nominal = np.asarray(ak.to_numpy(weight_results["full_event_weight"]))
                 event_weights_save = _build_event_weights_for_save(weight_results)
             except Exception as e:

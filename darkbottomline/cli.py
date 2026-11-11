@@ -112,6 +112,8 @@ def run_analysis(args):
     if args.data:
         config.setdefault("data", {})["is_data"] = True
     config.setdefault("data", {})["is_signal"] = _is_signal_sample(args.input)
+    if getattr(args, "one_mc_for_all", False):
+        config.setdefault("data", {})["one_mc_for_all"] = True
 
     # Initialize processor
     processor = DarkBottomLineProcessor(config)
@@ -1111,6 +1113,8 @@ def run_analyzer(args):
     if args.data:
         config.setdefault("data", {})["is_data"] = True
     config.setdefault("data", {})["is_signal"] = _is_signal_sample(args.input)
+    if getattr(args, "one_mc_for_all", False):
+        config.setdefault("data", {})["one_mc_for_all"] = True
 
     try:
         import uproot
@@ -3187,6 +3191,15 @@ Examples:
     run_parser.add_argument("--max-events", type=int, help="Maximum events to process")
     run_parser.add_argument("--data", action="store_true",
                            help="Input is collision data: apply golden JSON lumi mask and skip MC-only weights")
+    run_parser.add_argument("--one-mc-for-all", action="store_true", default=False,
+                           help="Deterministic disjoint hash-based split of shared MC across year "
+                                "channels (fixes correlated autoMCStats when the same MC sample is "
+                                "reprocessed per year). This run keeps only its lumi-fraction slice "
+                                "of events (config's 'year' selects which bucket) and rescales "
+                                "weights by 1/f_y. No-op for --data. Requires a top-level "
+                                "'one_mc_for_all: {years, lumi_by_year}' block in --config. Off by "
+                                "default: omitting this flag reproduces today's full-statistics "
+                                "per-year behavior exactly.")
     run_parser.set_defaults(func=run_analysis)
 
     # Analyze command
@@ -3232,6 +3245,15 @@ Examples:
                                help="Maximum events to process across all chunks")
     analyze_parser.add_argument("--data", action="store_true",
                                help="Collision data: apply golden JSON lumi mask, skip MC weights")
+    analyze_parser.add_argument("--one-mc-for-all", action="store_true", default=False,
+                               help="Deterministic disjoint hash-based split of shared MC across year "
+                                    "channels (fixes correlated autoMCStats when the same MC sample is "
+                                    "reprocessed per year). This run keeps only its lumi-fraction slice "
+                                    "of events (config's 'year' selects which bucket) and rescales "
+                                    "weights by 1/f_y. No-op for --data. Requires a top-level "
+                                    "'one_mc_for_all: {years, lumi_by_year}' block in --config. Off by "
+                                    "default: omitting this flag reproduces today's full-statistics "
+                                    "per-year behavior exactly.")
     analyze_parser.add_argument("--xsection-json", default=None, metavar="JSON",
                                help="JSON mapping filename stem → cross-section in pb (region-analysis mode)")
     analyze_parser.add_argument("--xsection-signal-json", default=None, metavar="JSON",
