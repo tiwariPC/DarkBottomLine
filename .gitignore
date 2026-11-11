@@ -45,6 +45,8 @@ outputs/
 *.pkl
 *.root
 *.parquet
+# B-tag MC-truth efficiency maps are required inputs, keep them in the repo
+!data/corrections/*/heavyflavor_efficiency_maps_*.root
 
 # Logs
 *.log
