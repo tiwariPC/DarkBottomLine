@@ -20,7 +20,10 @@ universe   = vanilla
 executable = $(EXEC)
 arguments  = $(PROXY_FILE) $(INDICES)
 
-environment = "DBL_REPO_DIR=$(REPO_DIR) DBL_CONFIG=$(CONFIG) DBL_YEAR=$(YEAR) DBL_SAMPLE_TXT=$(SAMPLE_TXT) DBL_OUTDIR=$(OUTDIR) DBL_DATA=$(IS_DATA) DBL_WORKERS=$(WORKERS) DBL_CHUNK_SIZE=$(CHUNK_SIZE) DBL_MAX_EVENTS=$(MAX_EVENTS) DBL_SLICE_ID=$(SLICE_ID)"
+# --one-mc-for-all (MC only); submit_samples.py overrides this default per cluster
+ONE_MC_FOR_ALL = false
+
+environment = "DBL_REPO_DIR=$(REPO_DIR) DBL_CONFIG=$(CONFIG) DBL_YEAR=$(YEAR) DBL_SAMPLE_TXT=$(SAMPLE_TXT) DBL_OUTDIR=$(OUTDIR) DBL_DATA=$(IS_DATA) DBL_WORKERS=$(WORKERS) DBL_CHUNK_SIZE=$(CHUNK_SIZE) DBL_MAX_EVENTS=$(MAX_EVENTS) DBL_SLICE_ID=$(SLICE_ID) DBL_ONE_MC_FOR_ALL=$(ONE_MC_FOR_ALL)"
 
 # x509 proxy shipped into the sandbox for XRootD reads. EOS writes use the
 # Kerberos credentials HTCondor forwards at CERN.

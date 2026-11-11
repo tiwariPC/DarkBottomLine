@@ -20,6 +20,7 @@
 #   $2  INDICES     colon-separated 0-based file indices into the .txt
 # Env (from submit.sub): DBL_REPO_DIR DBL_CONFIG DBL_YEAR DBL_SAMPLE_TXT
 #   DBL_OUTDIR DBL_DATA DBL_WORKERS DBL_CHUNK_SIZE DBL_MAX_EVENTS DBL_SLICE_ID
+#   DBL_ONE_MC_FOR_ALL (optional, "true": MC jobs add --one-mc-for-all)
 # ---------------------------------------------------------------------------
 ulimit -s unlimited
 set -u -o pipefail
@@ -47,7 +48,7 @@ PROC_ID="${PROC_ID:-0}"
 
 echo "=== event-selection job ==="
 echo "host      : $(hostname)"
-echo "sample    : ${SAMPLE} (${YEAR}, data=${DBL_DATA})"
+echo "sample    : ${SAMPLE} (${YEAR}, data=${DBL_DATA}, one-mc-for-all=${DBL_ONE_MC_FOR_ALL:-false})"
 echo "slice     : ${DBL_SLICE_ID} -> indices ${INDICES}"
 echo "job       : cluster ${CLUSTER_ID}, proc ${PROC_ID}"
 echo "outdir    : ${OUTDIR_SAMPLE}"
@@ -163,6 +164,7 @@ for idx in ${INDICES//:/ }; do
              --executor futures --workers "${DBL_WORKERS}" --chunk-size "${DBL_CHUNK_SIZE}")
         [ -n "${DBL_MAX_EVENTS}" ] && CMD+=(--max-events "${DBL_MAX_EVENTS}")
         [ "${DBL_DATA}" = "true" ] && CMD+=(--data)
+        [ "${DBL_ONE_MC_FOR_ALL:-false}" = "true" ] && [ "${DBL_DATA}" != "true" ] && CMD+=(--one-mc-for-all)
 
         T0=$(date +%s)
         "${CMD[@]}" </dev/null

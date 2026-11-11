@@ -164,6 +164,7 @@ different `C`/`P`, and a `*_EVENTSELECTION.root` glob would then count those eve
 | `--memory` | 2000 × cpus | `request_memory` in MB |
 | `--flavour` | workday | 8 h limit; a job stuck on one file is killed within hours |
 | `--chunk-size` | 50000 | executor chunk size or `auto` |
+| `--one-mc-for-all` | off | MC only: jobs run the CLI with `--one-mc-for-all` (disjoint year split of the shared MC); data samplelists are skipped. Submit 2024, 2025 and 2026 with the flag into the same run directory; the `one_mc_for_all` block must be identical in the three configs (checked) |
 | `--dry-run` | | write slice files and print the plan only |
 
 ## lxplus limits (schedd, 2026-10-10)

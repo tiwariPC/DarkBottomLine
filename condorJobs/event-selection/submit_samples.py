@@ -174,6 +174,33 @@ def parse_file_range(spec, n):
     return range(int(start or 0), min(int(end) if end else n, n))
 
 
+def check_one_mc_for_all(config: str, year: str) -> float:
+    """Validate the one_mc_for_all block for --one-mc-for-all; return this year's kept fraction.
+
+    The year split only partitions the shared MC if all years' jobs use the same years, salt and
+    luminosities, so the block must be identical in every year config it lists, and its lumi_by_year
+    entry must match that config's own `lumi`."""
+    import yaml
+    cfg = yaml.safe_load((REPO_DIR / config).read_text())
+    block = cfg.get("one_mc_for_all")
+    if not block or not block.get("years") or not block.get("lumi_by_year"):
+        sys.exit(f"✗ --one-mc-for-all: {config} has no one_mc_for_all {{years, lumi_by_year}} block")
+    years = [str(y) for y in block["years"]]
+    if str(year) not in years:
+        sys.exit(f"✗ --one-mc-for-all: year {year} is not in one_mc_for_all.years {years}")
+    for y in years:
+        other = REPO_DIR / "configs" / f"{y}.yaml"
+        if not other.is_file():
+            sys.exit(f"✗ --one-mc-for-all: configs/{y}.yaml not found")
+        c = yaml.safe_load(other.read_text())
+        if c.get("one_mc_for_all") != block:
+            sys.exit(f"✗ --one-mc-for-all: the one_mc_for_all block in configs/{y}.yaml differs from {config}")
+        if float(block["lumi_by_year"][y]) != float(c["lumi"]):
+            sys.exit(f"✗ --one-mc-for-all: lumi_by_year[{y}]={block['lumi_by_year'][y]} != configs/{y}.yaml lumi={c['lumi']}")
+    total = sum(float(block["lumi_by_year"][y]) for y in years)
+    return float(block["lumi_by_year"][str(year)]) / total
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--year", required=True, choices=["2022", "2022EE", "2023", "2024", "2025", "2026"])
@@ -199,6 +226,12 @@ def main():
     p.add_argument("--proxy", default=None, help="x509 proxy (default: ~/private/x509up_u<uid> on AFS)")
     p.add_argument("--no-skip-existing", action="store_true", help="Submit files even if their output is on EOS")
     p.add_argument("--allow-duplicates", action="store_true", help="Submit samples that still have jobs queued")
+    p.add_argument("--one-mc-for-all", action="store_true",
+                   help="MC only: every MC job runs the CLI with --one-mc-for-all, so 2024/2025/2026 each keep a "
+                        "disjoint, lumi-proportional slice of the shared MC (weights unchanged; total_events and "
+                        "weighted_total_events are the slice's). Data "
+                        "samplelists are skipped. Submit ALL three years with the same flag; the one_mc_for_all "
+                        "block must be identical in the three year configs")
     p.add_argument("--dry-run", action="store_true", help="Write slice files and print the plan, submit nothing")
     args = p.parse_args()
     args.outdir = resolve_outdir(args.outdir)
@@ -209,6 +242,7 @@ def main():
     config = args.config or f"configs/{args.year}.yaml"
     if not (REPO_DIR / config).is_file():
         sys.exit(f"✗ Config not found: {REPO_DIR / config}")
+    one_mc_fraction = check_one_mc_for_all(config, args.year) if args.one_mc_for_all else None
     input_dir = (args.input_dir if args.input_dir and args.input_dir.is_absolute()
                  else REPO_DIR / (args.input_dir or Path("data/samplelist") / args.year)).resolve()
     if not input_dir.is_dir():
@@ -241,6 +275,7 @@ def main():
     plan = []
     n_selected = 0
     skipped_pds = []
+    skipped_data = []
     for txt in sorted(input_dir.glob("*.txt")):
         sample = txt.stem
         if args.samples and not any(fnmatch.fnmatch(sample, g) for g in args.samples):
@@ -250,6 +285,9 @@ def main():
         kind = sample_kind(sample)
         if kind == "SKIP":
             skipped_pds.append(sample)
+            continue
+        if args.one_mc_for_all and kind == "DATA":
+            skipped_data.append(sample)   # the year split is for the shared MC only
             continue
         n_selected += 1
         batch_name = f"{sample}_{args.year}"
@@ -269,6 +307,8 @@ def main():
     if skipped_pds:
         print(f"⚠  Skipping {len(skipped_pds)} data samplelist(s) not in DATA_PRIMARY_DATASETS "
               f"{DATA_PRIMARY_DATASETS}: {', '.join(skipped_pds)}")
+    if skipped_data:
+        print(f"ℹ  --one-mc-for-all is MC only: skipping {len(skipped_data)} data samplelist(s)")
     if not n_selected:
         sys.exit(f"✗ No samplelist in {input_dir} matches --samples {args.samples} / --exclude {args.exclude}")
     if not plan:
@@ -290,6 +330,8 @@ def main():
           f"{sum(len(s['todo']) for s in plan)} files ({len(done)} outputs already on EOS)")
     print(f"Output: {outdir_year}/")
     print(f"Per job: {args.cpus} cpus, {memory} MB, flavour {args.flavour}, chunk size {args.chunk_size}")
+    if args.one_mc_for_all:
+        print(f"one-mc-for-all: ON, {args.year} keeps {one_mc_fraction:.4f} of each MC sample (weights not rescaled; saved totals are the slice's)")
     print("=" * 72)
     print(f"{'sample':<75} {'type':<4} {'files':>6} {'batch':>5} {'jobs':>5}")
     for s in plan:
@@ -309,6 +351,7 @@ def main():
             "SAMPLE_TXT": s["txt"].resolve(),
             "OUTDIR": args.outdir,
             "IS_DATA": "true" if s["data"] else "false",
+            "ONE_MC_FOR_ALL": "true" if (args.one_mc_for_all and not s["data"]) else "false",
             "WORKERS": args.cpus,
             "CHUNK_SIZE": args.chunk_size,
             "MAX_EVENTS": args.max_events,
