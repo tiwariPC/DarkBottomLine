@@ -7,6 +7,8 @@ import torch
 import numpy as np
 import tempfile
 import yaml
+import json
+import uproot
 from pathlib import Path
 
 from darkbottomline.dnn_trainer import ParametricDNN, DNNTrainer
@@ -142,6 +144,7 @@ class TestDNNTrainer:
                 "random_seed": 42,
                 "shuffle_data": True
             },
+            "features": [f"feature_{i}" for i in range(10)],
             "output": {
                 "model_path": "test_model.pt"
             }
@@ -165,23 +168,15 @@ class TestDNNTrainer:
         assert trainer.training_config["batch_size"] == 32
         assert trainer.preprocessing_config["feature_scaling"] == "standard"
 
-    def test_load_data(self, dnn_config):
-        """Test data loading."""
+    def test_load_data_missing_files(self, dnn_config):
+        """Missing ROOT inputs should fail rather than fabricate placeholder data."""
         trainer = DNNTrainer(dnn_config)
 
-        # Mock signal and background files
         signal_files = ["signal1.root", "signal2.root"]
         background_files = ["bkg1.root", "bkg2.root"]
 
-        # This will use the placeholder implementation
-        features, labels, masses = trainer.load_data(signal_files, background_files)
-
-        assert len(features) > 0
-        assert len(labels) > 0
-        assert len(masses) > 0
-        assert features.shape[1] == 10  # input_features
-        assert len(labels) == len(features)
-        assert len(masses) == len(features)
+        with pytest.raises((FileNotFoundError, OSError)):
+            trainer.load_data(signal_files, background_files)
 
     def test_preprocess(self, dnn_config):
         """Test data preprocessing."""
@@ -214,11 +209,11 @@ class TestDNNTrainer:
 
         train_features = torch.randn(n_train, 10)
         train_labels = torch.randint(0, 2, (n_train,)).float()
-        train_masses = torch.randn(n_train)
+        train_masses = torch.randn(n_train, 2)
 
         val_features = torch.randn(n_val, 10)
         val_labels = torch.randint(0, 2, (n_val,)).float()
-        val_masses = torch.randn(n_val)
+        val_masses = torch.randn(n_val, 2)
 
         # Train model
         results = trainer.train(
@@ -303,8 +298,8 @@ class TestDNNInference:
     """Test DNNInference class."""
 
     @pytest.fixture
-    def mock_model_file(self):
-        """Create a mock model file."""
+    def mock_model_file(self, tmp_path):
+        """Create a checkpoint in the current format plus its feature sidecar."""
         # Create a simple model
         config = {
             "input_features": 10,
@@ -316,23 +311,21 @@ class TestDNNInference:
         }
 
         model = ParametricDNN(config)
-
-        # Create temporary file
-        with tempfile.NamedTemporaryFile(suffix='.pt', delete=False) as f:
-            model_path = f.name
-
-        # Save model
+        features = [f"feature_{i}" for i in range(10)]
+        model_path = tmp_path / "model.pt"
         torch.save({
-            'model_state_dict': model.state_dict(),
-            'model_config': config,
-            'scaler': None,
-            'history': {}
+            "state_dict": model._net.state_dict(),
+            "spec": {
+                "n_inputs": 12,
+                "hidden_layers": [32, 16],
+                "dropout": 0.1,
+                "parametric": True,
+                "mass_grid": [[1000, 100], [1500, 200]],
+            },
         }, model_path)
+        (tmp_path / "features.json").write_text(json.dumps(features))
 
-        yield model_path
-
-        # Cleanup
-        Path(model_path).unlink()
+        return str(model_path)
 
     def test_inference_initialization(self, mock_model_file):
         """Test DNNInference initialization."""
@@ -345,28 +338,15 @@ class TestDNNInference:
     def test_extract_features(self, mock_model_file):
         """Test feature extraction."""
         inference = DNNInference(mock_model_file)
-
-        # Create mock events and objects
-        events = {
-            "MET": {"pt": [200, 300, 250]},
-            "event": [1, 2, 3]
+        root_path = Path(mock_model_file).parent / "events.root"
+        payload = {
+            f"feature_{i}": np.arange(3, dtype=float) + i
+            for i in range(10)
         }
-
-        objects = {
-            "jets": [
-                [{"pt": 100, "eta": 0.1, "phi": 0.0}],
-                [{"pt": 150, "eta": 0.2, "phi": 0.1}],
-                [{"pt": 200, "eta": 0.3, "phi": 0.2}]
-            ],
-            "bjets": [
-                [{"pt": 100, "eta": 0.1, "phi": 0.0}],
-                [{"pt": 150, "eta": 0.2, "phi": 0.1}],
-                []
-            ]
-        }
-
-        # Extract features
-        features = inference.extract_features(events, objects)
+        with uproot.recreate(root_path) as root_file:
+            root_file["Events"] = payload
+        with uproot.open(root_path) as root_file:
+            features = inference.extract_features(root_file["Events"])
 
         assert features.shape[0] == 3  # Number of events
         assert features.shape[1] == 10  # Number of features
@@ -441,8 +421,9 @@ class TestDNNInference:
 class TestDNNIntegration:
     """Integration tests for DNN functionality."""
 
-    def test_full_training_workflow(self):
+    def test_full_training_workflow(self, tmp_path):
         """Test complete DNN training workflow."""
+        feature_names = [f"feature_{i}" for i in range(15)]
         # Create comprehensive DNN config
         config = {
             "model": {
@@ -456,9 +437,9 @@ class TestDNNIntegration:
             "training": {
                 "batch_size": 64,
                 "learning_rate": 0.001,
-                "epochs": 10,
+                "epochs": 1,
                 "early_stopping": {
-                    "patience": 5,
+                    "patience": 0,
                     "min_delta": 0.001
                 },
                 "optimizer": "adam",
@@ -470,62 +451,39 @@ class TestDNNIntegration:
                 "random_seed": 42,
                 "shuffle_data": True
             },
-            "features": {
-                "jet_features": ["jet_pt", "jet_eta", "jet_phi"],
-                "met_features": ["met_pt", "met_phi"],
-                "event_features": ["n_jets", "n_bjets", "ht"],
-                "derived_features": ["delta_phi_met_jet", "jet1_pt"]
-            },
-            "output": {
-                "model_path": "test_model.pt"
-            }
+            "features": feature_names,
+            "feature_selection": {"top_k_significance": 0, "single_feature_epochs": 0},
         }
 
-        # Create temporary file
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-            yaml.dump(config, f)
-            temp_path = f.name
+        temp_path = tmp_path / "dnn.yaml"
+        temp_path.write_text(yaml.safe_dump(config))
 
-        try:
-            # Initialize trainer
-            trainer = DNNTrainer(temp_path)
+        trainer = DNNTrainer(str(temp_path))
+        n_samples = 500
+        features = np.random.randn(n_samples, 15)
+        labels = np.random.randint(0, 2, n_samples)
+        masses = np.random.uniform(1000, 2000, (n_samples, 2))
 
-            # Create mock data
-            n_samples = 500
-            features = np.random.randn(n_samples, 15)
-            labels = np.random.randint(0, 2, n_samples)
-            masses = np.random.uniform(1000, 2000, n_samples)
+        train_features, train_labels, train_masses, val_features, val_labels, val_masses = trainer.preprocess(
+            features, labels, masses
+        )
+        results = trainer.train(
+            train_features, train_labels, train_masses,
+            val_features, val_labels, val_masses
+        )
+        metrics = trainer.evaluate(val_features, val_labels, val_masses)
 
-            # Preprocess data
-            train_features, train_labels, train_masses, val_features, val_labels, val_masses = trainer.preprocess(
-                features, labels, masses
-            )
+        model_path = tmp_path / "dnn_model.pt"
+        trainer.save_model(str(model_path))
+        (tmp_path / "features.json").write_text(json.dumps(feature_names))
+        inference = DNNInference(str(model_path), config_path=str(temp_path))
+        predictions = inference.predict(features[:10], masses[:10])
 
-            # Train model
-            results = trainer.train(
-                train_features, train_labels, train_masses,
-                val_features, val_labels, val_masses
-            )
-
-            # Evaluate model
-            metrics = trainer.evaluate(val_features, val_labels, val_masses)
-
-            # Test inference
-            inference = DNNInference(temp_path)
-            predictions = inference.predict(features[:10], masses[:10])
-
-            # Check results
-            assert results["best_val_loss"] >= 0
-            assert metrics["accuracy"] >= 0
-            assert len(predictions) == 10
-            assert np.all(predictions >= 0)
-            assert np.all(predictions <= 1)
-
-        finally:
-            # Cleanup
-            Path(temp_path).unlink()
-
-
+        assert results["best_val_loss"] >= 0
+        assert metrics["accuracy"] >= 0
+        assert len(predictions) == 10
+        assert np.all(predictions >= 0)
+        assert np.all(predictions <= 1)
 
 
 

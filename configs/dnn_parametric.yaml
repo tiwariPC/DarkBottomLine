@@ -1,0 +1,285 @@
+# DNN training configuration for DarkBottomLine framework
+
+# Model architecture
+model:
+  type: "ParametricDNN"
+  input_features: 25  # Number of input features after correlation pruning
+  hidden_layers: "128,64,32"  # Hidden layer sizes
+  activation: "relu"  # Activation function
+  dropout: 0.2  # Dropout rate
+  # Parametric variant of configs/dnn.yaml: the network additionally takes the
+  # signal's (MH3, MH4) hypothesis as input, so one model covers the whole
+  # mass grid instead of one model per mass point.  Signal events get their true
+  # masspoint from the GenModel_* flags, background events a masspoint drawn
+  # uniformly from the grid.  Both mass columns are standardized on the training
+  # split (MH4 in log10) and the transform is stored as
+  # <model>_mass_scaler.json next to the checkpoint.
+  parametric_input: true  # Include mass parameter as input
+  output_activation: "sigmoid"  # Output activation (0-1 for binary classification)
+
+# Training parameters
+training:
+  batch_size: 8192
+  learning_rate: 0.001
+  epochs: 50
+  early_stopping:
+    patience: 10
+    min_delta: 0.001
+  optimizer: "adamw"
+  loss_function: "binary_crossentropy_with_logits"
+  metrics: ["auc"]
+  # Train/val/test split fractions (must sum to < 1.0; remainder is train)
+  val_size: 0.2
+  test_size: 0.3
+  seed: 7
+  # Class balancing in BCE loss
+  balance_classes: true
+  balance_strength: 1.0  # [0,1]: 0=off, 1=full 50/50 equalization
+  weight_clip: 100.0     # Maximum event weight
+  # After train/validation/test splitting, fit non-negative BCE weights on the
+  # training rows independently in each input ROOT file (one physical process /
+  # generator-pT slice per file). Apply that fixed mapping to validation/test;
+  # retain the original signed weights for physical score/yield diagnostics.
+  # Fine cells with insufficient training statistics merge to the next level.
+  negative_weight_handling:
+    mode: "local_cancellation"
+    min_events: 50
+    min_effective_events: 10.0
+    missing_sentinel: -9999.0
+    bins:
+      njets: [1.5, 2.5, 3.5, 4.5]
+      n_bjets: [0.5, 1.5]
+      costheta_star: [0.25, 0.5, 0.75]
+      Recoil: [200.0, 300.0, 400.0, 600.0]
+      JetHT: [200.0, 300.0, 500.0, 800.0]
+    levels:
+      - ["njets", "n_bjets", "costheta_star", "Recoil", "JetHT"]
+      - ["njets", "n_bjets", "costheta_star", "Recoil"]
+      - ["njets", "n_bjets", "costheta_star"]
+      - ["njets", "n_bjets"]
+      - ["njets"]
+      - []
+  # Fractional systematic uncertainty on background for syst-aware Asimov Z (0 = pure stat)
+  sig_syst: 0.20
+  # Training is year-independent by design (lumi=1.0 always) unless this is set:
+  # when true, --config-year's lumi/luminosity is used for GenModel per-masspoint
+  # signal weighting instead of 1.0. Requires --config-year on train-dnn.
+  use_lumi: false
+
+# Feature selection
+feature_selection:
+  # Train final model on top-K features by Asimov significance (0 = keep all)
+  top_k_significance: 0  # 0 = keep all features
+  # Epochs for per-feature 1D DNN scans
+  single_feature_epochs: 0
+  # Drop near-constant features (useful for LHEF inputs with placeholder btag)
+  drop_constant_features: false
+
+# Topology decorrelation penalty
+topology_decorrelation:
+  weight: 0.0              # Set >0 to suppress score vs topology correlation
+  features: "M_Jet1Jet2,dRJet12"
+  min_signal_events: 16    # Minimum signal events in batch to activate penalty
+
+# Data preprocessing
+preprocessing:
+  feature_scaling: "standard"  # standard, minmax, robust
+  train_validation_split: 0.8  # Fraction for training (legacy DNNTrainer)
+  random_seed: 42
+  shuffle_data: true
+
+# Input features — exact branch names as written in outputs/eventsel/*_EVENTSELECTION.root.
+# No aliasing/derivation happens in code: a name here must match a real branch,
+# or the feature comes through as all-missing. Edit this list to add/remove
+# features without touching Python code.
+features:
+  - "costheta_star"
+  - "JetHT"
+  - "Jet1BTagScore"
+  - "dPhiJet12"
+  - "Jet2BTagScore"
+  - "Jet2Eta"
+  - "Jet3BTagScore"
+  - "Jet3Eta"
+  - "M_Jet1Jet2"
+  - "dPhi_jetMET"
+  - "MET_significance"
+  - "ratioJet1PtMET"
+  - "ratioPtJet21"
+  - "del_plus"
+  - "Jet1Eta"
+  - "MET_phi"
+#   - "MET_pt"
+  - "Jet2Phi"
+  - "Recoil"
+  - "njets"
+  - "n_bjets"
+  - "n_muons"
+  - "n_electrons"
+  - "RecoilPhi"
+  - "dPhiJet13"
+  - "M_Jet1Jet3"
+
+# x-axis labels for feature distribution plots (self-contained — does not
+# reference configs/plotting.yaml).
+variable_labels:
+  costheta_star:     "$|\\cos\\theta^{*}|$"
+  JetHT:              "$H_{T}$ [GeV]"
+  Jet1BTagScore:      "Jet1 b-tag score"
+  Jet2BTagScore:      "Jet2 b-tag score"
+  Jet3BTagScore:      "Jet3 b-tag score"
+  dRJet12:            "$\\Delta R(\\mathrm{Jet1}, \\mathrm{Jet2})$"
+  dPhiJet12:          "$\\Delta\\phi(\\mathrm{Jet1}, \\mathrm{Jet2})$"
+  dEtaJet12:          "$\\Delta\\eta(\\mathrm{Jet1}, \\mathrm{Jet2})$"
+  dPhi_jetMET:        "$\\Delta\\phi(\\mathrm{jet}, p_{T}^{miss})$"
+  Jet1Pt:             "Jet1 $p_{T}$ [GeV]"
+  Jet2Pt:             "Jet2 $p_{T}$ [GeV]"
+  Jet3Pt:             "Jet3 $p_{T}$ [GeV]"
+  Jet1Eta:            "Jet1 $\\eta$"
+  Jet2Eta:            "Jet2 $\\eta$"
+  Jet3Eta:            "Jet3 $\\eta$"
+  Jet1Phi:            "Jet1 $\\phi$"
+  Jet2Phi:            "Jet2 $\\phi$"
+  eta_Jet1Jet2:       "$\\eta_{\\mathrm{Jet1,Jet2}}$"
+  phi_Jet1Jet2:       "$\\phi_{\\mathrm{Jet1,Jet2}}$"
+  M_Jet1Jet2:         "$M_{\\mathrm{Jet1,Jet2}}$ [GeV]"
+  pT_Jet1Jet2:        "$p_{T}^{\\mathrm{Jet1+Jet2}}$ [GeV]"
+  MET_pt:             "$p_{T}^{miss}$ [GeV]"
+  MET_phi:            "$p_{T}^{miss}$ $\\phi$"
+  MET_significance:   "$p_{T}^{miss}$ significance"
+  ratioJet1PtMET:     "Jet1 $p_{T}$ / $p_{T}^{miss}$"
+  ratioPtJet21:       "Jet2 $p_{T}$ / Jet1 $p_{T}$"
+  del_plus:           "$|\\Delta\\phi(\\mathrm{jet},p_{T}^{miss}) + \\Delta\\phi(\\mathrm{Jet1},\\mathrm{Jet2}) - \\pi|$"
+  del_minus:          "$\\Delta\\phi(\\mathrm{jet},p_{T}^{miss}) - \\Delta\\phi(\\mathrm{Jet1},\\mathrm{Jet2})$"
+  Recoil:             "Recoil [GeV]"
+  RecoilPhi:          "Recoil $\\phi$"
+  njets:              "Number of jets"
+  n_bjets:            "Number of b-jets"
+  n_muons:            "Number of muons"
+  n_electrons:        "Number of electrons"
+  dPhiJet13:          "$\\Delta\\phi(\\mathrm{Jet1}, \\mathrm{Jet3})$"
+  M_Jet1Jet3:         "$M_{\\mathrm{Jet1,Jet3}}$ [GeV]"
+
+# Training data configuration
+#
+# Signal/background file selection happens at train-dnn CLI invocation time via
+# --input <folder or file list> + --signal-pattern/--signal-prefix/--label-csv,
+# not here. Background dataset groupings are defined in configs/plotting.yaml's
+# process_groups (exclude type: signal / type: data entries). Signal is one file
+# (BBDM-2HDMa-5f_..._EVENTSELECTION.root) with 29 GenModel_MH3_*_MH4_*_Mchi_*
+# masspoint flags — see data/cross-section/xsection_signal.json for per-masspoint
+# cross sections, used for GenModel-aware event weighting (--xsection-signal-json).
+data:
+  region: "preselection"
+  max_events_per_sample: 100000  # Limit events per sample for training
+
+# Model evaluation
+evaluation:
+  # Validation metrics
+  validation_metrics:
+    - "accuracy"
+    - "precision"
+    - "recall"
+    - "f1_score"
+    - "auc"
+    - "roc_auc"
+
+  # ROC curve
+  roc_curve: true
+  roc_thresholds: 100
+
+  # Efficiency curves
+  efficiency_curves: true
+  signal_efficiency_points: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+  background_rejection_points: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
+
+# Output configuration
+output:
+  model_path: "outputs/models/dnn_model.pt"
+  results_path: "outputs/dnn_results.json"
+  plots_path: "outputs/plots/dnn/"
+
+  # Save model components
+  save_model: true
+  save_optimizer: false
+  save_training_history: true
+  save_feature_importance: true
+
+  # Export formats
+  export_formats:
+    - "pytorch"  # .pt file
+    - "onnx"     # .onnx file for inference
+    - "tflite"   # .tflite file for mobile deployment
+
+# Advanced training options
+advanced:
+  # Learning rate scheduling
+  lr_scheduler:
+    type: "reduce_on_plateau"
+    factor: 0.5
+    patience: 5
+    min_lr: 1e-6
+
+  # Data augmentation
+  data_augmentation:
+    enabled: false
+    noise_level: 0.01
+    rotation_angle: 0.1
+
+  # Regularization
+  regularization:
+    l1_lambda: 0.0
+    l2_lambda: 0.001
+
+  # Gradient clipping
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+
+  # Mixed precision training
+  mixed_precision: false
+
+  # Distributed training
+  distributed:
+    enabled: false
+    backend: "nccl"
+    world_size: 1
+
+# Hardware configuration
+hardware:
+  device: "auto"  # auto, cpu, cuda, mps
+  num_workers: 4
+  pin_memory: true
+  prefetch_factor: 2
+
+# Logging and monitoring
+logging:
+  level: "INFO"
+  log_frequency: 10  # Log every N epochs
+  save_checkpoints: true
+  checkpoint_frequency: 10  # Save checkpoint every N epochs
+
+  # TensorBoard logging
+  tensorboard:
+    enabled: true
+    log_dir: "outputs/tensorboard/"
+    log_frequency: 1  # Log every N epochs
+
+# Model interpretation
+interpretation:
+  # Feature importance
+  feature_importance:
+    method: "permutation"  # permutation, shap, lime
+    n_samples: 1000
+
+  # SHAP analysis
+  shap:
+    enabled: true
+    n_samples: 1000
+    max_features: 20
+
+  # LIME analysis
+  lime:
+    enabled: false
+    n_samples: 1000
+    n_features: 10

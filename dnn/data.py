@@ -43,6 +43,19 @@ def read_branch_as_array(
     if target <= 0:
         return np.empty(0, dtype="f8")
 
+    # Uproot 5.7 can create RNTuple collections by default, whose RField
+    # objects do not expose TTree basket metadata. RNTuple supports regular
+    # array reads, so use it directly for this case and retain the basket
+    # workaround below for TTree branches.
+    if not hasattr(branch, "num_baskets"):
+        values = np.asarray(
+            branch.array(entry_start=0, entry_stop=target, library="np")
+        )
+        if entry_mask is not None:
+            mask = np.asarray(entry_mask, dtype=bool)
+            values = values[mask[: len(values)]]
+        return values
+
     if entry_mask is not None:
         mask = np.asarray(entry_mask, dtype=bool)
         parts = []

@@ -10,6 +10,14 @@ events, and trains a normal non-parametric binary classifier.
 It deliberately does NOT use the parametric ``(MH3, MH4)`` input path: the goal
 is 29 independent models, not one model conditioned on mass.
 
+Signal identification
+---------------------
+Only the production signal sample (``DEFAULT_SIGNAL_SAMPLE``) is treated as
+signal.  The input directory also contains ``BBDM-2HDMa_500_EVENTSELECTION.root``
+— a small test file carrying the same ``GenModel_*`` branches — which is
+skipped outright, as signal *or* background.  ``--signal-pattern`` /
+``--signal-prefix`` override the default when a different sample is wanted.
+
 Example
 -------
 python scripts/train_per_masspoint.py \
@@ -27,8 +35,10 @@ python scripts/train_per_masspoint.py \
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import logging
+import re
 import sys
 from pathlib import Path
 
@@ -40,12 +50,103 @@ import yaml
 from dnn.common import sanitize_feature_frame
 from dnn.data import read_branch_as_array, read_tree_branches_as_arrays
 from dnn.feature_engineering import build_feature_frame_from_tree
-from dnn.make_trees import _is_data, _is_signal_heuristic, _sample_name
+from dnn.make_trees import (
+    _is_data,
+    _is_signal_heuristic,
+    _is_test_sample,
+    _sample_name,
+)
 from darkbottomline.dnn_trainer import DNNTrainer
 from darkbottomline.plotting import PlotManager, _find_xsec
 
 
 log = logging.getLogger("train_per_masspoint")
+
+# The production signal sample for this analysis.  Unless the caller passes
+# --signal-pattern / --signal-prefix, only files whose name starts with this
+# are taken as signal.  Do not fall back to the loose "BBDM" keyword: the
+# directory holds other BBDM files that are not production signal.
+DEFAULT_SIGNAL_SAMPLE = "BBDM-2HDMa-5f"
+
+# MH3/MH4 can also be used as the grouping variable instead of training one
+# model per mass point (see --ratio-bins).
+_MASS_RE = re.compile(r"MH3_(\d+)_MH4_(\d+)", re.IGNORECASE)
+
+
+def _mass_ratio(label: str) -> float | None:
+    """$M_{H_3}/M_{H_4}$ for a GenModel label, or None if unparseable."""
+    m = _MASS_RE.search(label)
+    if not m:
+        return None
+    mh3, mh4 = int(m.group(1)), int(m.group(2))
+    return mh3 / mh4 if mh4 else None
+
+
+def _fmt_edge(x: float) -> str:
+    return f"{x:g}".replace(".", "p")
+
+
+def _make_ratio_bins(
+    labels: list[str],
+    n_bins: int,
+    edges: list[float] | None,
+) -> "dict[str, list[str]]":
+    """Group mass points into contiguous bins of $M_{H_3}/M_{H_4}$.
+
+    Without explicit *edges* the bins are terciles by number of mass points, so
+    each bin holds a comparable share of the parameter space.  The returned
+    mapping is ordered from low to high ratio and its keys are used as model
+    names (and therefore as output directory names).
+    """
+    pairs = []
+    for lab in labels:
+        r = _mass_ratio(lab)
+        if r is None:
+            raise SystemExit(f"cannot parse MH3/MH4 from mass point label {lab!r}")
+        pairs.append((r, lab))
+    pairs.sort()
+
+    if n_bins < 2:
+        raise SystemExit(f"--ratio-bins must be at least 2, got {n_bins}")
+
+    if edges:
+        cuts = sorted(float(e) for e in edges)
+        if len(cuts) != n_bins - 1:
+            raise SystemExit(
+                f"--ratio-bin-edges needs {n_bins - 1} values for "
+                f"{n_bins} bins, got {len(cuts)}"
+            )
+    else:
+        n = len(pairs)
+        if n_bins > n:
+            raise SystemExit(f"cannot split {n} mass points into {n_bins} bins")
+        # upper edge of bin k = ratio of the last mass point in that bin
+        cuts = [pairs[round((k + 1) * n / n_bins) - 1][0] for k in range(n_bins - 1)]
+        cuts = sorted(set(cuts))
+        if len(cuts) != n_bins - 1:
+            raise SystemExit(
+                "equal-count bins collapse with this many mass points - "
+                "pass --ratio-bin-edges explicitly"
+            )
+
+    bins: dict[str, list[str]] = {}
+    prev: float | None = None
+    for k in range(n_bins):
+        hi = cuts[k] if k < len(cuts) else None
+        if k == 0:
+            name = f"ratio_le_{_fmt_edge(hi)}"
+            members = [lab for r, lab in pairs if r <= hi]
+        elif hi is None:
+            name = f"ratio_gt_{_fmt_edge(prev)}"
+            members = [lab for r, lab in pairs if r > prev]
+        else:
+            name = f"ratio_{_fmt_edge(prev)}_to_{_fmt_edge(hi)}"
+            members = [lab for r, lab in pairs if prev < r <= hi]
+        if not members:
+            raise SystemExit(f"ratio bin {name!r} would be empty")
+        bins[name] = members
+        prev = hi
+    return bins
 
 
 def _discover_files(inputs: list[str]) -> list[str]:
@@ -121,28 +222,14 @@ def _load_file(
     max_events: int | None,
     fraction: float | None,
     rng_seed,
-    label_map: dict[str, int] | None,
-    signal_patterns: tuple[str, ...],
-    signal_prefix: str | None,
+    sig_flag: bool,
 ) -> dict | None:
-    """Read one EVENTSELECTION file into a feature frame + weight + mass flags."""
+    """Read one EVENTSELECTION file into a feature frame + weight + mass flags.
+
+    The caller has already classified the file (see :func:`_classify`) and only
+    passes files that take part in training; this function just reads them.
+    """
     sample = _sample_name(path)
-
-    if label_map is not None:
-        key = path if path in label_map else Path(path).name
-        if key not in label_map:
-            log.warning("Path %s not in label CSV — skipping", path)
-            return None
-        sig_flag = bool(label_map[key] == 1)
-        data_flag = False
-    else:
-        data_flag = _is_data(path)
-        sig_flag = False if data_flag else _is_signal_heuristic(
-            path, signal_patterns, signal_prefix
-        )
-
-    if data_flag:
-        return None
 
     with uproot.open(path) as f:
         if "Events" not in f:
@@ -163,7 +250,7 @@ def _load_file(
         df, _src, _used = build_feature_frame_from_tree(
             tree, features, max_events=read_max, entry_mask=keep
         )
-        df = sanitize_feature_frame(df)
+        df = sanitize_feature_frame(df).astype("float32", copy=False)
         n = len(df)
 
         avail = set(tree.keys())
@@ -201,7 +288,7 @@ def _load_file(
     return {
         "path": path,
         "sample": sample,
-        "sig_flag": sig_flag,
+        "sig_flag": bool(sig_flag),
         "df": df,
         "w": w,
         "flags": flags,
@@ -216,15 +303,31 @@ def _classify(
     signal_patterns: tuple[str, ...],
     signal_prefix: str | None,
 ) -> tuple[bool, bool] | None:
-    """Return (is_signal, is_data), or None if the path should be skipped."""
+    """Return (is_signal, is_data), or None if the path should be skipped.
+
+    This is the only place that decides what a file is; the reader downstream
+    just consumes the verdict, so the two can never disagree.
+    """
+    # Test/placeholder samples carry the same GenModel_* branches as the
+    # production signal, so they must be kept out of training entirely — as
+    # signal *and* as background.
+    if _is_test_sample(path):
+        log.info("Skipping test sample (never used for training): %s", path)
+        return None
     if label_map is not None:
         key = path if path in label_map else Path(path).name
         if key not in label_map:
+            log.warning("Path %s not in label CSV — skipping", path)
             return None
         return bool(label_map[key] == 1), False
     if _is_data(path):
         return False, True
-    return _is_signal_heuristic(path, signal_patterns, signal_prefix), False
+    if signal_patterns or signal_prefix:
+        return _is_signal_heuristic(path, signal_patterns, signal_prefix), False
+    # Default: only the production signal sample counts as signal.
+    return Path(path).name.lower().startswith(
+        DEFAULT_SIGNAL_SAMPLE.lower()
+    ), False
 
 
 def main() -> int:
@@ -249,9 +352,20 @@ def main() -> int:
     ap.add_argument("--masspoints", default=None,
                     help="Comma-separated GenModel labels (e.g. "
                          "MH3_600_MH4_10_Mchi_1). Default: all found.")
+    ap.add_argument("--ratio-bins", type=int, default=0,
+                    help="Instead of one model per mass point, group the mass "
+                         "points into this many bins of M_H3/M_H4 and train "
+                         "one model per bin (0 = off).")
+    ap.add_argument("--ratio-bin-edges", default=None,
+                    help="Comma-separated bin edges for --ratio-bins, e.g. "
+                         "'2,5'. Default: equal-count bins.")
     ap.add_argument("--signal-pattern", action="append", default=None,
-                    dest="signal_pattern")
-    ap.add_argument("--signal-prefix", default=None)
+                    dest="signal_pattern",
+                    help="Regex(es) selecting signal files. Overrides the "
+                         f"default (name starts with {DEFAULT_SIGNAL_SAMPLE}).")
+    ap.add_argument("--signal-prefix", default=None,
+                    help="Signal files start with this string. Overrides the "
+                         f"default ({DEFAULT_SIGNAL_SAMPLE}).")
     ap.add_argument("--label-csv", default=None)
     ap.add_argument("--lumi", type=float, default=1.0,
                     help="Luminosity for lumi*xsec*1000/wte weighting "
@@ -301,9 +415,11 @@ def main() -> int:
     sig_parts: list[dict] = []
     for idx, path in enumerate(files):
         cls = _classify(path, label_map, sig_patterns, args.signal_prefix)
-        if cls is None or cls[1]:
+        if cls is None:
             continue
-        is_sig = cls[0]
+        is_sig, is_data = cls
+        if is_data:
+            continue
         if is_sig:
             cap, fraction, rng_seed = args.max_events_signal, None, None
         else:
@@ -315,9 +431,7 @@ def main() -> int:
             cap,
             fraction,
             rng_seed,
-            label_map,
-            sig_patterns,
-            args.signal_prefix,
+            is_sig,
         )
         if item is None:
             continue
@@ -330,11 +444,21 @@ def main() -> int:
         log.error("No background files loaded")
         return 1
     if not sig_parts:
-        log.error("No signal files loaded")
+        log.error(
+            "No signal files loaded — expected file names starting with %s "
+            "(override with --signal-prefix / --signal-pattern)",
+            DEFAULT_SIGNAL_SAMPLE,
+        )
         return 1
 
     # Assemble shared background once.
     X_bkg = pd.concat([p["df"] for p in bkg_parts], ignore_index=True).astype("float32")
+    # The per-file feature frames are no longer needed once concatenated; drop
+    # them (keeping only the small per-file metadata) so the background does
+    # not sit in memory twice.
+    for p in bkg_parts:
+        p["n"] = int(len(p["df"]))
+        p["df"] = None
     w_bkg_list: list[np.ndarray] = []
     sid_bkg_list: list[np.ndarray] = []
     for p in bkg_parts:
@@ -350,6 +474,9 @@ def main() -> int:
 
     # Assemble signal events with their per-event mass-point flags.
     X_sig = pd.concat([p["df"] for p in sig_parts], ignore_index=True).astype("float32")
+    for p in sig_parts:
+        p["n"] = int(len(p["df"]))
+        p["df"] = None
     w_sig_raw = np.concatenate([p["w"] for p in sig_parts])
     sid_sig = np.concatenate([
         np.full(len(p["w"]), p["path"], dtype=object) for p in sig_parts
@@ -359,7 +486,7 @@ def main() -> int:
     sig_scale = np.ones(len(X_sig), dtype="f8")
     offset = 0
     for p in sig_parts:
-        n = len(p["df"])
+        n = p["n"]
         wte = p["wte"]
         idx = np.arange(offset, offset + n)
         for label, flag in p["flags"].items():
@@ -405,7 +532,7 @@ def main() -> int:
     signal_masks: dict[str, np.ndarray] = {}
     offset = 0
     for p in sig_parts:
-        n = len(p["df"])
+        n = p["n"]
         for label in labels:
             if label not in p["flags"]:
                 continue
@@ -415,12 +542,60 @@ def main() -> int:
 
     log.info("Will train %d mass point(s): %s", len(labels), labels)
 
+    # Optional: merge the mass points into bins of M_H3/M_H4 and train one
+    # model per bin.  The per-event weights are untouched by this — every
+    # signal event keeps the scaling of its own mass point (computed above) —
+    # only which events form the signal class changes.
+    if args.ratio_bins:
+        edges = None
+        if args.ratio_bin_edges:
+            edges = [float(x) for x in args.ratio_bin_edges.split(",") if x.strip()]
+        groups = _make_ratio_bins(labels, args.ratio_bins, edges)
+        merged: dict[str, np.ndarray] = {}
+        for gname, members in groups.items():
+            arr = None
+            for m in members:
+                mm = signal_masks.get(m)
+                if mm is None:
+                    continue
+                arr = mm.copy() if arr is None else (arr | mm)
+            if arr is None:
+                raise SystemExit(f"ratio bin {gname!r} has no signal events")
+            merged[gname] = arr
+
+        log.info("Grouped %d mass point(s) into %d M_H3/M_H4 ratio bin(s):",
+                 len(labels), len(groups))
+        composition: dict[str, dict] = {}
+        for gname, members in groups.items():
+            ratios = sorted(_mass_ratio(m) for m in members)
+            n_ev = int(merged[gname].sum())
+            log.info("  %-24s M_H3/M_H4 %.3f-%.3f  %2d point(s)  %8d signal events",
+                     gname, ratios[0], ratios[-1], len(members), n_ev)
+            composition[gname] = {
+                "ratio_min": ratios[0], "ratio_max": ratios[-1],
+                "n_mass_points": len(members), "n_signal_events": n_ev,
+                "mass_points": members,
+            }
+        signal_masks = merged
+        labels = list(groups.keys())
+        out_base = Path(args.outdir_base)
+        out_base.mkdir(parents=True, exist_ok=True)
+        (out_base / "ratio_bins.json").write_text(
+            json.dumps({"n_bins": args.ratio_bins, "bins": composition},
+                       indent=2) + "\n"
+        )
+
     for label in labels:
         sel = signal_masks.get(label)
         n_sig = int(sel.sum())
         if n_sig == 0:
             log.warning("Mass point %s has no signal events — skipping", label)
             continue
+
+        # Drop the previous mass point's combined dataset before building the
+        # next one, so two full copies never coexist.
+        X = y = w = sid = trainer = None
+        gc.collect()
 
         X = pd.concat([X_sig[sel].reset_index(drop=True), X_bkg], ignore_index=True)
         y = np.concatenate([np.ones(n_sig, dtype="i4"), np.zeros(len(w_bkg), dtype="i4")])

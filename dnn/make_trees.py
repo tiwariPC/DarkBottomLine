@@ -15,6 +15,11 @@ Signal/background detection (in order of priority):
   2. --signal-prefix  e.g. "newdiboson" — samples whose filename starts with this are signal
   3. --signal-pattern  regex matched against filename
   4. built-in heuristic: keywords chichi/bbdm/dark/invisible/dm in filename → signal
+
+Test/placeholder files (see _TEST_SAMPLE_MARKERS) are refused by every training
+path regardless of the rules above: they carry the same GenModel_* signal
+branches as the production sample, so a name-based signal match would silently
+train on them.
 """
 from __future__ import annotations
 
@@ -38,6 +43,16 @@ _DATA_PREFIXES = ("run20", "data")
 # patterns: JetMET/JetMET0/JetMET1/MET/EGamma/EGamma0/EGamma1, each "-Run...").
 _DATA_SUBSTRINGS = ("jetmet-run", "jetmet0-run", "jetmet1-run", "met-run",
                     "egamma-run", "egamma0-run", "egamma1-run")
+
+# Small samples kept in the input directory only to exercise the machinery.
+# Matched as a case-insensitive substring of the file name.
+_TEST_SAMPLE_MARKERS = ("bbdm-2hdma_500",)
+
+
+def _is_test_sample(name: str) -> bool:
+    """True for placeholder/test ROOT files that must never enter training."""
+    n = os.path.basename(str(name)).lower()
+    return any(marker in n for marker in _TEST_SAMPLE_MARKERS)
 
 
 def _is_data(name: str) -> bool:
