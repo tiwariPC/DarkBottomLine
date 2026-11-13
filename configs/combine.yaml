@@ -247,16 +247,16 @@ datacard:
     # the 2b fit variable (costheta_star) the variation is the migration of events through recoil > recoil_min (nominal
     # cos theta* values), see docs/plotting_configuration.md. JER has no 2b (costheta_star) variants.
     JECAbsolute: {type: "shape", syst_suffix: "JECAbsolute", name_template: "CMS_scale_j_Absolute", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
-    JECAbsolute_2024: {type: "shape", syst_suffix: "JECAbsolute_2024", name_template: "CMS_scale_j_Absolute_2024", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECAbsolute_year: {type: "shape", syst_suffix: "JECAbsolute_{year}", name_template: "CMS_scale_j_Absolute_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     JECBBEC1: {type: "shape", syst_suffix: "JECBBEC1", name_template: "CMS_scale_j_BBEC1", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
-    JECBBEC1_2024: {type: "shape", syst_suffix: "JECBBEC1_2024", name_template: "CMS_scale_j_BBEC1_2024", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECBBEC1_year: {type: "shape", syst_suffix: "JECBBEC1_{year}", name_template: "CMS_scale_j_BBEC1_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     JECEC2: {type: "shape", syst_suffix: "JECEC2", name_template: "CMS_scale_j_EC2", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
-    JECEC2_2024: {type: "shape", syst_suffix: "JECEC2_2024", name_template: "CMS_scale_j_EC2_2024", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECEC2_year: {type: "shape", syst_suffix: "JECEC2_{year}", name_template: "CMS_scale_j_EC2_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     JECHF: {type: "shape", syst_suffix: "JECHF", name_template: "CMS_scale_j_HF", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
-    JECHF_2024: {type: "shape", syst_suffix: "JECHF_2024", name_template: "CMS_scale_j_HF_2024", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECHF_year: {type: "shape", syst_suffix: "JECHF_{year}", name_template: "CMS_scale_j_HF_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     JECFlavorQCD: {type: "shape", syst_suffix: "JECFlavorQCD", name_template: "CMS_scale_j_FlavorQCD", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     JECRelativeBal: {type: "shape", syst_suffix: "JECRelativeBal", name_template: "CMS_scale_j_RelativeBal", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
-    JECRelativeSample_2024: {type: "shape", syst_suffix: "JECRelativeSample_2024", name_template: "CMS_scale_j_RelativeSample_2024", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
+    JECRelativeSample_year: {type: "shape", syst_suffix: "JECRelativeSample_{year}", name_template: "CMS_scale_j_RelativeSample_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     JER:         {type: "shape", syst_suffix: "JER", name_template: "CMS_res_j_13p6TeV", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     pileup:      {type: "shape", syst_suffix: "weight_pileup", name_template: "CMS_pileup_13p6TeV", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}
     muonSF:      {type: "shape", syst_suffix: "weight_muon", name_template: "CMS_eff_m_id_{year}", processes: ["signal","ttbar","wjets","zjets","dyjets","singletop","diboson","smhiggs"]}

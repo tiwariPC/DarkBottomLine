@@ -2710,6 +2710,18 @@ def make_gof(args):
     logging.info(f"GOF plot creation completed: {plot_file}")
 
 
+def _expand_syst_suffixes(combine_config: Dict[str, Any], suffixes: List[str]) -> List[str]:
+    """Expand "{year}" in shape-systematic suffixes (e.g. JECAbsolute_{year}) to the suffix of every configured era, so the
+    channel-merge and PDF-normalisation steps carry each year's own variant files through."""
+    years = [str(e["year"]) for e in combine_config.get("eras", [])]
+    out: List[str] = []
+    for sfx in suffixes:
+        for cand in ([sfx.replace("{year}", y) for y in years] if "{year}" in sfx else [sfx]):
+            if cand not in out:
+                out.append(cand)
+    return out
+
+
 def merge_emu(args):
     """Merge muon-channel and electron-channel CR histograms (Agent 2:
     channel-merge). No-op passthrough if combine.yaml's combine_emu: false."""
@@ -2720,6 +2732,7 @@ def merge_emu(args):
         syst["syst_suffix"] for syst in combine_config["datacard"]["systematics"].values()
         if syst.get("type") == "shape" and "syst_suffix" in syst
     ]
+    syst_suffixes = _expand_syst_suffixes(combine_config, syst_suffixes)
 
     for category in categories:
         variable = fit_variable_map[category]
@@ -2767,6 +2780,7 @@ def normalize_pdf(args):
         if syst.get("type") == "shape" and "syst_suffix" in syst
     }
     syst_suffixes = [syst["syst_suffix"] for syst in shape_systs.values()]
+    syst_suffixes = _expand_syst_suffixes(combine_config, syst_suffixes)
     # Matched by suffix, not by the yaml key (the key is "pdf_envelope"; looking up "pdf" found
     # nothing, so the pdf variants were never rescaled to preserve the central integral).
     # Shape-only systematics (Up/Down rescaled to the nominal integral): the PDF envelope and the QCD
@@ -3029,7 +3043,9 @@ def run_all(args):
                 gof_json = runner.run_collect_goodness_of_fit(observed_file, str(card_dir),
                                                                 mass_point=mass_point)
                 gof_algo = combine_config["fit"]["options"]["goodness_of_fit"].get("algorithm", "saturated")
-                era_year = combine_config["eras"][0]["year"]
+                # label of the eras actually in this fit (not the first configured era): "2025", or "2024+25+26" for a combination
+                _yrs = [str(e["year"]) for e in era_list]
+                era_year = _yrs[0] if len(_yrs) == 1 else "+".join([_yrs[0]] + [y[-2:] for y in _yrs[1:]])
                 runner.run_plot_gof(gof_json, str(card_dir), algo=gof_algo,
                                      title_right=f"S+B hypothesis(1b+2b {era_year})",
                                      mass_point=mass_point)

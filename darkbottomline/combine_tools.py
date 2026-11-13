@@ -303,7 +303,7 @@ class CombineDatacardWriter:
                     # underlying histogram file/key exists at all).
                     exists = self._shape_variant_exists(
                         region_root_dir, category, region_dir, variable, proc,
-                        mass_point, sys_config["syst_suffix"],
+                        mass_point, self._resolve_syst_suffix(sys_config, year),
                     )
                     sys_line += " 1.0" if exists else " -"
             lines.append(sys_line)
@@ -503,6 +503,12 @@ class CombineDatacardWriter:
             lines.append(self._mc_stat_line())
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _resolve_syst_suffix(sys_config: Dict[str, Any], year: str) -> str:
+        """Suffix of the region-ROOT variant histograms of a shape systematic; "{year}" is replaced by the era's year, so
+        one yaml entry (e.g. JECAbsolute_{year}) covers the year-specific JEC components of every era."""
+        return sys_config["syst_suffix"].replace("{year}", str(year))
 
     @staticmethod
     def _resolve_systematic_name(sys_name: str, sys_config: Dict[str, Any], year: str) -> str:
@@ -733,7 +739,7 @@ class CombineDatacardWriter:
                                                          sys_config.get("gated_by_cut")):
                         continue
 
-                    syst_suffix = sys_config["syst_suffix"]
+                    syst_suffix = self._resolve_syst_suffix(sys_config, year)
                     for direction, out_direction in (("UP", "Up"), ("DOWN", "Down")):
                         try:
                             syst_values = load_region_syst_histogram(
@@ -1222,47 +1228,54 @@ class CombineRunner:
         raise RuntimeError(f"No valid AsymptoticLimits {run_mode} result for {workspace} with "
                            f"rMax in {ladder}")
 
-    # median / half the 16-84% spread of the expected limit is about 3 for the mass points that are not at the edge of
-    # the sensitivity; outside this band at a median far below rMax the default r range gave a wrong median (seen at
-    # (600, 250) of the separate-e/mu run: 0.645 against 0.475 with an explicit --rMax)
-    _MEDIAN_SPREAD_BAND = (2.0, 4.5)
+    # The expected limit of AsymptoticLimits depends on --rMax when the range is much wider than the limit (seen at
+    # (mA, ma) = (1500, 850), 2024: median 32.0 with --rMax=500, 21.9 with 100-200; the first accepted ladder rung passed every
+    # consistency check). So an accepted result is made independent of the range: while the range used is more than
+    # _RANGE_OVER_MEDIAN times the median, rerun with --rMax of _RMAX_PER_MEDIAN times the median and keep that result if it
+    # is valid, iterating at most _MAX_TIGHTEN times. If a rerun is not valid the previous result is kept.
+    _RANGE_OVER_MEDIAN = 10.0
+    _RMAX_PER_MEDIAN = 5.0
+    _MAX_TIGHTEN = 3
 
     def _recheck_asymptotic_median(self, workspace: str, output_dir: str, blind: bool, run_mode: str,
                                     vals: "np.ndarray", range_max: float) -> None:
-        """Rerun with --rMax of a few times the median when the expected quantiles are inconsistent (median much
-        larger than the 16-84% spread allows). The rerun replaces the first result only if it is valid and
-        consistent; otherwise the first result is kept and a warning is logged."""
-        lo, hi = self._MEDIAN_SPREAD_BAND
-        spread = (vals[3] - vals[1]) / 2.0
-        median = float(vals[2])
-        if spread <= 0 or median >= 0.1 * range_max or lo <= median / spread <= hi:
-            return
-        rmax2 = max(5.0 * median, 1.0)
+        """Tighten --rMax around the median of an accepted expected limit (see the class note above)."""
         out = Path(output_dir)
-        first = sorted(out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"))[0]
-        backup = first.with_name(first.name + ".first")
-        first.replace(backup)
-        try:
-            self._run_steps("AsymptoticLimits", workspace, output_dir, blind,
-                            extra_format_args={"run_mode": run_mode, "rmax_arg": f"--rMax={rmax2:g}"})
-            files = sorted(out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"))
-            with uproot.open(str(files[0])) as f:
-                v2 = f["limit"]["limit"].array(library="np")
-            sp2 = (v2[3] - v2[1]) / 2.0
-            good = (len(v2) == 5 and np.isfinite(v2).all() and (v2 > 0).all() and (np.diff(v2) >= 0).all()
-                    and v2.max() < 0.8 * rmax2 and sp2 > 0 and lo <= v2[2] / sp2 <= hi)
-        except Exception:
-            files, good = [], False
-        if good:
-            logging.warning(f"AsymptoticLimits {run_mode}: median {median:.4g} inconsistent with the 16-84% spread "
-                            f"(ratio {median / spread:.2f}); rerun with --rMax={rmax2:g} gives {v2[2]:.4g}, kept")
-            backup.unlink()
-        else:
-            logging.warning(f"AsymptoticLimits {run_mode}: median {median:.4g} inconsistent with the 16-84% spread "
-                            f"(ratio {median / spread:.2f}) and the rerun with --rMax={rmax2:g} did not help; keeping the first result")
-            for f_ in out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"):
-                f_.unlink()
-            backup.replace(first)
+        current, rng = vals, float(range_max)
+        for _ in range(self._MAX_TIGHTEN):
+            median = float(current[2])
+            if median <= 0 or rng <= self._RANGE_OVER_MEDIAN * median:
+                break
+            rmax2 = max(self._RMAX_PER_MEDIAN * median, 1.0)
+            if rmax2 >= rng:
+                break
+            first = sorted(out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"))[0]
+            backup = first.with_name(first.name + ".prev")
+            first.replace(backup)
+            good, v2 = False, None
+            try:
+                self._run_steps("AsymptoticLimits", workspace, output_dir, blind,
+                                extra_format_args={"run_mode": run_mode, "rmax_arg": f"--rMax={rmax2:g}"})
+                files = sorted(out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"))
+                with uproot.open(str(files[0])) as f:
+                    v2 = f["limit"]["limit"].array(library="np")
+                good = (len(v2) == 5 and np.isfinite(v2).all() and (v2 > 0).all()
+                        and (np.diff(v2) >= 0).all() and v2.max() < 0.8 * rmax2)
+            except Exception:
+                good = False
+            if good:
+                if abs(v2[2] / median - 1.0) > 0.02:
+                    logging.warning(f"AsymptoticLimits {run_mode}: median {median:.4g} with --rMax={rng:g} changes to {v2[2]:.4g} "
+                                    f"with --rMax={rmax2:g} (range was {rng / median:.0f}x the median); the tighter range is kept")
+                backup.unlink()
+                current, rng = v2, rmax2
+            else:
+                for f_ in out.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"):
+                    f_.unlink()
+                backup.replace(first)
+                logging.warning(f"AsymptoticLimits {run_mode}: rerun with --rMax={rmax2:g} gave no valid result; "
+                                f"keeping the result with --rMax={rng:g}")
+                break
 
     def run_asymptotic_limits(self, datacard_or_workspace: str, output_dir: str,
                                blind: bool = True) -> str:

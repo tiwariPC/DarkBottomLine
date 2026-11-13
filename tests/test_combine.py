@@ -1034,10 +1034,12 @@ class TestCombineRunner:
         # combine's real output filename (its default -n Test label), not a
         # made-up "asymptotic_limits.root" that combine never actually writes.
         assert Path(results_file).name == "higgsCombineTest.AsymptoticLimits.mH120.root"
-        # blind=True -> single call, includes -t -1, no second "observed" call
-        assert mock_run.call_count == 1
-        called_args = mock_run.call_args[0][0]
-        assert "-t" in called_args and "-1" in called_args
+        # blind=True -> the expected run (includes -t -1) plus one rerun with a tighter --rMax (the fake median is far below the
+        # default range, see _recheck_asymptotic_median); no "observed" call
+        assert mock_run.call_count == 2
+        first_args = mock_run.call_args_list[0][0][0]
+        assert "-t" in first_args and "-1" in first_args
+        assert not any("--run=observed" in c[0][0] for c in mock_run.call_args_list)
 
     def test_run_asymptotic_limits_unblind_runs_expected_and_observed(self, minimal_combine_config, tmp_path):
         runner = CombineRunner(minimal_combine_config)
@@ -1051,11 +1053,41 @@ class TestCombineRunner:
         with patch("subprocess.run", side_effect=fake_run) as mock_run:
             runner.run_asymptotic_limits(str(workspace), str(tmp_path), blind=False)
 
-        assert mock_run.call_count == 2
+        # expected + its tighter-range rerun, then observed
+        assert mock_run.call_count == 3
         first_args = mock_run.call_args_list[0][0][0]
-        second_args = mock_run.call_args_list[1][0][0]
+        last_args = mock_run.call_args_list[2][0][0]
         assert "-t" not in first_args
-        assert "--run=observed" in second_args
+        assert "--run=observed" in last_args
+
+    def test_asymptotic_median_made_independent_of_rmax(self, minimal_combine_config, tmp_path):
+        """Regression: with --rMax=500 the median was 32.0 where --rMax of 100-200 gives 21.9 (a result that passed every
+        consistency check). The accepted result is rerun with a tighter range and the tighter one is kept."""
+        import numpy as np
+        import uproot
+        runner = CombineRunner(minimal_combine_config)
+        workspace = tmp_path / "workspace.root"
+        workspace.write_text("")
+        calls = []
+
+        def fake_steps(tool, ws, out_dir, blind, extra_format_args=None):
+            arg = (extra_format_args or {}).get("rmax_arg", "")
+            rmax = float(arg.split("=")[1]) if arg else None
+            calls.append(rmax)
+            for old in tmp_path.glob("higgsCombineTest.AsymptoticLimits.mH120*.root"):
+                old.unlink()
+            if rmax is None or rmax < 100:
+                return                                       # no result for a small range
+            vals = [20.3, 23.9, 32.0, 51.9, 97.0] if rmax >= 400 else [10.2, 14.2, 21.9, 38.1, 66.3]
+            with uproot.recreate(str(tmp_path / "higgsCombineTest.AsymptoticLimits.mH120.root")) as f:
+                f["limit"] = {"limit": np.array(vals)}
+
+        with patch.object(runner, "_run_steps", side_effect=fake_steps):
+            f = runner.run_asymptotic_limits(str(workspace), str(tmp_path), blind=True)
+        with uproot.open(f) as r:
+            assert abs(float(r["limit"]["limit"].array(library="np")[2]) - 21.9) < 1e-6
+        assert calls[:3] == [None, 50, 500]
+        assert 100 <= calls[3] < 400                         # the tighter rerun after the 500 result
 
     def test_run_goodness_of_fit_two_steps_no_toys_conflict(self, minimal_combine_config, tmp_path):
         """Regression: GoF must NOT combine -t -1 (blind_args) with --toys — that
