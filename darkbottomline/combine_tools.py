@@ -570,6 +570,35 @@ class CombineDatacardWriter:
         values = load_region_histogram(region_root_dir, category, region_dir, variable, key)
         return float(values.sum())
 
+    @staticmethod
+    def _clean_shape_variation(syst_values, nominal, nominal_var, cfg, stats):
+        """Suppress statistically insignificant shape variations of a background histogram.
+
+        With few MC events per bin (e.g. a small slice of the MC under --one-mc-for-all) the
+        up/down templates fluctuate far more than the physical effect and, extrapolated by
+        Combine's morphing, drive bin yields negative. Per bin: a shift smaller than
+        stat_sigma x sqrt(sum w^2) of the nominal is replaced by the nominal; a larger shift is
+        clamped to +-max_rel_shift x nominal. Applies only to bins with relative stat error above
+        min_rel_err (default 0.5). No-op if cfg is disabled or no variances are known;
+        with enough MC no bin is touched."""
+        if not cfg.get("enabled") or nominal_var is None:
+            return syst_values
+        sig = float(cfg.get("stat_sigma", 1.0)); fmax = float(cfg.get("max_rel_shift", 1.0))
+        err = np.sqrt(np.clip(np.asarray(nominal_var, dtype=float), 0.0, None))
+        shift = syst_values - nominal
+        # only genuinely low-statistics bins are touched: the templates share the nominal's
+        # events, so a shift below the nominal stat error is NOT noise in a well-populated bin
+        low = err > float(cfg.get("min_rel_err", 0.5)) * nominal
+        small = low & (np.abs(shift) < sig * err)
+        out = np.where(small, nominal, syst_values)
+        lim = fmax * nominal
+        clamped = low & (~small) & (np.abs(shift) >= lim)
+        out = np.where(clamped, nominal + np.sign(shift) * lim, out)
+        stats["to_nominal"] += int(np.count_nonzero(small & (shift != 0)))
+        stats["clamped"] += int(np.count_nonzero(clamped))
+        stats["total"] += int(shift.size)
+        return np.clip(out, ZERO_FLOOR, None)
+
     def write_shapes(self, region_root_dir: str, output_dir: str, category: str,
                       region_role: str, variable: str,
                       mass_point: Optional[str] = None, year: str = "2024",
@@ -598,6 +627,8 @@ class CombineDatacardWriter:
 
         shapes_file = output_path / self._resolve_filename(
             "shapes_file", category, filename_region or region_role, year, mass_point)
+        clean_cfg = (self.datacard_config.get("shape_cleaning") or {})
+        clean_stats = {"to_nominal": 0, "clamped": 0, "total": 0}
         region_dir = region_dir_override or region_dir_from_role(region_role)
         region_key = f"{category}:{region_role}"
         is_sr = region_role == "SR"
@@ -684,6 +715,15 @@ class CombineDatacardWriter:
                 f[datacard_name] = (values, edges.astype(float)) if variances is None \
                     else (values, edges.astype(float), variances)
 
+                clean_var = None
+                if clean_cfg.get("enabled") and not proc_config.get("is_signal", False):
+                    clean_var = variances
+                    if clean_var is None and not hist_missing:
+                        try:
+                            clean_var = load_region_variances(region_root_dir, category, region_dir,
+                                                              variable, hist_key)
+                        except Exception:
+                            clean_var = None
                 for sys_name, sys_config in self.datacard_config["systematics"].items():
                     if sys_config.get("type") != "shape":
                         continue
@@ -713,6 +753,8 @@ class CombineDatacardWriter:
                         combine_sys_name = self._resolve_systematic_name(sys_name, sys_config, year)
                         out_key = f"{datacard_name}_{combine_sys_name}{out_direction}"
                         syst_values = np.clip(syst_values.astype(float), ZERO_FLOOR, None)
+                        syst_values = self._clean_shape_variation(
+                            syst_values, values, clean_var, clean_cfg, clean_stats)
                         f[out_key] = (syst_values, edges.astype(float))
 
             edges = load_region_bin_edges(region_root_dir, category, region_dir, variable)
@@ -731,6 +773,10 @@ class CombineDatacardWriter:
                     ) from exc
             f["data_obs"] = (data_values.astype(float), edges.astype(float))
 
+        if clean_cfg.get("enabled"):
+            logging.info(f"Shape-variation cleaning in {shapes_file.name}: "
+                         f"{clean_stats['to_nominal']} bins set to nominal (low-stat bins, shift < {clean_cfg.get('stat_sigma', 1.0)} x MC stat error), "
+                         f"{clean_stats['clamped']} bins clamped (of {clean_stats['total']} varied bins)")
         logging.info(f"Shapes file written to {shapes_file}")
 
         return str(shapes_file)
