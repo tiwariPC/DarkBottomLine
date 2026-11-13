@@ -88,7 +88,7 @@ Then `analyze` reads one file per sample; it looks up the **xsec from the filena
 reads **SUMW from the histo**, and applies `weight = sign(genWeight)*xsec*lumi/SUMW`:
 
 ```bash
-python3 scripts/met_trigger_efficiency.py analyze --config configs/2024.yaml \
+python3 scripts/met_trigger/met_trigger_efficiency.py analyze --config configs/2024.yaml \
   --data-skims "<MERGED>/Muon*.root" \
   --mc-skims   "<MERGED>/DYto2L-2Jets_*.root" "<MERGED>/WtoLNu-2Jets_*.root" \
                "<MERGED>/TT*.root" "<MERGED>/*SingleTop*.root" "<MERGED>/WW*.root" ...

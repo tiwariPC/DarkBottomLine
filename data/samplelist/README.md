@@ -18,9 +18,9 @@ The `*-100` inclusive samples contain everything with pT ≥ 100 GeV, which is w
 `data/cross-section/xsection_background_run3.json`.
 
 ```bash
-python3 scripts/switch_sample_mode.py status
-python3 scripts/switch_sample_mode.py inclusive --dry-run     # show what would move
-python3 scripts/switch_sample_mode.py inclusive               # or: binned
+python3 scripts/tools/switch_sample_mode.py status
+python3 scripts/tools/switch_sample_mode.py inclusive --dry-run     # show what would move
+python3 scripts/tools/switch_sample_mode.py inclusive               # or: binned
 ```
 
 The script (list of samples per mode in `configs/sample_modes.yaml`) does two things:

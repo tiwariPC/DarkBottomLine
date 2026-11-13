@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Switch the 2024 V+jets samples between pT-binned and inclusive.
 
-    python3 scripts/switch_sample_mode.py status
-    python3 scripts/switch_sample_mode.py inclusive [--dry-run]
-    python3 scripts/switch_sample_mode.py binned    [--dry-run]
+    python3 scripts/tools/switch_sample_mode.py status
+    python3 scripts/tools/switch_sample_mode.py inclusive [--dry-run]
+    python3 scripts/tools/switch_sample_mode.py binned    [--dry-run]
 
 Moves sample lists in configs/sample_modes.yaml's `managed` families between
 data/samplelist/<year>/ (active) and data/samplelist/backup/<year>/ (inactive), and
@@ -19,7 +19,7 @@ from pathlib import Path
 
 import yaml
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parents[2]
 CFG = REPO / "configs" / "sample_modes.yaml"
 PLOT_CFG = REPO / "configs" / "plotting.yaml"
 

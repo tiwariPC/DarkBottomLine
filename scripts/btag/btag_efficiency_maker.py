@@ -3,7 +3,7 @@
 B-tag (UParT, 2024) MC-truth tagging-efficiency MAKER.
 
 Usage:
-    python scripts/btag_efficiency_maker.py \
+    python scripts/btag/btag_efficiency_maker.py \
         --inputs "outputs/btageff/2024/*.root" \
         --output outputs/btageff/2024/heavyflavor_efficiency_maps.root
 """
@@ -20,7 +20,7 @@ import uproot
 FLAVORS = ("b", "c", "light")
 WORKING_POINTS = ("lwp", "mwp", "twp")
 
-# Must match scripts/btag_efficiency_slimmer.py's ETA_EDGES/PT_EDGES exactly
+# Must match scripts/btag/btag_efficiency_slimmer.py's ETA_EDGES/PT_EDGES exactly
 # (real Run2 production binning: bTagEffs_{2016,2017,2018}.root).
 ETA_EDGES = np.array([-2.5, -1.5, -0.5, 0.0, 0.5, 1.5, 2.5])  # 6 bins, signed
 PT_EDGES = np.array([20., 50., 80., 120., 200., 300., 400., 500., 700., 1000.])  # 9 bins

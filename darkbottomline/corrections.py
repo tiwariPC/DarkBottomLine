@@ -677,7 +677,7 @@ class CorrectionManager:
         return var["central"]
 
     # sf_wp letter (config.btagging.sf_wp) -> efficiency-map histogram suffix
-    # (scripts/btag_efficiency_slimmer.py's WORKING_POINTS: lwp/mwp/twp) and
+    # (scripts/btag/btag_efficiency_slimmer.py's WORKING_POINTS: lwp/mwp/twp) and
     # -> the config.btagging discriminant-threshold key for that same WP.
     _EFF_MAP_WP_SUFFIX = {"L": "lwp", "M": "mwp", "T": "twp"}
     _WP_SCORE_KEY = {"L": "score_loose", "M": "score", "T": "score_tight"}
@@ -685,7 +685,7 @@ class CorrectionManager:
     def _load_btag_efficiency_maps(self) -> Optional[Dict[str, Any]]:
         """
         Load the MC-truth tagging-efficiency map (config.btagging.efficiency_map,
-        a plain ROOT file from scripts/btag_efficiency_slimmer.py +
+        a plain ROOT file from scripts/btag/btag_efficiency_slimmer.py +
         btag_efficiency_maker.py — NOT a correctionlib JSON, loaded via uproot).
 
         Returns {"b": {"lwp": (eff_2d, eta_edges, pt_edges), "mwp": ..., "twp": ...},

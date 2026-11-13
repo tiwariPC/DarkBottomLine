@@ -94,9 +94,9 @@ To test interpolation, restrict the training grid and hold points out:
 not turned into background and never get a random mass), so they stay unseen and can be scored
 afterwards to see whether the network interpolates between the masses it was trained on.
 
-**Per-mass-point and ratio-bin models.** `scripts/train_per_masspoint.py` trains one classifier per
+**Per-mass-point and ratio-bin models.** `scripts/dnn/train_per_masspoint.py` trains one classifier per
 mass point (or per bin of `MH3/MH4` with `--ratio-bins N`), and
-`scripts/run_masspoint29_full.sh` / `scripts/run_ratio3_full.sh` are ready-made wrappers. See this
+`scripts/dnn/run_masspoint29_full.sh` / `scripts/dnn/run_ratio3_full.sh` are ready-made wrappers. See this
 file and the script `--help` output for the current training modes.
 
 **Outputs** in `--outdir`:

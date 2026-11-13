@@ -22,21 +22,21 @@ Two-step mode (recommended for hundreds of remote files):
     #   into one skim ROOT: <outdir>/<stem>.root, one per samplelist/file stem
     #   (data and MC alike) — the stem is also the xsec lookup key used in analyze
     #   for MC.
-    python scripts/met_trigger_efficiency.py skim --config configs/2024.yaml \
+    python scripts/met_trigger/met_trigger_efficiency.py skim --config configs/2024.yaml \
         --data-files data/samplelist/2024/Muon*.txt \
         --mc-files data/samplelist/2024/DYto2L-2Jets_*.txt \
                    data/samplelist/2024/WtoLNu-2Jets_*.txt \
         --outdir outputs/skims/2024
 
     # Step 2 - analyze: read the skims, make plots + correctionlib JSON (fast, local)
-    python scripts/met_trigger_efficiency.py analyze --config configs/2024.yaml \
+    python scripts/met_trigger/met_trigger_efficiency.py analyze --config configs/2024.yaml \
         --data-skims "outputs/skims/2024/Muon*.root" \
         --mc-skims   "outputs/skims/2024/DYto2L-2Jets_*.root" \
                      "outputs/skims/2024/WtoLNu-2Jets_*.root"
 
 One-shot mode (single pass, no skim files):
 
-    python scripts/met_trigger_efficiency.py run --config configs/2024.yaml \
+    python scripts/met_trigger/met_trigger_efficiency.py run --config configs/2024.yaml \
         --data-files data/samplelist/2024/Muon*.txt \
         --mc-files data/samplelist/2024/DYto2L-2Jets_*.txt \
                    data/samplelist/2024/WtoLNu-2Jets_*.txt \

@@ -18,7 +18,7 @@ git tag "$GIT_TAG"
 echo "Tagged HEAD as: $GIT_TAG"
 
 # Update _version.py
-VERSION_FILE="$(dirname "$0")/../darkbottomline/_version.py"
+VERSION_FILE="$(dirname "$0")/../../darkbottomline/_version.py"
 cat > "$VERSION_FILE" <<EOF
 """Package version information for DarkBottomLine."""
 

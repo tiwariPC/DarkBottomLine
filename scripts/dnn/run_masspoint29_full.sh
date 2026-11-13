@@ -20,7 +20,7 @@
 # Output: data/dnn_masspoint29/<mass point>/ , plots in
 #         outputs/dnn_masspoint29/<mass point>/
 #
-# Usage:  bash scripts/run_masspoint29_full.sh
+# Usage:  bash scripts/dnn/run_masspoint29_full.sh
 # ---------------------------------------------------------------------------
 set -u
 
@@ -37,7 +37,7 @@ BKG_FRACTION="${BKG_FRACTION:-1.0}"
 export LD_LIBRARY_PATH="/home/zzq/miniconda3/envs/darkbottomline/lib:${LD_LIBRARY_PATH:-}"
 
 cd "$REPO"
-exec "$PY" scripts/train_per_masspoint.py \
+exec "$PY" scripts/dnn/train_per_masspoint.py \
     --dnn-config "$DNN_CFG" \
     --input "$INPUT" \
     --weight-branch full_event_weight \

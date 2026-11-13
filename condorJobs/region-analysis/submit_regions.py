@@ -111,7 +111,7 @@ def queued_batch_names():
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--input-dir", required=True, type=Path,
-                   help="Directory of merged <sample>_EVENTSELECTION.root (scripts/merge_rootfiles.py output)")
+                   help="Directory of merged <sample>_EVENTSELECTION.root (scripts/production/merge_rootfiles.py output)")
     p.add_argument("--outdir", required=True,
                    help="EOS regions directory; PKLs go to <outdir>/per_sample/, plots to <outdir>/plots/")
     p.add_argument("--lumi", required=True, type=float,

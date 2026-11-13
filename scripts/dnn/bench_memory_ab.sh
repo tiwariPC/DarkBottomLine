@@ -26,8 +26,8 @@
 # working tree, unlike a swap-in-place approach.
 #
 # Usage:
-#   bash scripts/bench_memory_ab.sh
-#   BKG_FRACTION=0.5 MASS_POINT=MH3_600_MH4_10_Mchi_1 bash scripts/bench_memory_ab.sh
+#   bash scripts/dnn/bench_memory_ab.sh
+#   BKG_FRACTION=0.5 MASS_POINT=MH3_600_MH4_10_Mchi_1 bash scripts/dnn/bench_memory_ab.sh
 #
 # Environment knobs:
 #   OLD_REF       git ref holding the pre-cleanup code (default: HEAD)
@@ -395,9 +395,9 @@ fi
 echo "[$(date '+%F %T')] A/B started: old=${OLD_REF} new=working tree, both at once"
 echo "[$(date '+%F %T')] mass point ${MASS_POINT}, bkg fraction ${BKG_FRACTION}"
 
-run_one old "$OLD_TREE" "$OLD_TREE/scripts/train_per_masspoint.py" "$OLD_LOG" "$OLD_TIME" &
+run_one old "$OLD_TREE" "$OLD_TREE/scripts/dnn/train_per_masspoint.py" "$OLD_LOG" "$OLD_TIME" &
 OLD_PID=$!
-run_one new "$REPO" "$REPO/scripts/train_per_masspoint.py" "$NEW_LOG" "$NEW_TIME" &
+run_one new "$REPO" "$REPO/scripts/dnn/train_per_masspoint.py" "$NEW_LOG" "$NEW_TIME" &
 NEW_PID=$!
 
 echo "[$(date '+%F %T')] old pid ${OLD_PID}, new pid ${NEW_PID}"

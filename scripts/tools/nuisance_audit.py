@@ -6,7 +6,7 @@ rateParam lines are reported separately (not in [1..k] `kmax`, not expected
 in impacts.json unless explicitly floated as a POI/nuisance by combineTool.py).
 
 Usage:
-    python3 scripts/nuisance_audit.py --combine-dir outputs/combine/2024/C \\
+    python3 scripts/tools/nuisance_audit.py --combine-dir outputs/combine/2024/C \\
         [--mass-points MH3_600_MH4_150_Mchi_1 ...] [--csv report.csv]
 """
 

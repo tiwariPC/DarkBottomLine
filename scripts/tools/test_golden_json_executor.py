@@ -22,12 +22,12 @@ mask-only comparison above does not exercise. --repo-dir picks which
 checkout's code runs, so a fixed and an unfixed tree can be compared.
 
 Usage:
-  python scripts/test_golden_json_executor.py <data_file.root> <config.yaml> [--executor futures|dask] [--workers N]
-  python scripts/test_golden_json_executor.py <file1.root> [<file2.root> ...] <config.yaml> --full-chain \\
+  python scripts/tools/test_golden_json_executor.py <data_file.root> <config.yaml> [--executor futures|dask] [--workers N]
+  python scripts/tools/test_golden_json_executor.py <file1.root> [<file2.root> ...] <config.yaml> --full-chain \\
       --out-dir <dir> [--modes iterative futures dask] [--repo-dir <checkout>] [--jobs N]
 
 Example:
-  python scripts/test_golden_json_executor.py \\
+  python scripts/tools/test_golden_json_executor.py \\
       "root://cms-xrd-global.cern.ch//store/data/Run2024I/EGamma0/NANOAOD/MINIv6NANOv15-v1/2530000/0f2ec74c-22ac-4431-9a72-c31d4313e995.root" \\
       configs/2024.yaml --executor futures
 """
@@ -110,7 +110,7 @@ def load_golden_pairs(config):
 
     gjp = Path(config["data"]["golden_json"])
     if not gjp.exists():
-        gjp = Path(__file__).resolve().parent.parent / gjp
+        gjp = Path(__file__).resolve().parents[2] / gjp
     with open(gjp) as f:
         golden = json.load(f)
     return {(int(r), l) for r, ranges in golden.items() for a, b in ranges for l in range(a, b + 1)}
@@ -216,7 +216,7 @@ def main():
     parser.add_argument("--modes", nargs="+", choices=["iterative", "futures", "dask"],
                         default=["iterative", "futures", "dask"])
     parser.add_argument("--out-dir", help="--full-chain: where outputs, logs and summary.json go")
-    parser.add_argument("--repo-dir", default=os.path.join(os.path.dirname(__file__), ".."),
+    parser.add_argument("--repo-dir", default=os.path.join(os.path.dirname(__file__), "..", ".."),
                         help="--full-chain: checkout whose darkbottomline code is run")
     parser.add_argument("--jobs", type=int, default=2,
                         help="--full-chain: (file, mode) runs in parallel")

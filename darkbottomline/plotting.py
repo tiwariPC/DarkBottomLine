@@ -436,7 +436,7 @@ def _mp_total_events(file_wte: float, wte_gm: Optional[Dict[str, float]], mp_lab
     if v is None or v < 0:
         raise MissingGenModelCounters(
             f"No weighted_total_events_GenModel_{mp_label} for signal mass point {mp_label}; add the "
-            "per-point counters with scripts/add_genmodel_counts.py or re-run signal event selection.")
+            "per-point counters with scripts/tools/add_genmodel_counts.py or re-run signal event selection.")
     return float(v)
 
 
@@ -448,7 +448,7 @@ def _warn_missing_genmodel_wte(name: str, gm_cols: List[str], wte_gm: Optional[D
     if missing:
         logging.warning(
             "%s: weighted_total_events_GenModel_* counter missing for %d of %d mass points (e.g. %s); "
-            "plotting any of these points that has selected events will fail. Add the counters with scripts/add_genmodel_counts.py or "
+            "plotting any of these points that has selected events will fail. Add the counters with scripts/tools/add_genmodel_counts.py or "
             "re-run signal event selection.", name, len(missing), len(gm_cols), missing[0])
 
 

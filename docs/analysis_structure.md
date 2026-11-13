@@ -7,7 +7,7 @@ per-sample region files contain.
 
 ```text
 NanoAOD ──event selection──▶ <sample>_EVENTSELECTION.root   (flat branches, one tree "Events")
-   condorJobs/event-selection        merged per sample with scripts/merge_rootfiles.py
+   condorJobs/event-selection        merged per sample with scripts/production/merge_rootfiles.py
                                           │
                   darkbottomline analyze --mode region-analysis
                   (region cuts + DNN score, chunked over the tree)
@@ -122,7 +122,7 @@ step matches samples by name patterns, so either form works as `--region-results
 
 Multi-point signal samples are normalised per mass point: the signal `_EVENTSELECTION.root` carries one
 one-bin histogram `weighted_total_events_GenModel_<point>` per point (generated Σ sign(genWeight) of that
-point, written by event selection or added to a merged file with `scripts/add_genmodel_counts.py`), copied
+point, written by event selection or added to a merged file with `scripts/tools/add_genmodel_counts.py`), copied
 into `metadata["weighted_total_events_per_genmodel"]`. A point without a counter is an error: there is no
 fallback to the file-level `weighted_total_events`, which covers every point.
 

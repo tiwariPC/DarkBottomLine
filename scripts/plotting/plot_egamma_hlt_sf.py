@@ -4,7 +4,7 @@ Plot EGamma HLT scale factor map (pT vs eta) from correctionlib JSON.gz.
 Uses mplhep CMS style.
 
 Usage:
-    python scripts/plot_egamma_hlt_sf.py \
+    python scripts/plotting/plot_egamma_hlt_sf.py \
         --json data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_electronHlt.json.gz \
         --path HLT_SF_Ele30_TightID \
         --lumi 8.1 --com 13.6 \

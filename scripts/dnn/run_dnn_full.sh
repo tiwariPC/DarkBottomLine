@@ -14,7 +14,7 @@
 # Kept as its own script so the watchdog and a manual run use the exact same
 # command line.  Override any of the variables below from the environment.
 #
-# Usage:  bash scripts/run_dnn_full.sh
+# Usage:  bash scripts/dnn/run_dnn_full.sh
 # ---------------------------------------------------------------------------
 set -u
 

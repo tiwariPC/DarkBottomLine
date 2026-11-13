@@ -27,7 +27,7 @@ corrections:
    muonSF_lowPT: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_muon_JPsi.json.gz
    electronSF: data/corrections/2025/Run3-25Prompt-Summer24-NanoAODv15_electron.json.gz
    # electronHLT: not available for 2026 (no Electron-HLT-SF in the EGM 2026 area) -> lepton_sf.electron_hlt is empty (SF = 1)
-   metHlt: data/corrections/2026/Run3-26Prompt-Summer24-NanoAODv15_metHlt.json.gz   # MET-HLT-SF measured on 2026 Muon data (scripts/met_trigger_efficiency.py); skims miss 117 timed-out files
+   metHlt: data/corrections/2026/Run3-26Prompt-Summer24-NanoAODv15_metHlt.json.gz   # MET-HLT-SF measured on 2026 Muon data (scripts/met_trigger/met_trigger_efficiency.py); skims miss 117 timed-out files
    jetJEC: data/corrections/2026/Run3-26Prompt-Summer24-NanoAODv15_jet_jerc.json.gz
    jetJEC_tag_mc: "Summer24Prompt26_V1_MC"
    # Data: L1/L2 from the DATA set plus the run-dependent L2L3Residual.
@@ -174,7 +174,7 @@ btagging:
    sf_name: "UParTAK4"      # base correction name in btagging.json.gz
    sf_type: "fixed_wp"      # Summer24 ships only fixed-WP UParT SFs
    sf_wp: "M"               # L, M, T, XT, XXT (matches score above)
-   # MC-truth tagging-efficiency map (scripts/btag_efficiency_slimmer.py +
+   # MC-truth tagging-efficiency map (scripts/btag/btag_efficiency_slimmer.py +
    # btag_efficiency_maker.py). Needed for the full fixed-WP SF reweighting
    # formula: SF on tagged jets, (1-SF*eff)/(1-eff) on untagged jets. This is
    # a placeholder built from a handful of local test samples; will be

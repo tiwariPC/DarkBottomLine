@@ -119,7 +119,7 @@ mkdir -p "$(dirname "${OUTPUT}")"
 
 echo "output    : ${OUTPUT}"
 
-CMD="python3 scripts/btag_efficiency_slimmer.py --config ${CONFIG} --inputs ${SLICE_TXT} --output ${OUTPUT}"
+CMD="python3 scripts/btag/btag_efficiency_slimmer.py --config ${CONFIG} --inputs ${SLICE_TXT} --output ${OUTPUT}"
 echo "command   : ${CMD}"
 
 # EOS (via eosxd FUSE) has been observed to silently corrupt a small fraction

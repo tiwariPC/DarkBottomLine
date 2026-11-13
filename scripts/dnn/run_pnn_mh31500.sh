@@ -20,7 +20,7 @@
 # Output: data/dnn_pnn_mh31500/ (+ mass_scaler.json), plots in
 #         outputs/dnn_pnn_mh31500/
 #
-# Usage:  bash scripts/run_pnn_mh31500.sh
+# Usage:  bash scripts/dnn/run_pnn_mh31500.sh
 # ---------------------------------------------------------------------------
 set -u
 

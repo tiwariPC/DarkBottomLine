@@ -71,12 +71,12 @@ retried by Condor itself (`periodic_release`, also up to 3x).
 ## After the jobs finish
 
 Per-job outputs land in `<OUTDIR>/<txtstem>/<txtstem>_<ClusterId>_<ProcId>.root`.
-**No `hadd` step** — `scripts/btag_efficiency_maker.py` sums raw counts directly
+**No `hadd` step** — `scripts/btag/btag_efficiency_maker.py` sums raw counts directly
 from every job's output across every sample in ONE call, writing a SINGLE merged
 efficiency map (the `--inputs` glob spans every sample subdirectory at once):
 
 ```bash
-python3 scripts/btag_efficiency_maker.py \
+python3 scripts/btag/btag_efficiency_maker.py \
     --inputs "<OUTDIR>/*/*.root" \
     --output <OUTDIR>/heavyflavor_efficiency_maps_2024.root
 ```

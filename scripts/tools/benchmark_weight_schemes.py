@@ -25,7 +25,7 @@ Evaluation is physics-first:
     2011) + Asimov CLs 95% expected upper limit on the signal strength.
 
 Usage:
-    python scripts/benchmark_weight_schemes.py \
+    python scripts/tools/benchmark_weight_schemes.py \
         --config configs/dnn.yaml \
         --events-dir /home/zzq/eventsel-merged \
         --outdir outputs/weight_scheme_benchmark \
@@ -66,7 +66,7 @@ import torch  # noqa: E402
 
 torch.set_num_threads(_THREADS)
 
-_REPO = Path(__file__).resolve().parents[1]
+_REPO = Path(__file__).resolve().parents[2]
 if str(_REPO) not in sys.path:
     sys.path.insert(0, str(_REPO))
 

@@ -20,7 +20,7 @@ The yields are the integrals of the per-process histograms written by the region
 luminosity of each year. A set with several years sums the years.
 
 Usage:
-    python scripts/plot_region_composition_pies.py \
+    python scripts/plotting/plot_region_composition_pies.py \
         --base /home/ptiwari/data/e0ba653-11112026/v12112026 --years 2024 2025 2026 \
         --outdir outputs/region_pies
 """

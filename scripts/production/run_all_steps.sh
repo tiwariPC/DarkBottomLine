@@ -15,14 +15,14 @@
 # tmux/screen, or running under Condor/CI where a nested session makes no sense).
 #
 # Usage:
-#   scripts/run_all_steps.sh [--dry-run] [--no-tmux] [--steps eventsel,dnn,region,combine]
+#   scripts/production/run_all_steps.sh [--dry-run] [--no-tmux] [--steps eventsel,dnn,region,combine]
 #
 # Examples:
-#   scripts/run_all_steps.sh                        # all 4 steps, in tmux
-#   scripts/run_all_steps.sh --steps eventsel        # only event selection
-#   scripts/run_all_steps.sh --steps dnn,region      # skip eventsel and combine
-#   scripts/run_all_steps.sh --no-tmux --dry-run     # preview commands, current shell
-#   PARALLEL_JOBS=8 scripts/run_all_steps.sh --steps eventsel
+#   scripts/production/run_all_steps.sh                        # all 4 steps, in tmux
+#   scripts/production/run_all_steps.sh --steps eventsel        # only event selection
+#   scripts/production/run_all_steps.sh --steps dnn,region      # skip eventsel and combine
+#   scripts/production/run_all_steps.sh --no-tmux --dry-run     # preview commands, current shell
+#   PARALLEL_JOBS=8 scripts/production/run_all_steps.sh --steps eventsel
 #                                                     # 8 files at once (Step 1 only)
 #
 # Configure via environment variables (all have defaults below):
@@ -39,7 +39,7 @@
 # If you need RAW_INPUT_DIR/CONFIG/PARALLEL_JOBS/etc. to take effect, either
 # export them in a wrapper tmux session you control and pass --no-tmux, or
 # bake them into the CONFIG yaml / a small env file sourced at the top of
-# this script, rather than relying on inline `VAR=... scripts/run_all_steps.sh`.
+# this script, rather than relying on inline `VAR=... scripts/production/run_all_steps.sh`.
 
 set -e
 
@@ -105,7 +105,7 @@ if [ "$NO_TMUX" -eq 0 ] && [ -z "${TMUX:-}" ]; then
         exit 1
     fi
     SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
-    REPO_DIR="$(cd "$(dirname "${SCRIPT_PATH}")/.." && pwd)"
+    REPO_DIR="$(cd "$(dirname "${SCRIPT_PATH}")/../.." && pwd)"
     # Invoke via `bash <path>` rather than executing the path directly — the
     # relaunched pane shouldn't depend on the script's execute bit having
     # survived however it got onto this machine (git clone/scp/rsync don't

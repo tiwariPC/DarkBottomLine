@@ -5,8 +5,8 @@ Runs the last stage of the chain on lxplus HTCondor: merged `<sample>_EVENTSELEC
 
 ```
 condorJobs/event-selection   NanoAOD → per-file EVENTSELECTION.root   (EOS, .../eventsel/<sample>/)
-scripts/merge_rootfiles.py   one <sample>_EVENTSELECTION.root per sample   (.../eventsel_merged/)
-scripts/lumi_calculator.py   brilcalc luminosity of the data that reached the selection
+scripts/production/merge_rootfiles.py   one <sample>_EVENTSELECTION.root per sample   (.../eventsel_merged/)
+scripts/tools/lumi_calculator.py   brilcalc luminosity of the data that reached the selection
 condorJobs/region-analysis   region cuts + DNN → per_sample/<stem>_DNNAPPLIED.pkl → plots   (this directory)
 ```
 
@@ -56,10 +56,10 @@ cp /tmp/x509up_u$(id -u) /afs/cern.ch/user/${USER:0:1}/${USER}/private/
 # 1. event selection: see ../event-selection/README.md  →  $RUN/eventsel/<sample>/
 
 # 2. merge: one file per sample  →  $RUN/eventsel_merged/
-python3 scripts/merge_rootfiles.py --help        # options; flat output folder, <sample>_EVENTSELECTION.root
+python3 scripts/production/merge_rootfiles.py --help        # options; flat output folder, <sample>_EVENTSELECTION.root
 
 # 3. luminosity of the data that reached the selection (brilcalc)
-python3 scripts/lumi_calculator.py --input-dir $RUN/eventsel_merged --output-dir outputs/lumi/2024
+python3 scripts/tools/lumi_calculator.py --input-dir $RUN/eventsel_merged --output-dir outputs/lumi/2024
 #    the config uses the JetMET value (109.627 /fb for this production; EGamma is 108.460)
 
 # 4+5. region analysis and plots, as one DAG

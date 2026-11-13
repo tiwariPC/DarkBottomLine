@@ -1,5 +1,5 @@
 # Which 2024 V+jets sample lists are active in each mode.
-# Used by scripts/switch_sample_mode.py: files matching `managed` that are not in the chosen mode's
+# Used by scripts/tools/switch_sample_mode.py: files matching `managed` that are not in the chosen mode's
 # `active` list are moved from data/samplelist/<year>/ to data/samplelist/backup/<year>/.
 # Entries are sample-list names without the _TuneCP5_... suffix and ".txt".
 # (The group patterns for plotting are in configs/plotting.yaml: `patterns` / `patterns_inclusive`.)

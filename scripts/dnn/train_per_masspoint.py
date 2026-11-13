@@ -20,7 +20,7 @@ skipped outright, as signal *or* background.  ``--signal-pattern`` /
 
 Example
 -------
-python scripts/train_per_masspoint.py \
+python scripts/dnn/train_per_masspoint.py \
     --dnn-config configs/dnn.yaml \
     --input /home/zzq/eventsel-merged \
     --weight-branch full_event_weight \
@@ -498,7 +498,7 @@ def main() -> int:
                 continue   # flag present for the grid, no events in this file
             if "GenModel_" + label not in p["wte_gm"]:
                 raise ValueError(f"{p['path']}: no weighted_total_events_GenModel_{label}; "
-                                 "add it with scripts/add_genmodel_counts.py")
+                                 "add it with scripts/tools/add_genmodel_counts.py")
             mp_wte = p["wte_gm"]["GenModel_" + label]
             if mp_wte <= 0:
                 continue   # no generated events for this point: its flag selects nothing

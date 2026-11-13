@@ -61,7 +61,7 @@ def test_mp_total_events_no_fallback():
 
 def _load_script():
     spec = importlib.util.spec_from_file_location(
-        "add_genmodel_counts", Path(__file__).resolve().parents[1] / "scripts" / "add_genmodel_counts.py")
+        "add_genmodel_counts", Path(__file__).resolve().parents[1] / "scripts" / "tools" / "add_genmodel_counts.py")
     m = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(m)
     return m

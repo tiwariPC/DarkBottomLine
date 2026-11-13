@@ -27,7 +27,7 @@ brilcalc_summary.txt (one "=== <stream> ===" section per dataset, keeping
 only brilcalc's #Summary block — not the full --byls per-lumisection table).
 
 Usage:
-    python scripts/lumi_calculator.py \
+    python scripts/tools/lumi_calculator.py \
         --input-dir /eos/cms/store/group/phys_susy/sus-23-008/run3_bbMET/goldenfix_642f62c/03102026/2024/results_55p214fb/eventsel \
         --output-dir outputs/lumi/2024
 """

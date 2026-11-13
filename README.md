@@ -528,6 +528,16 @@ darkbottomline make-limit-plot --combine-config configs/combine.yaml \
 
 ---
 
+### Low-statistics shape variations (`datacard.shape_cleaning`)
+
+With `--one-mc-for-all` a year can hold only a small slice of the MC (2026: ~10%). In bins with few MC events the up/down templates of
+the shape systematics fluctuate by far more than the physical effect (e.g. a W+jets 2b bin of 6 ± 15 events with a pileup shift of
+−85%/+205%); Combine extrapolates these linearly beyond ±1σ, the bin yield goes negative and the fits fail (NaN, erratic limits).
+With `datacard.shape_cleaning.enabled: true` the shapes are cleaned when written: in bins whose MC stat error exceeds `min_rel_err`
+(default 0.5) of the yield, a shift smaller than `stat_sigma` (1.0) × the stat error is replaced by the nominal, and a larger shift is clamped
+to `max_rel_shift` (0.5) × nominal. Well-populated bins are untouched (zero bins changed for 2024/2025), so with a full-size MC sample the
+option does nothing. It is off by default; the number of changed bins is logged for every shapes file.
+
 ## SR Blinding
 
 | Flag           | SR behavior                                    | CR behavior       |
@@ -705,18 +715,18 @@ signal mass hypothesis) and injecting per-event DNN scores (`ml_score`) into the
 
 ### Step 0 — Event selection (run once per sample)
 
-`scripts/run_all_steps.sh`'s Step 1 (`--steps eventsel`) loops
+`scripts/production/run_all_steps.sh`'s Step 1 (`--steps eventsel`) loops
 `darkbottomline analyze --mode event-selection` over every `.root` file in
 `RAW_INPUT_DIR`, auto-detecting data files (via filename pattern) and
 applying `--data` to them — no separate script, this is inlined directly
 in `run_all_steps.sh` so it has no sibling-script dependency:
 
 ```bash
-scripts/run_all_steps.sh --steps eventsel [--dry-run]
+scripts/production/run_all_steps.sh --steps eventsel [--dry-run]
 
 # e.g., with overrides via env vars
 RAW_INPUT_DIR=/path/to/NanoAODv15_2024 EVENTSEL_DIR=outputs/eventsel CONFIG=configs/2024.yaml \
-    scripts/run_all_steps.sh --steps eventsel
+    scripts/production/run_all_steps.sh --steps eventsel
 ```
 
 Defaults: `RAW_INPUT_DIR=../TestingSamples/NanoAODv15_2024`, `EVENTSEL_DIR=outputs/eventsel`,
@@ -895,28 +905,28 @@ Outputs PNG + PDF.
 
 ```bash
 # Single HLT path
-python scripts/plot_egamma_hlt_sf.py \
+python scripts/plotting/plot_egamma_hlt_sf.py \
     --json data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_electronHlt.json.gz \
     --path HLT_SF_Ele30_TightID \
     --lumi 8.1 --com 13.6 \
     --outdir outputs/hlt_sf/
 
 # All HLT paths in one go
-python scripts/plot_egamma_hlt_sf.py \
+python scripts/plotting/plot_egamma_hlt_sf.py \
     --json data/corrections/2024/Run3-24CDEReprocessingFGHIPrompt-Summer24-NanoAODv15_electronHlt.json.gz \
     --all-paths \
     --lumi 109 --com 13.6 --label Internal \
     --outdir outputs/hlt_sf/2024/
 
 # sfup / sfdown variations
-python scripts/plot_egamma_hlt_sf.py \
+python scripts/plotting/plot_egamma_hlt_sf.py \
     --json data/corrections/2022/Run3-22EFGSep23-Summer22EE-NanoAODv12_electronHlt.json.gz \
     --path HLT_SF_Ele30_TightID \
     --valtype sfup \
     --lumi 26.7 --outdir outputs/hlt_sf/
 
 # List available HLT paths in a file (omit --path and --all-paths)
-python scripts/plot_egamma_hlt_sf.py \
+python scripts/plotting/plot_egamma_hlt_sf.py \
     --json data/corrections/2022/Run3-22CDSep23-Summer22-NanoAODv12_electronHlt.json.gz
 ```
 
@@ -955,7 +965,7 @@ Run2's real production maps exactly (6 signed η bins, 9 pt bins).
 ### Stage 1 — Slimmer (per file, MC only)
 
 ```bash
-python scripts/btag_efficiency_slimmer.py \
+python scripts/btag/btag_efficiency_slimmer.py \
     --config configs/2024.yaml \
     --input /path/to/one_nanoaod_file.root \
     --output outputs/btageff/2024/sample_0.root \
@@ -973,7 +983,7 @@ efficiencies would be statistically wrong).
 ### Stage 2 — Maker (once, after all slimmer files exist)
 
 ```bash
-python scripts/btag_efficiency_maker.py \
+python scripts/btag/btag_efficiency_maker.py \
     --inputs "outputs/btageff/2024/*.root" \
     --output data/corrections/2024/heavyflavor_efficiency_maps_2024.root
 ```
@@ -1018,6 +1028,47 @@ uncorrelated nuisances downstream — never all three together, that would
 double-count the same underlying uncertainty.
 
 ---
+
+## Scripts
+
+`scripts/` is grouped by purpose; every script finds the repository from its own location, so it runs from any directory (the production
+scripts take the production directory as an argument).
+
+| Directory | Contents |
+|---|---|
+| `scripts/production/` | `run_region_year.sh` (region PKLs + plots for a year), `chunked_region_pkls.py`, `merge_rootfiles.py` (per-job EVENTSELECTION outputs → one file per sample), `make_combine_config.py`, `run_limits.sh`, `run_diagnostics.sh`, `run_all_steps.sh` (tmux driver for the full chain) |
+| `scripts/limits/` | `plot_limits.py` (+ `limit_plot_lib.py`): expected-limit plots, per-year vs combination, Run 2 comparison |
+| `scripts/plotting/` | `plot_region_composition_pies.py` (background composition of SR/CRs), `plot_merged_region_analysis.py`, `plot_egamma_hlt_sf.py`, `plot_nTrueInt_noPU.py` |
+| `scripts/met_trigger/` | `met_trigger_efficiency.py` (skim / analyze), `run_met_trigger_plots.sh` (per-year plots, same MC for all years) |
+| `scripts/btag/` | `btag_efficiency_slimmer.py`, `btag_efficiency_maker.py` (see *B-tag MC-truth Efficiency Map*) |
+| `scripts/dnn/` | `train_per_masspoint.py` and the DNN training / benchmark run scripts |
+| `scripts/tools/` | `add_genmodel_counts.py`, `switch_sample_mode.py`, `lumi_calculator.py`, `nuisance_audit.py`, `verify_xsec_mapping.py`, `benchmark_weight_schemes.py`, `test_golden_json_executor.py`, `tag_version.sh` |
+
+### Reproducing a production (`--one-mc-for-all`, three years)
+
+```bash
+# 1. region plots of each year (merged EVENTSELECTION files in BASE/<year>/input/eventsel_merged; configs in BASE/<year>/configs)
+scripts/production/run_region_year.sh BASE 2024 109p82
+scripts/production/run_region_year.sh BASE 2025 110p628
+scripts/production/run_region_year.sh BASE 2026 25p794
+for y in 2024:109p82 2025:110p628 2026:25p794; do ln -sfn BASE/${y%%:*}/region_lumi${y##*:}_incl BASE/${y%%:*}/region_incl; done
+
+# 2. limits: combination + each year; --shape-cleaning is needed when a year has few MC events (see below)
+python scripts/production/make_combine_config.py --base BASE --out-base BASE/limits/combine \
+       --config-out BASE/limits/configs/run3.yaml --shape-cleaning
+scripts/production/run_limits.sh BASE/limits/configs/run3.yaml           # -> BASE/limits/combine/limits/limits_bbDM_<2024|2025|2026|run3>.txt
+
+# 3. limit plots (the Run 2 table: columns mA ma exp2.5 exp16 exp50 exp84 exp97.5 observed, in pb)
+python scripts/limits/plot_limits.py years  --limits-dir BASE/limits/combine/limits --out BASE/limits/plots --run2 --run2-file RUN2_TABLE
+python scripts/limits/plot_limits.py single --limits-dir BASE/limits/combine/limits --out BASE/limits/plots --tag 2026 --run2-file RUN2_TABLE
+# a combination of a subset of the years (its own run of make_combine_config.py --years 2024 2025):
+python scripts/limits/plot_limits.py years --limits-dir BASE/limits/combine/limits --combined-dir BASE2/combine/limits --years 2024 2025 --combined-label 2024+25 --out PLOTS
+
+# 4. diagnostics of the combination on one mass point (GoF, impacts, pulls, pre/post-fit)
+python scripts/production/make_combine_config.py --base BASE --out-base BASE/diagnostics/combine \
+       --config-out BASE/diagnostics/combine_diag.yaml --points MH3_600_MH4_150_Mchi_1 --shape-cleaning
+scripts/production/run_diagnostics.sh BASE/diagnostics/combine_diag.yaml
+```
 
 ## Framework Components
 
@@ -1074,7 +1125,7 @@ pkl
 Scheme: `YYYYMMDD+<sha7>` (`_version.py`), `YYYYMMDD-<sha7>` (git tags).
 
 ```bash
-scripts/tag_version.sh   # bumps _version.py, commits, tags, gh release
+scripts/tools/tag_version.sh   # bumps _version.py, commits, tags, gh release
 ```
 
 ---

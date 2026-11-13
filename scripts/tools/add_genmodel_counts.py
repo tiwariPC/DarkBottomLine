@@ -11,7 +11,7 @@ selection) and adds them to an already-produced (merged) EVENTSELECTION.root, so
 not have to go through event selection again.
 
 Usage:
-    python scripts/add_genmodel_counts.py \\
+    python scripts/tools/add_genmodel_counts.py \\
         --filelist data/samplelist/2024/BBDM-2HDMa-5f_TuneCP5_13p6TeV_madgraph-pythia8.txt \\
         --target /eos/.../eventsel_merged/BBDM-2HDMa-5f_..._EVENTSELECTION.root \\
         [--json-out counts.json] [--workers 8] [--dry-run] [--force]

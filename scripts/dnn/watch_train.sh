@@ -15,7 +15,7 @@
 # The breakage window is normally the multi-minute loading phase, before any
 # training happens, so this is still worth having.
 #
-# Usage:  bash scripts/watch_train.sh
+# Usage:  bash scripts/dnn/watch_train.sh
 # ---------------------------------------------------------------------------
 
 set -u
@@ -24,10 +24,10 @@ CHECK_INTERVAL=300          # seconds between checks (5 min)
 REPO_DIR="${REPO_DIR:-/home/zzq/DarkBottomLine}"
 # Defaults describe the current job: the 29 per-masspoint models on full data.
 # Override RUN_CMD / FINISHED_PATTERN / LOG_DIR for a different run, e.g.
-#   RUN_CMD="bash scripts/run_dnn_full.sh" LOG_DIR=reports/dnn_full \
+#   RUN_CMD="bash scripts/dnn/run_dnn_full.sh" LOG_DIR=reports/dnn_full \
 #   FINISHED_PATTERN="DNN training complete" PROC_PATTERN=train-dnn \
-#   bash scripts/watch_train.sh
-RUN_CMD="${RUN_CMD:-bash ${REPO_DIR}/scripts/run_masspoint29_full.sh}"
+#   bash scripts/dnn/watch_train.sh
+RUN_CMD="${RUN_CMD:-bash ${REPO_DIR}/scripts/dnn/run_masspoint29_full.sh}"
 LOG_DIR="${LOG_DIR:-${REPO_DIR}/reports/masspoint29}"
 TRAIN_LOG="${TRAIN_LOG:-${LOG_DIR}/train.log}"
 WATCH_LOG="${WATCH_LOG:-${LOG_DIR}/watch.log}"

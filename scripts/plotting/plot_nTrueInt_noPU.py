@@ -10,7 +10,7 @@ region cuts via RegionManager (flat-branch path), and overlays:
 Does NOT touch the main analysis/plotting workflow.
 
 Usage:
-  python scripts/plot_nTrueInt_noPU.py \
+  python scripts/plotting/plot_nTrueInt_noPU.py \
       --input outputs/eventsel/SAMPLE_EVENTSELECTION.root \
       --regions-config configs/regions.yaml \
       --outdir outputs/eventsel/nTrueInt_noPU

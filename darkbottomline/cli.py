@@ -1709,7 +1709,7 @@ def _load_one_eventsel_file(task: tuple):
                                 if gmc not in wte_gm:
                                     raise ValueError(
                                         f"{Path(fpath).name}: no weighted_total_events_{gmc}; add the "
-                                        "per-point counters with scripts/add_genmodel_counts.py")
+                                        "per-point counters with scripts/tools/add_genmodel_counts.py")
                                 mp_wte = wte_gm[gmc]
                                 if mp_wte > 0:   # 0 = no generated events, the flag selects nothing
                                     mp_scale[mask] = (lumi * mp_xsec * 1000.0) / mp_wte

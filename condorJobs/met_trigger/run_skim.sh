@@ -130,7 +130,7 @@ printf '%s\n' "${SLICE}" > "${SLICE_TXT}"
 # one-file-per-sample skim.
 DEST_DIR="${OUTDIR}/${TXT_STEM}"
 mkdir -p "${DEST_DIR}"
-python3 scripts/met_trigger_efficiency.py skim \
+python3 scripts/met_trigger/met_trigger_efficiency.py skim \
     --config "${CONFIG}" \
     ${FILE_FLAG} "${SLICE_TXT}" \
     --outdir "${DEST_DIR}"

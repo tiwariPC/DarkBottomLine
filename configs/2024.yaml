@@ -173,7 +173,7 @@ btagging:
    sf_name: "UParTAK4"      # base correction name in btagging.json.gz
    sf_type: "fixed_wp"      # Summer24 ships only fixed-WP UParT SFs
    sf_wp: "M"               # L, M, T, XT, XXT (matches score above)
-   # MC-truth tagging-efficiency map (scripts/btag_efficiency_slimmer.py +
+   # MC-truth tagging-efficiency map (scripts/btag/btag_efficiency_slimmer.py +
    # btag_efficiency_maker.py). Needed for the full fixed-WP SF reweighting
    # formula: SF on tagged jets, (1-SF*eff)/(1-eff) on untagged jets. This is
    # a placeholder built from a handful of local test samples; will be

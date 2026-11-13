@@ -15,7 +15,7 @@
 # Output: data/dnn_ratio3/<bin>/ (+ ratio_bins.json), plots in
 #         outputs/dnn_ratio3/<bin>/
 #
-# Usage:  bash scripts/run_ratio3_full.sh
+# Usage:  bash scripts/dnn/run_ratio3_full.sh
 #   Override the edges with e.g. RATIO_EDGES="2,6" ... or pass --ratio-bin-edges
 #   through the script.  Leave RATIO_EDGES empty for equal-count bins.
 # ---------------------------------------------------------------------------
@@ -39,7 +39,7 @@ if [ -n "$RATIO_EDGES" ]; then
 fi
 
 cd "$REPO"
-exec "$PY" scripts/train_per_masspoint.py \
+exec "$PY" scripts/dnn/train_per_masspoint.py \
     --dnn-config "$DNN_CFG" \
     --input "$INPUT" \
     --weight-branch full_event_weight \

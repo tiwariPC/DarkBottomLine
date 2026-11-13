@@ -3,7 +3,7 @@
 B-tag (UParT, 2024) MC-truth tagging-efficiency SLIMMER.
 
 Usage (single file):
-    python scripts/btag_efficiency_slimmer.py \
+    python scripts/btag/btag_efficiency_slimmer.py \
         --config configs/2024.yaml \
         --input /path/to/one_nanoaod_file.root \
         --output outputs/btageff/2024/sample_0.root \
@@ -13,14 +13,14 @@ Usage (single file):
     # rule as the maker's hadd-equivalent stage — never sums an already-divided
     # efficiency). Used by condorJobs/btag-efficiency/ to give each Condor job
     # a BATCH-sized slice instead of one job per input file:
-    python scripts/btag_efficiency_slimmer.py \
+    python scripts/btag/btag_efficiency_slimmer.py \
         --config configs/2024.yaml \
         --inputs /path/to/slice.txt \
         --output outputs/btageff/2024/sample_0.root \
         [--max-events 500000]
 
     # Then, once all per-job outputs exist, run stage 2:
-    #   python scripts/btag_efficiency_maker.py \
+    #   python scripts/btag/btag_efficiency_maker.py \
     #       --inputs "outputs/btageff/2024/*.root" \
     #       --output outputs/btageff/2024/heavyflavor_efficiency_maps.root
 """
@@ -36,7 +36,7 @@ import uproot
 import yaml
 
 # Only branches under these prefixes (plus SCALAR_BRANCHES) are read from the
-# file — same optimisation as scripts/met_trigger_efficiency.py::load_events.
+# file — same optimisation as scripts/met_trigger/met_trigger_efficiency.py::load_events.
 BRANCH_PREFIXES = (
     "Muon_", "Electron_", "Jet_", "PuppiMET_", "PFMET_", "MET_",
 )
@@ -61,7 +61,7 @@ WORKING_POINTS = {"score_loose": "lwp", "score": "mwp", "score_tight": "twp"}
 
 # ---------------------------------------------------------------------------
 # Object building + selection (inlined, adapted from
-# scripts/met_trigger_efficiency.py; darkbottomline/objects.py conventions
+# scripts/met_trigger/met_trigger_efficiency.py; darkbottomline/objects.py conventions
 # for config keys/thresholds)
 # ---------------------------------------------------------------------------
 

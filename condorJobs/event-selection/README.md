@@ -28,7 +28,7 @@ on lxplus HTCondor for every samplelist in `data/samplelist/<year>/`.
 
   One subdirectory per sample. Region analysis globs `*.root` in a single folder (not
   recursive), so either merge each sample into one file in a flat folder first
-  (`scripts/merge_rootfiles.py`) or point `--input` at one sample's folder.
+  (`scripts/production/merge_rootfiles.py`) or point `--input` at one sample's folder.
 
   Output name fields: `I` = line index in the samplelist (identifies the input file),
   `C`/`P` = Condor ClusterId/ProcId of the job that wrote it. A held+released retry keeps

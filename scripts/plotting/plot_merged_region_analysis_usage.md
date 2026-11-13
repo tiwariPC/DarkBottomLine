@@ -1,6 +1,6 @@
 # `plot_merged_region_analysis.py` Usage Guide
 
-This document explains how to use `scripts/plot_merged_region_analysis.py` to draw stacked control-region plots from merged ROOT files.
+This document explains how to use `scripts/plotting/plot_merged_region_analysis.py` to draw stacked control-region plots from merged ROOT files.
 
 ## What the script does
 
@@ -90,7 +90,7 @@ source /cvmfs/sft.cern.ch/lcg/views/LCG_109/x86_64-el9-gcc15-opt/setup.sh
 cd /afs/cern.ch/user/x/xdu/xdu/DarkBottomLine
 source start.sh
 
-python3 scripts/plot_merged_region_analysis.py \
+python3 scripts/plotting/plot_merged_region_analysis.py \
   --input-root /afs/cern.ch/user/x/xdu/xdu/run3_bbMET/detached_3def8a5/19052026/2022/region_analysis_MERGED \
   --output-dir /afs/cern.ch/user/x/xdu/xdu/run3_bbMET/detached_3def8a5/19052026/2022/region_plots_lumi7p99_full_fixed \
   --lumi 7.99 \
@@ -102,7 +102,7 @@ python3 scripts/plot_merged_region_analysis.py \
 ### Only Top control regions
 
 ```bash
-python3 scripts/plot_merged_region_analysis.py \
+python3 scripts/plotting/plot_merged_region_analysis.py \
   --input-root /afs/cern.ch/user/x/xdu/xdu/run3_bbMET/detached_3def8a5/19052026/2022/region_analysis_MERGED \
   --output-dir /afs/cern.ch/user/x/xdu/xdu/run3_bbMET/detached_3def8a5/19052026/2022/region_plots_top_check \
   --lumi 7.99 \
@@ -114,7 +114,7 @@ python3 scripts/plot_merged_region_analysis.py \
 ### Small debug run
 
 ```bash
-python3 scripts/plot_merged_region_analysis.py \
+python3 scripts/plotting/plot_merged_region_analysis.py \
   --input-root /afs/cern.ch/user/x/xdu/xdu/run3_bbMET/detached_3def8a5/19052026/2022/region_analysis_MERGED \
   --output-dir /afs/cern.ch/user/x/xdu/xdu/run3_bbMET/detached_3def8a5/19052026/2022/region_plots_debug \
   --lumi 7.99 \
@@ -153,6 +153,6 @@ This is the quickest way to see which MC categories are actually contributing to
 
 ## Related files
 
-- `scripts/plot_merged_region_analysis.py`
+- `scripts/plotting/plot_merged_region_analysis.py`
 - `scripts/xsection_results.json`
 - `normalization_problems.txt`
